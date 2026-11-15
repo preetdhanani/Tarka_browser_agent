@@ -17,6 +17,7 @@ import zlib from 'node:zlib';
 import { performance } from 'node:perf_hooks';
 import { build, createLogger, parseSync, version as viteVersion } from 'vite';
 import { passes, ROOT, OUT_DIR } from '../vite.config.mjs';
+import { collectHarnessLeak } from './zip.mjs';
 
 const DIST = path.join(ROOT, OUT_DIR);
 const distPath = (rel) => path.join(DIST, ...rel.split('/'));
@@ -276,6 +277,18 @@ function checkHtml({ entries }) {
   return { detail: `${refCount} local refs`, problems };
 }
 
+/**
+ * Nothing of the verification harness may reach a user. `scripts/zip.mjs` refuses it at pack time
+ * and a unit test checks the built tree when there is one, but a unit test that returns early on a
+ * fresh checkout proves nothing in CI. This is the same rule asserted on the machine that just
+ * built the tree, by the step that fails the build.
+ */
+function checkNoHarnessFiles({ entries }) {
+  const files = entries.filter((e) => !e.isDir).map((e) => e.rel);
+  const problems = collectHarnessLeak(files).map((rel) => `${rel}: a verification-harness file inside the build, it would ship to every user`);
+  return { detail: `${files.length} paths`, problems };
+}
+
 function verifyDist() {
   if (!fs.existsSync(distPath('manifest.json'))) {
     return { results: [], failures: [`${OUT_DIR}/manifest.json is missing`] };
@@ -288,6 +301,7 @@ function verifyDist() {
     ['content scripts are classic', checkContentScripts],
     ['executeScript func is self-contained', checkExecuteScriptFuncs],
     ['no name starts with "_"', checkNames],
+    ['no harness file in dist/', checkNoHarnessFiles],
     ['html references resolve', checkHtml]
   ];
   const results = [];

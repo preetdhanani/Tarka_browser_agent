@@ -66,9 +66,19 @@ function sourceFiles(folder: string): string[] {
 
 const isRealFile = (path: string): boolean => existsSync(path) && statSync(path).isFile();
 
+/**
+ * Files holding import specifiers as SAMPLE TEXT, which therefore cannot be scanned themselves.
+ * `architectureBoundaries.test.ts` feeds its scanner a specifier that must resolve to a file the
+ * virtual importer could NOT reach, because that is how it proves the allowlist has teeth. Its own
+ * real import of `scripts/zip.mjs` is covered anyway: the test that uses it fails if that path is
+ * wrong, so the exclusion costs no coverage of a real import.
+ */
+const HOLDS_SAMPLE_IMPORTS = [join(ROOT, 'tests', 'architectureBoundaries.test.ts')];
+
 test('every relative import names an existing file exactly as written (Node cannot guess an extension)', () => {
   // This file holds wrong imports as sample text, so it is not scanned itself.
-  const files = FOLDERS.flatMap((folder) => sourceFiles(join(ROOT, folder))).filter((file) => file !== fileURLToPath(import.meta.url));
+  const skip = new Set([fileURLToPath(import.meta.url), ...HOLDS_SAMPLE_IMPORTS]);
+  const files = FOLDERS.flatMap((folder) => sourceFiles(join(ROOT, folder))).filter((file) => !skip.has(file));
   let checked = 0;
   const problems: string[] = [];
   for (const file of files) {

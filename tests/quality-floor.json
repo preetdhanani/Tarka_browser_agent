@@ -1,0 +1,19 @@
+{
+  "_comment": [
+    "A ratchet, not a target. Each number may only go DOWN, and the way to lower it is to fix the",
+    "code and write the smaller number here. Raising a number to make a check pass is the escape hatch",
+    "this file exists to catch, so it needs a reason in the commit message.",
+    "",
+    "These are ratchets and not bans because the honest counts are too big to ban outright: real code",
+    "needs a cast at a JSON boundary and a best-effort teardown that must not throw. The bans that ARE",
+    "absolute live in tests/architectureBoundaries.test.ts, where the count is genuinely zero today.",
+    "",
+    "Never read these numbers from this file: run npm run quality, which recomputes them, and",
+    "node scripts/quality.mjs --where, which says where each one is heaviest. The scan strips comments,",
+    "counts src, sidepanel, content and scripts, and counts a catch with an empty body even when the",
+    "braces are on separate lines."
+  ],
+  "anyOrUnknown": 323,
+  "asCasts": 291,
+  "emptyCatch": 69
+}

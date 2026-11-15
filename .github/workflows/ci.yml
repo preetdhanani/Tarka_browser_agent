@@ -38,6 +38,12 @@ jobs:
       - name: Typecheck the TypeScript sources (tsc --noEmit)
         run: npm run typecheck
 
+      # Any, casts and empty catches are allowed to exist but not to grow. The floors are in
+      # tests/quality-floor.json, so a rise shows up as a red step and a commit message that has to
+      # explain it.
+      - name: Check the quality floors against the code
+        run: npm run quality
+
       - name: Execute Automated QA Test Suite
         run: npm test
 

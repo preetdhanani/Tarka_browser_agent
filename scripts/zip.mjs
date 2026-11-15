@@ -20,6 +20,19 @@ const DIST = path.join(ROOT, 'dist');
 const OUT = path.join(ROOT, 'tarka-chrome-extension.zip');
 const EXCLUDE = /(?:\.map|(?:^|\/)\.DS_Store|(?:^|\/)Thumbs\.db)$/;
 
+/**
+ * The verification harness must never reach a user, so a file of it inside dist/ is a failed build
+ * and not something to quietly filter out: filtering would hide the misconfigured input that put
+ * it there. The harness copies itself in beside dist/ (see tests/e2e/lib/extensionCopy.mjs), so any
+ * of these names in dist/ means something is wired wrong.
+ */
+export const HARNESS_LEAK = [/^tests\//, /^driver\.html$/, /^panel-trigger\.(?:html|js)$/, /^fixtures\//, /^screenshots\//];
+
+/** The names that must not be in a shipped artifact. Pure, so tests/architectureBoundaries.test.ts can feed it leaks. */
+export function collectHarnessLeak(names) {
+  return names.filter((name) => HARNESS_LEAK.some((re) => re.test(name)));
+}
+
 // MS-DOS time and date for 1980-01-01 00:00:00, the earliest a zip can store (year 0 = 1980).
 const DOS_TIME = 0;
 const DOS_DATE = (1 << 5) | 1;
@@ -61,6 +74,9 @@ function main() {
   const names = files(DIST).filter((name) => !EXCLUDE.test(name)).sort((a, b) => (a === 'manifest.json' ? -1 : b === 'manifest.json' ? 1 : a < b ? -1 : a > b ? 1 : 0));
   if (names.length > 0xffff) fail(`${names.length} files, more than a plain zip can hold`);
 
+  const leaks = collectHarnessLeak(names);
+  if (leaks.length > 0) fail(`dist/ holds verification-harness files, which must never ship: ${leaks.join(', ')}`);
+
   const parts = [];
   const central = [];
   let offset = 0;
@@ -99,4 +115,10 @@ function main() {
   for (const name of names) console.log(`  ${name}`);
 }
 
-main();
+// Run only as a command, not when a test imports the guard above for its exports. Without this,
+// `npm test` would rebuild the zip on every run, and a dist/ with a leak would exit the test
+// process from inside an import instead of reporting a failed test. The same guard as
+// scripts/build.mjs and scripts/evalscan.mjs.
+if (fs.realpathSync(process.argv[1] ?? '') === fs.realpathSync(fileURLToPath(import.meta.url))) {
+  main();
+}
