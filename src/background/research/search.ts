@@ -1,15 +1,3 @@
-// src/background/research/search.ts
-// web_search: a web search from the service worker, outside the user's tab.
-//
-// Two backends, chosen in Settings > Research:
-//   - DuckDuckGo's HTML page (html.duckduckgo.com/html/?q=), the default: it needs no key. Its
-//     result links go through a /l/?uddg= redirect, which is unwrapped to the real address. When
-//     it answers with its bot check (the "anomaly" page) or an HTTP error, the result says so
-//     plainly and points to a SearXNG URL; it never invents results.
-//   - SearXNG (a base URL the user names), through its JSON format (/search?q=&format=json).
-// Brave, Tavily and external MCP servers come later, in the same result shape.
-//
-// Pure apart from the fetch it is handed, so the tests stub the network with saved samples.
 import { wrapUntrusted } from '../mcp/untrusted.ts';
 import { decodeEntities } from './htmlText.ts';
 import { checkWebUrl } from './urlPolicy.ts';
@@ -26,29 +14,21 @@ export const DDG_HTML_ENDPOINT = 'https://html.duckduckgo.com/html/';
 export const SEARCH_DEFAULT_RESULTS = 6;
 export const SEARCH_MAX_RESULTS = 8;
 
-/** The result count a call asks for, clamped to 1..8; 6 when it is left out or not a number. */
 export function resultCount(raw: unknown): number {
   const n = Math.floor(Number(raw));
   if (raw === undefined || raw === null || !Number.isFinite(n)) return SEARCH_DEFAULT_RESULTS;
   return Math.min(SEARCH_MAX_RESULTS, Math.max(1, n));
 }
 
-/** Text of an HTML fragment on one line: tags out, entities decoded, whitespace collapsed. */
 function inlineText(html: string): string {
   return decodeEntities(String(html || '').replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim();
 }
 
-/** The value of one attribute in a tag's attribute text, entities decoded. */
 function attr(attrs: string, name: string): string {
   const m = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs);
   return m ? decodeEntities(m[1] ?? m[2] ?? m[3] ?? '') : '';
 }
 
-/**
- * The real address of a DuckDuckGo result link. Its HTML page links every result through
- * //duckduckgo.com/l/?uddg=<the address, encoded>&rut=...; anything else is taken as it is.
- * Returns '' for a link that stays on DuckDuckGo (an ad's y.js, a settings link) or is not http(s).
- */
 export function unwrapDuckDuckGoLink(href: string): string {
   let url: URL;
   try {
@@ -67,15 +47,12 @@ export function unwrapDuckDuckGoLink(href: string): string {
   }
 }
 
-/** Words of DuckDuckGo's bot check page (it shows it instead of results to traffic it distrusts). */
 const DDG_CHALLENGE = /anomaly-modal|anomaly\.js|challenge-form|bots use duckduckgo too|please complete the following challenge|select all squares containing/i;
 
-/** The results of DuckDuckGo's HTML page, and whether the page is its bot check instead. */
 export function parseDuckDuckGoHtml(html: string): { results: SearchResult[]; challenge: boolean; noResults: boolean } {
   const source = String(html || '');
   const results: SearchResult[] = [];
   const seen = new Set<string>();
-  // Each result is one <a class="result__a"> title link; its snippet follows before the next one.
   const anchors = [...source.matchAll(/<a\b([^>]*\bclass\s*=\s*["'][^"']*\bresult__a\b[^"']*["'][^>]*)>([\s\S]*?)<\/a>/gi)];
   anchors.forEach((m, i) => {
     const start = (m.index ?? 0) + m[0].length;
@@ -83,7 +60,6 @@ export function parseDuckDuckGoHtml(html: string): { results: SearchResult[]; ch
     const block = source.slice(start, end);
     const url = unwrapDuckDuckGoLink(attr(m[1], 'href'));
     if (!url || !checkWebUrl(url).ok || seen.has(url)) return;
-    // An ad sits in a block marked result--ad; its link unwraps to duckduckgo.com and was dropped above.
     const snippet = /<(a|div|td|span)\b[^>]*\bclass\s*=\s*["'][^"']*\bresult__snippet\b[^"']*["'][^>]*>([\s\S]*?)<\/\1>/i.exec(block)?.[2] ?? '';
     seen.add(url);
     results.push({ title: inlineText(m[2]) || url, url, snippet: inlineText(snippet) });
@@ -95,7 +71,6 @@ export function parseDuckDuckGoHtml(html: string): { results: SearchResult[]; ch
   };
 }
 
-/** The results of a SearXNG JSON answer ({results: [{url, title, content}]}). */
 export function parseSearxngJson(text: string): SearchResult[] {
   let data: any;
   try {
@@ -119,7 +94,6 @@ export function parseSearxngJson(text: string): SearchResult[] {
   return results;
 }
 
-/** The SearXNG search address for a base URL ("https://searx.example" or ".../search"), or an error. */
 export function searxngSearchUrl(base: string, query: string): { url: string } | { error: string } {
   const checked = checkWebUrl(base);
   if (!checked.ok) return { error: `the SearXNG URL in Settings > Research is not usable: ${checked.error}` };
@@ -131,14 +105,12 @@ export function searxngSearchUrl(base: string, query: string): { url: string } |
   return { url: url.href };
 }
 
-/** The search results as the model reads them: numbered, the address on its own line, in the untrusted envelope. */
 export function formatResults(query: string, backendName: string, results: SearchResult[]): string {
   const lines = results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet}` : ''}`);
   const head = `Web search (${backendName}) for "${query}": ${results.length} result${results.length === 1 ? '' : 's'}.`;
   return `${head}\n${wrapUntrusted(`web search results (${backendName})`, lines.join('\n'))}\nThese are search snippets, not the pages: read a page with fetch_url {url} before you rely on what it says.`;
 }
 
-/** What one web_search call returns. */
 export interface WebSearchOutcome {
   text: string;
   isError?: boolean;
@@ -147,14 +119,6 @@ export interface WebSearchOutcome {
 
 const SET_SEARXNG = 'Do not guess results. Tell the user that web search needs a SearXNG URL in Settings > Research, or read the official site directly with fetch_url.';
 
-/**
- * web_search {query, max_results?}. Never throws: every failure is an error result the model reads.
- *
- * Both backends are fetched with redirects followed, unlike fetch_url: the backend address is the
- * user's own setting in Settings > Research, not an address the model chose, and search endpoints
- * redirect routinely (an http URL upgraded to https, a load balancer). The model only writes the
- * query, which cannot steer where a redirect goes.
- */
 export async function webSearch(args: { query?: unknown; max_results?: unknown }, research: ResearchSettings, deps: FetchDeps = {}): Promise<WebSearchOutcome> {
   const query = typeof args?.query === 'string' ? args.query.replace(/\s+/g, ' ').trim() : '';
   if (!query) return { text: 'Error: web_search needs a query: the words to search for.', isError: true, results: [] };

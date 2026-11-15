@@ -1,17 +1,3 @@
-// src/background/research/fetchText.ts
-// fetch_url: read one web address from the service worker, outside the user's tab.
-//
-// The request carries no cookies or credentials (credentials: 'omit'), so it reads what an
-// anonymous visitor reads and can never act as the user. It gives up after FETCH_TIMEOUT_MS and
-// reads at most FETCH_MAX_BYTES (the body is streamed and the read stops there). Redirects are
-// NOT followed (SEC-4): the fetch API cannot show the intermediate hops of a followed chain, so
-// following one would contact addresses nobody checked. A redirecting address is refused with a
-// sentence that names the way out (the tab, or the direct address). HTML is parsed like a browser
-// parses it and becomes text (htmlText.ts); JSON, plain text and scripts (install.sh) pass
-// through. A long text comes in parts, like read_page, and a query keeps only the lines that name
-// one of its words.
-//
-// Pure apart from the fetch it is handed, so the tests stub the network.
 import { pageTextPart } from '../../shared/textPaging.ts';
 import { wrapUntrusted, sourceOf } from '../mcp/untrusted.ts';
 import { readHtml } from './htmlText.ts';
@@ -21,38 +7,25 @@ export const FETCH_TIMEOUT_MS = 15000;
 export const FETCH_MAX_BYTES = 2 * 1024 * 1024;
 
 export interface FetchDeps {
-  /** The fetch to use. The service worker's global fetch by default; a test hands in a stub. */
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   maxBytes?: number;
-  /**
-   * What to do with a redirect. 'refuse' (the default) never follows one: the worker then
-   * contacts only addresses that passed the URL check. 'follow' is for the search backends, whose
-   * address is the user's own setting in Settings > Research and not one the model chose.
-   */
   redirects?: 'refuse' | 'follow';
-  /** The run's own signal: a Stop cancels the request. */
   signal?: AbortSignal;
 }
 
-/** One response, read with the caps. */
 export interface Fetched {
   status: number;
   statusText: string;
   ok: boolean;
-  /** The address the response reports. With redirects refused, always the address that was asked. */
   finalUrl: string;
   contentType: string;
   text: string;
-  /** How many bytes were read (at most maxBytes). */
   bytes: number;
-  /** True when the body was longer than maxBytes and the read stopped there. */
   truncated: boolean;
-  /** True when the body is not text (NUL bytes, or a binary media type). */
   binary: boolean;
 }
 
-/** A failure the model reads as it is ("<url> did not answer within 15 s"). */
 export class FetchFailure extends Error {}
 
 const BINARY_TYPE = /^(image|audio|video|font)\/|^application\/(zip|gzip|x-gzip|x-tar|x-xz|zstd|x-zstd|x-bzip2|x-7z-compressed|pdf|octet-stream|vnd\.|x-msdownload|x-apple-diskimage|wasm|java-archive)/i;
@@ -69,7 +42,6 @@ function decode(bytes: Uint8Array, contentType: string): string {
   }
 }
 
-/** Reads a body up to maxBytes, streaming, and stops the download there. */
 async function readCapped(response: Response, maxBytes: number): Promise<{ bytes: Uint8Array; truncated: boolean }> {
   const body = response.body;
   if (!body || typeof body.getReader !== 'function') {
@@ -104,10 +76,6 @@ async function readCapped(response: Response, maxBytes: number): Promise<{ bytes
   return { bytes, truncated };
 }
 
-/**
- * One GET with the caps: no credentials, redirects refused unless the caller opted in, a timeout,
- * a byte limit. Throws a FetchFailure with a sentence for the model when nothing usable came back.
- */
 export async function fetchCapped(url: string, deps: FetchDeps = {}, accept = '*/*'): Promise<Fetched> {
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const timeoutMs = deps.timeoutMs ?? FETCH_TIMEOUT_MS;
@@ -123,17 +91,13 @@ export async function fetchCapped(url: string, deps: FetchDeps = {}, accept = '*
     const response = await fetchImpl(url, {
       method: 'GET',
       credentials: 'omit',
-      // 'manual' never contacts a redirect's target: the answer comes back as an opaqueredirect
-      // (status 0, no body, no headers), which is detected below and refused with a sentence the
-      // model can act on. 'error' would hide the reason behind a generic fetch failure.
+      // Chrome hides the destination of cross-origin manual redirects as an opaqueredirect.
       redirect: followRedirects ? 'follow' : 'manual',
       referrerPolicy: 'no-referrer',
       cache: 'no-store',
       headers: { Accept: accept },
       signal: controller.signal
     });
-    // SEC-4: with redirects refused, an opaqueredirect is the whole answer: the redirect's target
-    // was never contacted, and there is nothing to read. The refusal names the gated ways in.
     if (!followRedirects && response.type === 'opaqueredirect') {
       await response.body?.cancel().catch(() => {});
       throw new FetchFailure(`${url} answered a redirect, and fetch_url does not follow redirects: the worker only calls addresses it has checked. Open the address in the tab with navigate, or find the direct address of the document and fetch that.`);
@@ -142,8 +106,6 @@ export async function fetchCapped(url: string, deps: FetchDeps = {}, accept = '*
     const contentType = response.headers.get('content-type') || '';
     const { bytes, truncated } = await readCapped(response, maxBytes);
     const sniff = bytes.subarray(0, Math.min(bytes.length, 4096));
-    // A binary media type (an archive, a picture), or NUL bytes near the start. A vendor type that
-    // is JSON or XML (application/vnd.github+json), and an octet-stream that is really a script, stay text.
     const binary = (BINARY_TYPE.test(contentType) && !/json|xml|text|octet-stream/i.test(contentType)) || sniff.includes(0);
     return {
       status: response.status,
@@ -157,8 +119,6 @@ export async function fetchCapped(url: string, deps: FetchDeps = {}, accept = '*
       binary
     };
   } catch (err: any) {
-    // A FetchFailure is already worded for the model (the redirect refusal above): it goes out as
-    // it is, not re-wrapped as a generic "could not be fetched" that buries the actual reason.
     if (err instanceof FetchFailure) throw err;
     if (timedOut) throw new FetchFailure(`${url} did not answer within ${timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)} s` : `${timeoutMs} ms`}.`);
     if (deps.signal?.aborted) throw new FetchFailure('the fetch was stopped.');
@@ -169,7 +129,6 @@ export async function fetchCapped(url: string, deps: FetchDeps = {}, accept = '*
   }
 }
 
-/** What kind of text a response holds, from its type and, without one, its first characters. */
 export function kindOf(contentType: string, text: string): 'html' | 'json' | 'text' {
   const type = contentType.toLowerCase();
   if (/html|xhtml/.test(type)) return 'html';
@@ -181,7 +140,6 @@ export function kindOf(contentType: string, text: string): 'html' | 'json' | 'te
   return 'text';
 }
 
-/** JSON pretty-printed (one space per level, so it pages well); the raw text when it does not parse. */
 export function prettyJson(text: string): string {
   try {
     return JSON.stringify(JSON.parse(text), null, 1);
@@ -190,17 +148,14 @@ export function prettyJson(text: string): string {
   }
 }
 
-/** Plain text (a script, a README) kept as it is: only line endings and trailing spaces change. */
 function plainText(text: string): string {
   return text.replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-/** The words of a query worth matching: two letters or more, lower case, without duplicates. */
 export function queryWords(query: string): string[] {
   return [...new Set(String(query || '').toLowerCase().split(/[^\p{L}\p{N}._/-]+/u).map((w) => w.replace(/^[._/-]+|[._/-]+$/g, '')).filter((w) => w.length >= 2))];
 }
 
-/** The lines of a text that contain one of the words, with their line numbers. */
 export function matchingLines(text: string, words: string[]): { lines: string[]; total: number } {
   const all = text.split('\n');
   const lines: string[] = [];
@@ -211,7 +166,6 @@ export function matchingLines(text: string, words: string[]): { lines: string[];
   return { lines, total: all.filter((l) => l.trim()).length };
 }
 
-/** The last segment of an address's path ("install.sh"), or '' when the path ends in a slash. */
 export function fileNameOf(url: string): string {
   try {
     const segment = new URL(url).pathname.split('/').filter(Boolean).pop() || '';
@@ -225,20 +179,13 @@ function sizeText(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** The result of one fetch_url call: the text the model reads, and the name the timeline row shows. */
 export interface FetchUrlOutcome {
   text: string;
   isError?: boolean;
-  /** The document's title, or its file name: "Read install.sh (ollama.com)". */
   label?: string;
 }
 
-/**
- * fetch_url {url, part?, query?}. Never throws: every failure is an error result the model reads.
- */
 export async function fetchUrl(args: { url?: unknown; part?: unknown; query?: unknown }, deps: FetchDeps = {}): Promise<FetchUrlOutcome> {
-  // SEC-4: the worker-fetch rule (no loopback, no private ranges, no metadata endpoints) - the
-  // tab's navigate keeps the wider rule, this background fetch does not.
   const checked = checkWorkerFetchUrl(args?.url);
   if (!checked.ok) return { text: `Error: fetch_url refused: ${checked.error}`, isError: true };
   const part = args?.part === undefined || args?.part === null ? 1 : Number(args.part);
