@@ -1,6 +1,3 @@
-// src/background/runner/runtimeRegistry.ts
-// Non-serializable per-thread dependencies. The MCP client and browser APIs look them up by
-// thread_id. Nothing with functions, keys or signals is ever placed in a checkpoint or trace.
 import type { Settings } from '../../shared/storage.ts';
 import type {
   ControlSnapshot, Effect, EffectDetail, HistoryEntry, NodeName, PolicyMode, TrailEntry,
@@ -10,9 +7,9 @@ import type {
 export interface RunControl {
   pauseRequested: boolean;
   stopRequested: boolean;
-  stepSignal(): AbortSignal;                            // fresh AbortController per LLM call or wait
-  abortStep(reason: 'user_pause' | 'user_stop'): void;  // signal.reason = { tarka: 'user', reason }
-  isUserAbort(err: unknown, signal?: AbortSignal): boolean; // checks the reason tag, never error text
+  stepSignal(): AbortSignal;
+  abortStep(reason: 'user_pause' | 'user_stop'): void;
+  isUserAbort(err: unknown, signal?: AbortSignal): boolean;
   snapshot(): ControlSnapshot;
 }
 
@@ -48,11 +45,8 @@ export interface ExecResult {
   urlAfter?: string;
   syntheticReason?: string;
   oneShot?: OneShot;
-  /** The facts the effect probe measured around the action (see EffectDetail). */
   effectDetail?: EffectDetail;
-  /** The text of the field a type wrote into, read back right after typing; null when it could not be read. */
   fieldText?: string | null;
-  /** W2-B5: the dispatch's own verdicts, carried into the result the model and the panel read. */
   securityRefusal?: boolean;
   stale?: boolean;
   obscuredBy?: string;
@@ -73,11 +67,6 @@ export interface BrowserPort {
   isTabInScope(tabId: number): Promise<boolean>;
 }
 
-/**
- * What the server asks the runner to publish when a tool call needs the user's confirmation:
- * the exact action (tool, serialized arguments, tab, frame, origin, element), so the approval is
- * bound to this one call and nothing else.
- */
 export interface ActionConfirmationRequest {
   id: string;
   toolName: string;
@@ -87,7 +76,6 @@ export interface ActionConfirmationRequest {
   targetOrigin: string;
   elementId?: number;
   elementLabel?: string;
-  /** The card's variant: 'purchase' or 'submit'. */
   variant: string;
   actionSummary: string;
   reason: string;
@@ -116,16 +104,7 @@ export interface RunRuntime {
     sleep(ms: number, signal?: AbortSignal): Promise<void>;
   };
   finishPolicy?: (ctx: GateContext) => GateDecision;
-  /**
-   * Asks the user to confirm one exact action (SEC-2). The server awaits it before dispatching a
-   * sensitive click or a submitting type; false or a missing channel refuses the action.
-   */
   requestActionConfirmation?: (req: ActionConfirmationRequest) => Promise<boolean>;
-  /**
-   * CONTRACT-REMEMBER: whether the user approved an action on this origin with "remember for
-   * this run" ticked. The gate consults it before it raises a card; a remembered origin raises
-   * no card. The trust lasts one run (the runner clears it in startTask/clearHistory/loadChat).
-   */
   isOriginApproved?: (origin: string) => boolean;
   typedTexts?: string[];
   navigatedFrom?: { site: string; before: string } | null;

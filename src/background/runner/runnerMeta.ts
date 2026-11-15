@@ -1,7 +1,4 @@
-// src/background/runner/runnerMeta.ts
-// Runner metadata stored in chrome.storage.session across worker cold boots.
 
-/** The three methods of chrome.storage.session the runner's stores use (also in tests as a fake). */
 export interface StorageSessionArea {
   get(keys?: string | string[] | null): Promise<Record<string, unknown>>;
   set(items: Record<string, unknown>): Promise<void>;
@@ -47,7 +44,6 @@ export class SessionRunnerMeta {
         return raw as RunnerMeta;
       }
     } catch {
-      // Ignore read error
     }
     return null;
   }
@@ -61,7 +57,6 @@ export class SessionRunnerMeta {
     try {
       await this.area.set({ [this.storageKey()]: meta });
     } catch {
-      // Ignore write error
     }
   }
 
@@ -73,10 +68,6 @@ export class SessionRunnerMeta {
       return;
     }
 
-    // Keep only the LATEST payload: the timeout used to close over the first
-    // captured meta, so writes landing inside the throttle window were dropped
-    // and storage kept a stale stateVersion/group map until the next write
-    // (BUG-41).
     this.pendingMeta = meta;
     if (!this.pendingWrite) {
       this.pendingWrite = setTimeout(() => {
@@ -97,7 +88,6 @@ export class SessionRunnerMeta {
     try {
       await this.area.remove(this.storageKey());
     } catch {
-      // Ignore write error
     }
   }
 }
