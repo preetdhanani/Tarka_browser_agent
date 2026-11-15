@@ -1,5 +1,5 @@
 import { Logger } from '../../shared/logger.ts';
-import { ProviderError, classifyProviderFailure, describeOllamaFailure, statusOf } from './errors.ts';
+import { ProviderError, classifyProviderFailure, describeOllamaFailure } from './errors.ts';
 import { baseUrlOf, modelOf } from './settings.ts';
 import { getEffectiveContextWindow } from './models.ts';
 import { usageOfOllama } from './usage.ts';

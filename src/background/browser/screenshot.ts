@@ -3,8 +3,6 @@ import { describeRestrictedUrl } from './tabs.ts';
 import { TOP_FRAME, frameMasksHold, maskEmbeddedFrames, unmaskEmbeddedFrames, type FrameMasks } from './frames.ts';
 import { decodeImageSize } from './imageSize.ts';
 import { fitToBudget, scaleForTarget, type ImageSize } from '../../shared/imageBudget.ts';
-import type { PageSig } from '../types.ts';
-
 const ASPECT_TOLERANCE = 0.02;
 
 export interface ViewportProbe {
