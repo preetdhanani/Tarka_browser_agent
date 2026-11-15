@@ -1,7 +1,3 @@
-/**
- * Storage utility for Tarka Agentic Browser Extension
- * Manages settings, per-provider API configuration memory, multi-session history, and model caching.
- */
 import { DEFAULT_NVIDIA_LLM_TIMEOUT_MS, endpointHostOf, endpointOriginOf, isLoopbackHost } from '../background/llm/settings.ts';
 
 export interface ProviderConfig {
@@ -9,40 +5,21 @@ export interface ProviderConfig {
   apiKey: string;
   model: string;
   llmTimeoutMs?: number;
-  /** Per-model context window (tokens). Populated by fetching model info from the endpoint. */
   modelContextWindow?: Record<string, number>;
 }
 
-/** Keyed by provider id. A stored value can hold ids this build does not know, so the key is a plain string. */
 export type ProviderConfigs = Record<string, ProviderConfig>;
 
-/** Which wire dialect a user-added endpoint speaks. A property of the endpoint, not of the model behind it. */
 export type ProviderProtocol = 'openai' | 'anthropic';
 
-/**
- * A provider the user created at runtime. The descriptor holds the non-secret metadata; the key lives in
- * `providerConfigs[id].apiKey`, so the existing per-provider credential memory and the top-level sync of
- * saveSettings keep working unchanged.
- */
 export interface CustomProvider {
-  /** `^[a-z][a-z0-9-]{1,31}$`, unique, and never a built-in id. It is a storage key and a log label. */
   id: string;
-  /** The label in the dropdown, the header pill and the timeline. Defaults to the endpoint host. */
   displayName: string;
   protocol: ProviderProtocol;
-  /** Stored as typed; normalized on use (see llm/settings.ts), never rewritten behind the user's back. */
   baseUrl: string;
-  /** The saved model list: fetched ids plus hand-added ones, in picker order. [] is a valid saved state. */
   models: string[];
-  /** 'none' records that the endpoint takes no key, so no Authorization header is sent at all. */
   keyMode: 'apiKey' | 'none';
-  /** Per-provider LLM timeout. When missing, the global llmTimeoutMs applies (timeoutMsOf precedence). */
   llmTimeoutMs?: number;
-  /**
-   * SEC-9, per server: this endpoint may be called over plain http although it carries an API
-   * key. The user ticks it in the provider dialog for THIS server; it never reaches another one.
-   * Loopback endpoints (the user's own machine) never need it. Absent means false.
-   */
   allowInsecureHttp?: boolean;
   createdAt: number;
   updatedAt: number;
@@ -50,18 +27,13 @@ export interface CustomProvider {
 
 export type CustomProviders = Record<string, CustomProvider>;
 
-/** The shape of a provider id: lowercase, starts with a letter, then letters, digits and dashes, 2 to 32 chars in all. */
 export const CUSTOM_PROVIDER_ID_PATTERN = /^[a-z][a-z0-9-]{1,31}$/;
 
-/** Custom ids build on these built-ins; a custom provider can never shadow one. Kept as a literal so the
- * constant works before DEFAULT_PROVIDER_CONFIGS is initialized; a test pins it to the actual key set. */
 export const BUILTIN_PROVIDER_IDS: readonly string[] = ['openrouter', 'agent_router', 'gemini', 'ollama', 'openai', 'openai_compatible', 'anthropic', 'nvidia'];
 
-/** How many user-added providers one settings object may hold. */
 export const MAX_CUSTOM_PROVIDERS = 20;
 
-/** Default context window (tokens) when the endpoint does not report one. */
-export const DEFAULT_CONTEXT_WINDOW = 262144; // 256k tokens - safe for most modern models
+export const DEFAULT_CONTEXT_WINDOW = 262144;
 
 export interface Settings {
   provider: string;
@@ -74,57 +46,30 @@ export interface Settings {
   llmTimeoutMs: number;
   ollamaNumCtx: number;
   ollamaNumPredict: number;
-  /**
-   * The context window the user set per model, keyed by "provider|model". In saveSettings a value
-   * of null or 0 removes that key (the Settings field emptied); the other keys stay.
-   */
   contextWindow?: Record<string, number>;
   actionDelayMs: number;
   autoScroll: boolean;
   theme: string;
   systemInstructions: string;
-  /** The composer's starting effort: how hard the model thinks (background/llm/effort.ts). 'xhigh' from older builds reads as 'max'. */
   effortDefault?: 'auto' | 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  /** Routine steps (not the first, not after a failed tool) get one effort level less. On unless stored false. */
   effortAdaptive?: boolean;
-  /**
-   * Default approval mode for a new task. true: the agent approves its plan and runs.
-   * false: the plan is shown and the run waits for APPROVE_PLAN.
-   */
   autoApprove?: boolean;
   modelTier?: 'auto' | 'small' | 'large';
-  /**
-   * Whether the agent captures images of pages it opens. Always on: every new page load gets a
-   * screenshot for clarity. Kept as a stored flag only so the panel can read "is it on"; there is
-   * no user toggle for it.
-   */
   screenshots: boolean;
-  /** User-added third-party providers, keyed by id. Absent in older settings, so reads default to {}. */
   customProviders?: CustomProviders;
-  /**
-   * Research outside the tab: the web_search and fetch_url tools. Absent in older settings;
-   * getSettings fills each missing field from DEFAULT_RESEARCH (a deep merge, see normalizeResearch).
-   */
   research: ResearchSettings;
 }
 
-/** Where web_search looks. DuckDuckGo's HTML page needs no key; SearXNG is a server the user names. */
 export type ResearchBackend = 'duckduckgo' | 'searxng';
 
 export interface ResearchSettings {
-  /** Whether the model is offered web_search and fetch_url. */
   enabled: boolean;
   backend: ResearchBackend;
-  /** The base URL of a SearXNG instance with the JSON format on (https://searx.example). Used when backend is searxng. */
   searxngUrl: string;
 }
 
 export const DEFAULT_RESEARCH: ResearchSettings = { enabled: true, backend: 'duckduckgo', searxngUrl: '' };
 
-/**
- * A stored research object (or nothing, from an older build) as a whole ResearchSettings: every
- * field that is missing or of the wrong kind takes its default, every valid one is kept.
- */
 export function normalizeResearch(raw: unknown): ResearchSettings {
   const r = raw && typeof raw === 'object' ? (raw as Partial<ResearchSettings>) : {};
   return {
@@ -134,17 +79,8 @@ export function normalizeResearch(raw: unknown): ResearchSettings {
   };
 }
 
-/** Whether the agent captures images of pages it opens. Always on: every new page load gets a screenshot for clarity. */
 export const screenshotsAlwaysOn = true;
 
-/**
- * A chat as Recent tasks keeps it. The background writes it (AgentRunner, the single writer) while
- * a run goes and when it ends; the panel only lists, opens and deletes chats.
- *   status    the run status when it was saved: a chat saved "running" or "paused" and never
- *             saved again was cut off (the browser or the panel closed) and opens as interrupted
- *   records   the save_data records of a run that had not ended when it was saved; an ended run
- *             keeps them on its closing row instead
- */
 export interface SavedSession {
   id: string;
   task?: string;
@@ -155,27 +91,21 @@ export interface SavedSession {
   planSteps?: unknown[];
   status?: string;
   records?: Array<Record<string, unknown>>;
-  /** The page a run that had not ended was on last. */
   pageUrl?: string;
   savedAt?: number;
 }
 
-/** What the list of Recent tasks shows of a chat: everything but its rows. */
 export type SavedSessionSummary = Omit<SavedSession, 'history' | 'planSteps' | 'records' | 'pageUrl'>;
 
-/** The storage key of one saved chat. Each chat is its own key, so a save writes one chat, not all of them. */
 export function chatKey(id: string): string {
   return `sf:chat:${id}`;
 }
 
-/** The key of the list of saved chats (newest first), and the key of the list before chats had their own keys. */
 export const CHAT_INDEX_KEY = 'sf:chats';
 export const LEGACY_SESSIONS_KEY = 'saved_sessions';
 
-/** How many chats Recent tasks keeps. */
 export const MAX_SAVED_CHATS = 50;
 
-/** The summary of a chat for the index. */
 function chatSummary(chat: SavedSession): SavedSessionSummary {
   const { history: _h, planSteps: _p, records: _r, pageUrl: _u, ...rest } = chat;
   return rest;
@@ -203,11 +133,6 @@ function localRemove(keys: string[]): Promise<void> {
   return new Promise((resolve) => area.remove(keys, () => resolve()));
 }
 
-/**
- * The index of saved chats. A list from before chats had their own keys (saved_sessions, one
- * array of whole chats) is read once and moved: each chat to its own key, the index written, the
- * old array removed.
- */
 async function chatIndex(): Promise<SavedSessionSummary[]> {
   const res = await localGet<Record<string, unknown>>([CHAT_INDEX_KEY, LEGACY_SESSIONS_KEY]);
   const index = Array.isArray(res[CHAT_INDEX_KEY]) ? (res[CHAT_INDEX_KEY] as SavedSessionSummary[]) : null;
@@ -216,8 +141,6 @@ async function chatIndex(): Promise<SavedSessionSummary[]> {
   const moved = legacy.filter((s) => s && typeof s.id === 'string').slice(0, MAX_SAVED_CHATS);
   const known = new Set((index || []).map((s) => s.id));
   const merged = [...(index || []), ...moved.filter((s) => !known.has(s.id)).map(chatSummary)].slice(0, MAX_SAVED_CHATS);
-  // Only chats that survive the index cut get a key: one written for a chat the cut dropped
-  // would hold its rows forever under a key nothing lists, reads or cleans.
   const surviving = new Set(merged.map((s) => s.id));
   const items: Record<string, unknown> = { [CHAT_INDEX_KEY]: merged };
   for (const chat of moved) if (!known.has(chat.id) && surviving.has(chat.id)) items[chatKey(chat.id)] = chat;
@@ -226,7 +149,6 @@ async function chatIndex(): Promise<SavedSessionSummary[]> {
   return merged;
 }
 
-/** Index writes of this context, one after the other: two saves never read the same old index. */
 let chatWrites: Promise<unknown> = Promise.resolve();
 function serialized<T>(work: () => Promise<T>): Promise<T> {
   const next = chatWrites.then(work, work);
@@ -241,13 +163,8 @@ interface ModelsCacheEntry {
 
 type ModelsCache = Record<string, ModelsCacheEntry>;
 
-/** The context windows the model lists named, by provider id, then model id (llm/models.ts). */
 type ModelsCtxCache = Record<string, Record<string, number>>;
 
-/**
- * The user's windows after a save: the stored ones, with each key of `patch` set to its value, or
- * removed when the value is null, 0 or not a number above zero. No patch keeps the stored map.
- */
 export function mergeContextWindow(stored: Record<string, number> | undefined, patch: Record<string, number | null> | undefined): Record<string, number> {
   const out: Record<string, number> = { ...(stored || {}) };
   for (const [key, value] of Object.entries(patch || {})) {
@@ -278,17 +195,9 @@ export const DEFAULT_SETTINGS: Settings = {
   customProviders: {},
   temperature: 0.1,
   maxSteps: 250,
-  // Hard ceiling on a single LLM call. A provider that accepts the connection and never
-  // answers would otherwise park the agent loop indefinitely, with the keepalive actively
-  // preventing Chrome from reclaiming the worker.
   llmTimeoutMs: 120000,
-  // Ollama-only. Ollama caps context at 4096 tokens by default no matter how large a window
-  // the model actually supports, and truncates overflow from the FRONT - silently discarding
-  // the system prompt and the user's goal. 8192 comfortably fits a page snapshot plus history.
+  // Ollama defaults to 4096 context tokens and truncates overflow from the front.
   ollamaNumCtx: 8192,
-  // Ceiling on a single local generation, so a model that starts rambling cannot stall a step.
-  // Exposed in Settings; 8192 is generous enough that a real answer is unlikely to hit it,
-  // while still bounding a model that never stops.
   ollamaNumPredict: 8192,
   actionDelayMs: 1000,
   autoScroll: true,
@@ -302,11 +211,6 @@ export const DEFAULT_SETTINGS: Settings = {
   research: { ...DEFAULT_RESEARCH },
 };
 
-/**
- * Drops stored custom-provider entries this build cannot use: a missing or unusable id, an id that
- * shadows a built-in, or a protocol outside the two known ones. Everything else is kept as stored,
- * because a newer build may have written fields this build does not know.
- */
 export function sanitizeCustomProviders(raw: unknown): CustomProviders {
   const source = (raw && typeof raw === 'object') ? (raw as Record<string, unknown>) : {};
   const out: CustomProviders = {};
@@ -325,7 +229,6 @@ export function sanitizeCustomProviders(raw: unknown): CustomProviders {
       models: Array.isArray(entry.models) ? entry.models.filter((m): m is string => typeof m === 'string') : [],
       keyMode: entry.keyMode === 'none' ? 'none' : 'apiKey',
       ...(typeof entry.llmTimeoutMs === 'number' && entry.llmTimeoutMs > 0 ? { llmTimeoutMs: entry.llmTimeoutMs } : {}),
-      // SEC-9: the plain-http opt-in is part of the descriptor, so a read keeps it.
       ...(entry.allowInsecureHttp === true ? { allowInsecureHttp: true } : {}),
       createdAt: typeof entry.createdAt === 'number' ? entry.createdAt : 0,
       updatedAt: typeof entry.updatedAt === 'number' ? entry.updatedAt : 0
@@ -334,11 +237,6 @@ export function sanitizeCustomProviders(raw: unknown): CustomProviders {
   return out;
 }
 
-/**
- * The stored provider id, healed when it names nothing this build knows: a built-in, or a custom
- * provider that survived sanitization. A hand-edited storage file can otherwise leave the whole
- * run path throwing "Unsupported LLM provider" at Start Task.
- */
 function resolveStoredProvider(raw: unknown, customProviders: CustomProviders): string {
   const provider = typeof raw === 'string' && raw ? raw : DEFAULT_SETTINGS.provider;
   if ((BUILTIN_PROVIDER_IDS as readonly string[]).includes(provider)) return provider;
@@ -346,21 +244,15 @@ function resolveStoredProvider(raw: unknown, customProviders: CustomProviders): 
   return DEFAULT_SETTINGS.provider;
 }
 
-/** The fields the Add/Edit dialog sends. `protocol` stays a string here so the validator can word its own error. */
 export interface CustomProviderInput {
   id: string;
   displayName?: string;
   protocol: string;
   baseUrl: string;
   models?: string[];
-  /** The credential for this endpoint. Given, it wins; absent, the stored one stays. Never stored in the descriptor. */
   apiKey?: string;
   keyMode?: string;
   llmTimeoutMs?: number;
-  /**
-   * SEC-9: the user's explicit yes to calling this endpoint over plain http although it carries a
-   * key. Given, it is stored on this provider's descriptor; absent, the stored value stands.
-   */
   allowInsecureHttp?: boolean;
 }
 
@@ -368,20 +260,6 @@ export type SaveCustomProviderResult =
   | { ok: true; settings: Settings; provider: CustomProvider; keyCleared: boolean }
   | { ok: false; error: string };
 
-/**
- * Validates one custom provider at the storage boundary and writes it with its credential.
- *
- * Rules checked here (the UI mirrors the messages, this is the gate):
- * - the id matches CUSTOM_PROVIDER_ID_PATTERN, is unique (the same id is an update), and never
- *   shadows a built-in;
- * - the protocol is one of the two known values;
- * - the base URL parses as http or https;
- * - a model id carries no newline or tab, which would corrupt the picker and the logs.
- *
- * The origin rule: when an EDIT changes the endpoint origin (scheme, host or port), the stored key
- * is cleared, so a live credential is never sent to a host the user did not choose. A path-only
- * change (/v1 to /api/v1) keeps the key. `keyCleared` says which happened, for the panel's note.
- */
 export async function saveCustomProvider(input: CustomProviderInput): Promise<SaveCustomProviderResult> {
   const id = (input.id || '').trim();
   if (!CUSTOM_PROVIDER_ID_PATTERN.test(id)) {
@@ -422,8 +300,6 @@ export async function saveCustomProvider(input: CustomProviderInput): Promise<Sa
     return { ok: false, error: `At most ${MAX_CUSTOM_PROVIDERS} custom providers can be stored. Delete one to add another.` };
   }
 
-  // SEC-9: a plain-http endpoint that would carry an API key is refused, unless the host is the
-  // user's own machine (loopback) or the user turned allowInsecureHttp on for THIS server.
   const previousConfig = current.providerConfigs?.[id] || {};
   const originChanged = Boolean(existing) && endpointOriginOf(existing!.baseUrl) !== endpointOriginOf(baseUrl);
   const keyWillBeCarried = input.keyMode !== 'none'
@@ -445,8 +321,6 @@ export async function saveCustomProvider(input: CustomProviderInput): Promise<Sa
     models,
     keyMode: input.keyMode === 'none' ? 'none' : 'apiKey',
     ...(typeof input.llmTimeoutMs === 'number' && input.llmTimeoutMs > 0 ? { llmTimeoutMs: input.llmTimeoutMs } : {}),
-    // SEC-9: the opt-in lives on the descriptor, so it covers this server and no other. An edit
-    // without the tick drops a stored opt-in, and the call-time guard refuses again.
     ...(input.allowInsecureHttp === true ? { allowInsecureHttp: true } : {}),
     createdAt: existing?.createdAt || now,
     updatedAt: now
@@ -454,9 +328,6 @@ export async function saveCustomProvider(input: CustomProviderInput): Promise<Sa
 
   const customProviders: CustomProviders = { ...(current.customProviders || {}), [id]: provider };
 
-  // The credential lives in providerConfigs[id], as for every provider. A key given in the input
-  // wins (it gets the same cleanup getApiKey applies on read); a key not mentioned stays. The
-  // origin rule clears it when the endpoint host changes, and keeps it for a path-only correction.
   const inputKey = typeof input.apiKey === 'string'
     ? input.apiKey.trim().replace(/^Bearer\s+/i, '').replace(/^["']|["']$/g, '')
     : undefined;
@@ -479,9 +350,6 @@ export async function saveCustomProvider(input: CustomProviderInput): Promise<Sa
 }
 
 export const Storage = {
-  /**
-   * Load user settings with merged providerConfigs and active provider fallback sync
-   */
   async getSettings(): Promise<Settings> {
     return new Promise((resolve) => {
       if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
@@ -491,15 +359,12 @@ export const Storage = {
       chrome.storage.local.get<{ agent_settings?: Partial<Settings> }>(['agent_settings'], (result) => {
         const loaded = result.agent_settings || {};
         delete (loaded as any).engine;
-        // One-time migration: if stored maxSteps is 25 (the old default), upgrade to 250 for long-horizon runs
         if (loaded.maxSteps === 25) {
           loaded.maxSteps = 250;
         }
         const mergedConfigs: ProviderConfigs = { ...DEFAULT_PROVIDER_CONFIGS, ...(loaded.providerConfigs || {}) };
         const customProviders = sanitizeCustomProviders(loaded.customProviders);
         const provider = resolveStoredProvider(loaded.provider, customProviders);
-        // One-time migration: if stored provider is nvidia and has no per-provider llmTimeoutMs,
-        // write the NVIDIA default timeout so existing settings get the new default.
         if (provider === 'nvidia' && !mergedConfigs.nvidia?.llmTimeoutMs) {
           if (!mergedConfigs.nvidia) {
             mergedConfigs.nvidia = { ...DEFAULT_PROVIDER_CONFIGS.nvidia };
@@ -527,28 +392,19 @@ export const Storage = {
           model,
           providerConfigs: mergedConfigs,
           customProviders,
-          // A nested object: the defaults fill what an older build never stored.
           research: normalizeResearch(loaded.research),
           contextWindow: loaded.contextWindow || {},
-          // Screenshots are always on: every new page load gets an image for clarity.
           screenshots: true
         };
         delete (settings as any).engine;
-        // Element badges have no setting any more (they are always off); an old stored flag is dropped.
         delete (settings as any).showElementBadges;
-        // There is no execute_js tool any more; an old stored opt-in is dropped.
         delete (settings as any).allowExecuteJs;
-        // SEC-9's plain-http opt-in moved onto each provider's descriptor; an old stored global
-        // flag is dropped, so no provider gains an opt-in its user never gave it.
         delete (settings as any).allowInsecureHttp;
         resolve(settings);
       });
     });
   },
 
-  /**
-   * Save user settings and update active provider configuration
-   */
   async saveSettings(newSettings: Partial<Settings>): Promise<Settings> {
     delete (newSettings as any).engine;
     const current = await this.getSettings();
@@ -559,7 +415,6 @@ export const Storage = {
       ...(newSettings.providerConfigs || {})
     };
 
-    // Store settings under the active provider key
     if (newSettings.apiKey !== undefined || newSettings.baseUrl !== undefined || newSettings.model !== undefined) {
       const existingTimeout = updatedProviderConfigs[activeProvider]?.llmTimeoutMs;
       updatedProviderConfigs[activeProvider] = {
@@ -572,7 +427,6 @@ export const Storage = {
       }
     }
 
-    // Only update per-provider timeout for nvidia; other providers use top-level llmTimeoutMs
     if (newSettings.llmTimeoutMs !== undefined && activeProvider === 'nvidia') {
       if (!updatedProviderConfigs.nvidia) {
         updatedProviderConfigs.nvidia = { ...DEFAULT_PROVIDER_CONFIGS.nvidia };
@@ -580,10 +434,7 @@ export const Storage = {
       updatedProviderConfigs.nvidia.llmTimeoutMs = newSettings.llmTimeoutMs;
     }
 
-    // Ensure active provider keys are synchronized top-level.
-    // The cast is deliberate: a provider that has no config (or a stored config that lacks a field)
-    // leaves the top-level value undefined, as it always did. chrome.storage drops undefined and
-    // getSettings falls back to the default on the next read.
+    // chrome.storage omits undefined settings so the next read uses defaults.
     const activeCfg = (updatedProviderConfigs[activeProvider] || {}) as ProviderConfig;
     const apiKey = newSettings.apiKey !== undefined ? newSettings.apiKey : activeCfg.apiKey;
     const baseUrl = newSettings.baseUrl !== undefined ? newSettings.baseUrl : activeCfg.baseUrl;
@@ -598,13 +449,11 @@ export const Storage = {
       model,
       providerConfigs: updatedProviderConfigs,
       contextWindow: mergeContextWindow(current.contextWindow, newSettings.contextWindow as Record<string, number | null> | undefined),
-      // A partial research object changes only the fields it names.
       research: normalizeResearch({ ...current.research, ...(newSettings.research || {}) })
     };
     delete (updated as any).engine;
 
     if (activeProvider === 'nvidia' && newSettings.llmTimeoutMs !== undefined) {
-      // Retain top-level global timeout so NVIDIA's provider-specific timeout does not pollute global settings
       updated.llmTimeoutMs = current.llmTimeoutMs !== undefined ? current.llmTimeoutMs : DEFAULT_SETTINGS.llmTimeoutMs;
     }
 
@@ -617,16 +466,13 @@ export const Storage = {
     });
   },
 
-  /**
-   * Get cached models for a provider key
-   */
   async getCachedModels(cacheKey: string): Promise<string[] | null> {
     return new Promise((resolve) => {
       if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
         chrome.storage.local.get<{ models_cache?: ModelsCache }>(['models_cache'], (res) => {
           const cache = res.models_cache || {};
           const entry = cache[cacheKey];
-          if (entry && (Date.now() - entry.timestamp < 3600000)) { // 1 hour cache
+          if (entry && (Date.now() - entry.timestamp < 3600000)) {
             resolve(entry.models);
           } else {
             resolve(null);
@@ -638,9 +484,6 @@ export const Storage = {
     });
   },
 
-  /**
-   * Save cached models for a provider key
-   */
   async saveCachedModels(cacheKey: string, models: string[]): Promise<void> {
     return new Promise((resolve) => {
       if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
@@ -658,7 +501,6 @@ export const Storage = {
     });
   },
 
-  /** The context windows a provider's model list named, by model id, or null when none is kept. */
   async getCachedContextWindows(provider: string): Promise<Record<string, number> | null> {
     return new Promise((resolve) => {
       if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
@@ -671,7 +513,6 @@ export const Storage = {
     });
   },
 
-  /** Keeps the context windows a provider's model list named (replacing that provider's earlier ones). */
   async saveCachedContextWindows(provider: string, windows: Record<string, number>): Promise<void> {
     return new Promise((resolve) => {
       if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
@@ -686,12 +527,6 @@ export const Storage = {
     });
   },
 
-  /**
-   * Drop every model-cache entry of one provider: its `models_cache` keys (they all start with
-   * "<id>_") and its `models_ctx_cache` entry (keyed by the provider id). Used when a custom
-   * provider is deleted, so no stale list or stale context window of a gone endpoint is served
-   * on the next open.
-   */
   async purgeCachedModelsForProvider(providerId: string): Promise<void> {
     return new Promise((resolve) => {
       if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
@@ -722,11 +557,6 @@ export const Storage = {
     });
   },
 
-  /**
-   * Delete a user-added provider: the descriptor, its credentials, its model cache, and (when it
-   * was the active provider) the active selection, which falls back to the built-in default.
-   * History is left untouched, so a past run keeps its label. Null when the id is not custom.
-   */
   async deleteCustomProvider(providerId: string): Promise<Settings | null> {
     const current = await this.getSettings();
     if (!current.customProviders || !current.customProviders[providerId]) return null;
@@ -735,16 +565,11 @@ export const Storage = {
     const providerConfigs: ProviderConfigs = { ...current.providerConfigs };
     delete providerConfigs[providerId];
     const wasActive = current.provider === providerId;
-    // saveSettings cannot express a key deletion (its providerConfigs merge only adds or replaces
-    // entries), so the removal is written directly, with the same top-level synchronization
-    // saveSettings applies for the provider that is active afterwards.
     const provider = wasActive ? DEFAULT_SETTINGS.provider : current.provider;
     const activeCfg = providerConfigs[provider] || {};
     const updated: Settings = {
       ...current,
       provider,
-      // undefined is dropped by chrome.storage, so the top-level values of the deleted provider
-      // (if it was active) stop shadowing the defaults of the provider that takes over.
       apiKey: activeCfg.apiKey ?? undefined,
       baseUrl: activeCfg.baseUrl ?? undefined,
       model: activeCfg.model ?? undefined,
@@ -759,16 +584,13 @@ export const Storage = {
       chrome.storage.local.set({ agent_settings: updated }, () => resolve());
     });
     await this.purgeCachedModelsForProvider(providerId);
-    // Read back through the normal path, so the caller sees exactly what a reload would see.
     return this.getSettings();
   },
 
-  /** The saved chats as Recent tasks lists them (newest first), without their rows. */
   async getSessions(): Promise<SavedSessionSummary[]> {
     return serialized(() => chatIndex());
   },
 
-  /** One saved chat with its rows, or null when it is not kept (any more). */
   async getChat(id: string): Promise<SavedSession | null> {
     if (!id) return null;
     await serialized(() => chatIndex());
@@ -777,10 +599,6 @@ export const Storage = {
     return chat && typeof chat === 'object' && chat.id === id ? chat : null;
   },
 
-  /**
-   * Saves a chat under its own key and puts it at the top of the index. The oldest chats past
-   * MAX_SAVED_CHATS are removed with their keys.
-   */
   async saveChat(chat: SavedSession): Promise<void> {
     if (!chat || typeof chat.id !== 'string' || !chat.id) return;
     await serialized(async () => {
@@ -794,7 +612,6 @@ export const Storage = {
     });
   },
 
-  /** Deletes a saved chat: its rows (and the records they keep) and its index entry. */
   async deleteSession(sessionId: string): Promise<SavedSessionSummary[]> {
     return serialized(async () => {
       const index = await chatIndex();
