@@ -19,6 +19,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -41,6 +42,21 @@ function filesUnder(dir: string, out: string[] = []): string[] {
 }
 
 const shippedFiles = (): string[] => SHIPPED.flatMap((d) => filesUnder(join(ROOT, d)));
+
+function sourceTextFiles(): string[] {
+  const extensions = /\.(ts|js|mjs|css|html)$/;
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (['node_modules', 'dist', '.git'].includes(entry.name)) continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && extensions.test(entry.name)) out.push(full);
+    }
+  };
+  for (const dir of SHIPPED) walk(join(ROOT, dir));
+  return out;
+}
 
 /** Every file under `dir` as paths relative to it, whatever the extension: a leak can be an .html or a .json. */
 function allFilesUnder(dir: string, prefix = '', out: string[] = []): string[] {
@@ -384,70 +400,82 @@ test('a type-suppression directive appears at the named sites and nowhere else, 
   assert.ok(/@ts-ignore\b/.test('const x = 1;\n// @ts-ig' + 'nore - sample\n'), 'the directive pattern must match a planted directive');
 });
 
-/**
- * Fixture page names that only the harness has.
- * A product for browsing the web has legitimate reasons to say "cookie" or "index", so the guard
- * uses the page file names, which exist solely because a test needed a page.
- */
-const GENERIC_PAGE_NAMES = ['index.html', 'error.html', 'popup.html', 'popup-child.html'];
-
-/** The fixture page names, read from the folder, so a new fixture is guarded without an edit here. */
-function fixturePageNames(): string[] {
-  const out: string[] = [];
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        if (entry.name !== 'node_modules') walk(join(dir, entry.name));
-      } else if (entry.name.endsWith('.html') && !GENERIC_PAGE_NAMES.includes(entry.name)) {
-        out.push(entry.name);
-      }
-    }
-  };
-  walk(join(ROOT, 'tests', 'fixtures'));
-  return out;
-}
-
-test('no markdown file has an em dash, the one style rule that is a single character', () => {
-  // The rules file says a plain dash, and the em dash is the one rule in this file a scanner can
-  // check with no judgement at all. It is enforced here because the rule is otherwise trust-based.
-  const carveOut = ['docs/plan-2026-10-19-sidepanel-streaming.md']; // quotes a captured model reply; the dash is inside the quote
-  const files: string[] = [];
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (['node_modules', '.git', 'dist', 'verification-runs'].includes(entry.name)) continue;
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.name.endsWith('.md')) files.push(full);
-    }
-  };
-  walk(ROOT);
-  assert.ok(files.length >= 20, `only ${files.length} markdown files found: the scan is not looking properly`);
+test('markdown and source files have no em dash', () => {
+  const files = repositoryMarkdownFiles();
+  assert.ok(files.length >= 8, `only ${files.length} repository markdown files found: the scan is not looking properly`);
   const found: string[] = [];
   for (const file of files) {
     const rel = relative(ROOT, file).split(sep).join('/');
-    if (carveOut.includes(rel)) continue;
+    readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
+      if (line.includes('\u2014')) found.push(`${rel}:${i + 1}`);
+    });
+  }
+  for (const file of sourceTextFiles()) {
+    const rel = relative(ROOT, file).split(sep).join('/');
     readFileSync(file, 'utf8').split('\n').forEach((line, i) => {
       if (line.includes('\u2014')) found.push(`${rel}:${i + 1}`);
     });
   }
   assert.deepEqual(found, [], `an em dash is not allowed, use a plain dash: ${found.join(', ')}`);
-  // The scan is not decorative.
-  // The scan is not decorative. Spelled as an escape so this file holds no em dash either.
   assert.ok('a rule \u2014 enforced'.includes('\u2014'), 'the em dash literal must be the character the rule is about');
 });
 
-test('no shipped code names a fixture page, so a red task cannot be patched with a special case', () => {
-  const names = fixturePageNames();
-  assert.ok(names.length >= 6, `only ${names.length} fixture pages found: the scan is looking in the wrong folder`);
+function e2eBannedTerms(): { tasks: string[]; pages: string[]; sites: string[] } {
+  const readme = readFileSync(join(ROOT, 'tests', 'e2e', 'README.md'), 'utf8');
+  const tasks = [...readme.matchAll(/`((?:web|held|sealed)-[a-z0-9-]+)`/g)].map((match) => match[1]);
+  const pages = [...readme.matchAll(/`([a-z0-9_-]+\.html)`/gi)].map((match) => match[1]);
+  const siteList = readme.match(/on real banners \(([^)]+)\)/i)?.[1] || '';
+  const sites = siteList.match(/(?:[a-z0-9-]+\.)+[a-z]{2,}/gi) || [];
+  return {
+    tasks: [...new Set(tasks)],
+    pages: [...new Set(pages)],
+    sites: [...new Set(sites.map((site) => site.toLowerCase()))],
+  };
+}
+
+function bannedTermsIn(text: string, terms: string[]): string[] {
+  const lower = text.toLowerCase();
+  return terms.filter((term) => lower.includes(term.toLowerCase()));
+}
+
+test('shipped code does not name an e2e page, task, or test site', () => {
+  const { tasks, pages, sites } = e2eBannedTerms();
+  assert.ok(tasks.length >= 10, `only ${tasks.length} task names found in the e2e README`);
+  assert.ok(pages.length >= 4, `only ${pages.length} page names found in the e2e README`);
+  assert.ok(sites.length >= 5, `only ${sites.length} site names found in the e2e README`);
   const files = shippedFiles();
   const found: string[] = [];
+  const terms = [...tasks, ...pages, ...sites];
   for (const file of files) {
-    const code = withoutComments(readFileSync(file, 'utf8'));
-    for (const name of names) if (code.includes(name)) found.push(`${relative(ROOT, file)} names ${name}`);
+    const raw = readFileSync(file, 'utf8');
+    for (const term of bannedTermsIn(raw, terms)) found.push(`${relative(ROOT, file)} names ${term}`);
   }
-  assert.deepEqual(found, [], 'a fixture name in shipped code is a special case for one test page, which is the cheat the rules file forbids');
+  assert.deepEqual(found, [], 'a shipped file must not special-case a page, task, or test site');
+  for (const term of terms) assert.deepEqual(bannedTermsIn(`const value = '${term}';`, [term]), [term]);
+  assert.deepEqual(bannedTermsIn('const value = "ordinary browsing";', terms), []);
+});
 
-  // And the scan can see one: prove it on a sample rather than trusting `found` being empty.
-  assert.ok(`const el = document.querySelector('#x'); // ${names[0]}`.includes(names[0]), 'the sample must contain a fixture name for this to mean anything');
+function changelogPaths(paths: string[]): string[] {
+  return paths.map((file) => file.replace(/\\/g, '/')).filter((file) => file.split('/').at(-1) === 'CHANGELOG.md');
+}
+
+function repositoryChangedPaths(): string[] {
+  const options = { cwd: ROOT, encoding: 'utf8' as const };
+  const diff = execFileSync('git', ['diff', '--name-only', '--no-renames', 'HEAD', '--'], options).trim();
+  const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], options).trim();
+  return [...diff.split('\n'), ...untracked.split('\n')].filter(Boolean);
+}
+
+function repositoryMarkdownFiles(): string[] {
+  const options = { cwd: ROOT, encoding: 'utf8' as const };
+  const paths = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], options).trim().split('\n').filter(Boolean);
+  return paths.filter((file) => file.endsWith('.md') && existsSync(join(ROOT, file))).map((file) => join(ROOT, file));
+}
+
+test('verification rejects a changed changelog without editing one', () => {
+  assert.deepEqual(changelogPaths(['src/background/worker.ts', 'docs/CHANGELOG.md', 'CHANGELOG.md']), ['docs/CHANGELOG.md', 'CHANGELOG.md']);
+  assert.deepEqual(changelogPaths(['src/background/worker.ts', 'docs/changelog.md']), []);
+  const changed = changelogPaths(repositoryChangedPaths());
+  assert.deepEqual(changed, [], `never edit a changelog: ${changed.join(', ')}`);
 });
 
