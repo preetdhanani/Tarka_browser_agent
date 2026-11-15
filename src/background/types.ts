@@ -1,14 +1,6 @@
-// src/background/types.ts
-// Consolidated type definitions extracted from graph/state.ts, graph/workerState.ts,
-// and agent/finishPolicy.ts. These are the only types still referenced by the
-// simplified MCP-based runner (AgentRunner.ts, runtimeRegistry.ts, execute.ts,
-// snapshot.ts).
-//
-// Erasable TypeScript only (no enums, no parameter properties).
 
 import type { EffortLevel } from './llm/effort.ts';
 
-// ---------- small unions ----------
 export type RunStatus = 'idle' | 'running' | 'paused' | 'stopped' | 'error';
 export type ModelTier = 'small' | 'large';
 export type Level = 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -21,40 +13,28 @@ export type PageType =
 export type Effect =
   | 'url_changed' | 'dom_changed' | 'value_set' | 'focus_changed' | 'none' | 'unknown';
 
-/**
- * What an action did to the page, as facts the content script measured around it (the effect
- * probe in content/content.js). `null` in a "changed" field means it could not be measured: an
- * effect that cannot be measured is reported as unknown, never as changed.
- */
 export interface EffectDetail {
-  /** False when the page had no baseline to compare with (a new document after the action). */
   base: boolean;
   url: string;
   urlChanged: boolean | null;
-  /** The focused element after the action; null when nothing has focus. */
   focus: { label: string; editable: boolean; caretLine: string | null; text: string | null } | null;
   focusChanged: boolean | null;
   scroll: { x: number; y: number };
   scrollChanged: boolean | null;
-  /** The scroll container of the focused element (or of the viewport centre), measured before and after. */
   container: { label: string; top: number; moved: number | null } | null;
   textHash: string;
   textChanged: boolean | null;
-  /** The visible lines that appeared and went away, cut to 400 characters together. */
   added: string;
   removed: string;
-  /** How many characters of visible text appeared plus went away, before the cut. */
   changedChars: number;
 }
 
-/** A modifier key held with press_key. */
 export type KeyModifier = 'ctrl' | 'shift' | 'alt' | 'meta';
 export type EndReason =
   | 'all_subgoals_done' | 'goal_achieved' | 'partial' | 'unverified' | 'stopped_early'
   | 'no_subgoal_completed' | 'max_steps' | 'model_unusable' | 'dom_error'
   | 'plan_rejected' | 'stopped' | 'interrupted' | 'closed' | 'error';
 
-// Orchestrator / worker node names (kept as type unions only)
 export type OrchestratorNode =
   | 'intake' | 'profile' | 'plan' | 'hold' | 'alloc' | 'sched' | 'site'
   | 'summary' | 'reflect' | 'compile' | 'offer' | 'finalize';
@@ -63,11 +43,9 @@ export type WorkerNode =
   | 'execute' | 'verify' | 'recover' | 'record' | 'worker_reflect';
 export type NodeName = OrchestratorNode | WorkerNode;
 
-// ---------- JSON-safe reducer envelopes ----------
 export type ListUpdate<T> = T[] | { $reset: T[] };
 export type MapUpdate<V> = { $set: Record<string, V | null> } | { $reset: Record<string, V> };
 
-// ---------- effort ----------
 export interface EffortProfile {
   level: Level;
   multiplier: number;
@@ -91,17 +69,12 @@ export interface EffortProfile {
   replanMaxRounds?: number;
   screenshotMode?: string;
 }
-/**
- * The effort of the running task: how hard the MODEL thinks (llm/effort.ts), never how many steps
- * it takes. `level` is what the task runs with; `requested` is what the composer sent.
- */
 export interface EffortChoice {
   requested: EffortLevel;
   level: EffortLevel;
   suggestedBy: 'user' | 'heuristic' | 'default';
 }
 
-// ---------- limits ----------
 export interface Limits {
   maxSteps: number;
   maxSystemActions: number;
@@ -109,12 +82,6 @@ export interface Limits {
   maxConsecutiveParseErrors: number;
 }
 
-// ---------- run stats ----------
-/**
- * The counts of one run (W2-R4): how many model calls it made, how many steps it used, and the
- * tokens in and out. Carried on the turn's closing row (withRunData), so a reopened chat keeps
- * the numbers of the turn it shows.
- */
 export interface RunStats {
   level: Level;
   modelCalls: number;
@@ -123,7 +90,6 @@ export interface RunStats {
   tokensOut?: number;
 }
 
-// ---------- plan and sites ----------
 export type Predicate =
   | { type: 'url_contains'; value: string }
   | { type: 'text_present'; value: string }
@@ -162,7 +128,6 @@ export interface PlanMeta {
   defaulted?: string[];
 }
 
-// ---------- findings ----------
 export interface Finding {
   id: string;
   siteId: string;
@@ -202,7 +167,6 @@ export interface BlockedSource {
   tries: number;
 }
 
-// ---------- control / human in the loop ----------
 export interface ControlSnapshot { pauseRequested: boolean; stopRequested: boolean }
 export interface TrailEntry { node: NodeName; step: number; at: number }
 
@@ -222,7 +186,6 @@ export type OrchestratorOutcome =
   | { kind: 'llm_failed'; error: string; node: 'plan' | 'reflect' }
   | { kind: 'aborted'; node: 'plan' | 'reflect' };
 
-// ---------- panel timeline ----------
 export type HistoryEntry =
   | { type: 'user_goal'; turn: number; prompt: string; timestamp: string; isNewRun: true }
   | { type: 'step_start'; step: number; url: string; pageTitle: string; elementCount: number;
@@ -231,9 +194,7 @@ export type HistoryEntry =
       rawResponse: string; mode?: PolicyMode }
   | { type: 'execution_result'; step: number; success: boolean; message?: string; error?: string;
       label?: string; submitted?: boolean; resultData?: unknown;
-      /** The id of the picture this step produced, when it took one. The bytes never go here. */
       imageId?: string;
-      /** The measured size of that picture, so the panel can size its slot before the bytes arrive. */
       imageWidth?: number; imageHeight?: number;
       via?: 'cdp' | 'synthetic' | 'background' | 'state'; effect?: Effect;
       verify?: 'ok' | 'no_effect' | 'failed' | 'stuck'; goal?: 'closer' | 'same' | 'away';
@@ -252,20 +213,13 @@ export type HistoryEntry =
   | { type: 'finish'; answer: string; outcome?: 'done' | 'partial' | 'blocked'; unconfirmed?: true; partial?: true; table?: any;
       runStats?: RunStats; offer?: any; stoppedEarly?: string; findings?: Finding[];
       audit?: any; evidence?: string; files?: Array<{ name: string; mime: string; content: string }>;
-      /** The run's save_data records, kept so the chat can go on from them (runSnapshot.withRunData). */
       records?: Array<Record<string, unknown>> }
   | { type: 'partial_result'; answer: string; table: any; reason: EndReason;
       runStats?: RunStats; offer?: any; findings?: Finding[];
       skippedSites?: Array<{ siteId: string; site: string; reason: string }>;
-      /** What an unfinished turn leaves for a resume: its records, its plan with marks, its last page. */
       records?: Array<Record<string, unknown>>; plan?: Array<{ text: string; status: string }>; pageUrl?: string }
-  /**
-   * The chat was compacted (mcp/chatChain.ts): `summary` stands for every turn before this row,
-   * `summarizedTurns` is how many that is, `auto` says the run did it because the chain was too long.
-   */
   | { type: 'chat_compacted'; summary: string; summarizedTurns: number; auto?: boolean; timestamp: string };
 
-// ---------- perception ----------
 export interface PageSig {
   url: string; title: string; elementCount: number;
   omittedCount: number;
@@ -274,7 +228,6 @@ export interface PageSig {
   scrollY: number; pageType: PageType;
 }
 
-// ---------- actions ----------
 export interface OneShot { label: string; text: string; step: number; note?: string }
 
 export type PageAction =
@@ -320,7 +273,6 @@ export interface ExecRecord { step: number; action: PageAction; signature: strin
 export interface VerifyResult { outcome: 'ok' | 'no_effect' | 'failed' | 'stuck';
   goal: 'closer' | 'same' | 'away' | null; detail: string }
 
-// ---------- element info ----------
 export interface ElementInfo {
   role: string; label: string;
   formKind?: 'search' | 'login' | 'checkout' | 'other';
@@ -332,7 +284,6 @@ export interface ElementInfo {
   formMethod?: 'get';
 }
 
-// ---------- site run / output ----------
 export interface CdpState { mode: 'off' | 'cdp' | 'synthetic'; reason: string | null; sticky: boolean }
 
 export interface SiteRun {
@@ -379,7 +330,6 @@ export interface SiteOut {
   finishSendBacks: number;
 }
 
-// ---------- finish policy ----------
 export type GateDecision = 'send_back' | 'annotate' | 'replace';
 
 export interface GateContext {
