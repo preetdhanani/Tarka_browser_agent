@@ -14,14 +14,14 @@
     "braces are on separate lines."
   ],
   "anyOrUnknown": 323,
-  "asCasts": 291,
+  "asCasts": 289,
   "asUnknownAs": 24,
   "emptyCatch": 69,
   "comments": {
     "src": 2637,
     "sidepanel": 647,
     "content": 1,
-    "scripts": 113
+    "scripts": 0
   },
   "timers": {
     "src/background/background.ts": {

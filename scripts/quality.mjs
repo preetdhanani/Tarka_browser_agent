@@ -1,16 +1,4 @@
-// The quality ratchet.
-//
-// A ban on `: any` in a codebase that already has hundreds of them is a fiction: the next agent
-// either ignores the rule or disables a check to get its work done. So the rule is a ratchet: never
-// add one, and lower the number when you touch the file. The floors live in
-// tests/quality-floor.json, so every drop is a line a reviewer sees in the diff.
-//
-//   node scripts/quality.mjs            compare the code against the floors, fail on growth
-//   node scripts/quality.mjs --where    also print where each metric is heaviest
-//   node scripts/quality.mjs --update   write the current counts (after you removed some)
-//
-// `tests/architectureBoundaries.test.ts` asserts that this script, the script entry and the CI step
-// are still wired together, so the guard cannot quietly stop running.
+
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,7 +8,7 @@ import { parseFragment } from 'parse5';
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const FLOOR_FILE = path.join(ROOT, 'tests', 'quality-floor.json');
 
-/** The folders that ship, plus the build scripts: the code a reader has to trust. */
+
 export const FOLDERS = ['src', 'sidepanel', 'content', 'scripts'];
 const COMMENT_EXTENSIONS = /\.(ts|js|mjs|css|html)$/;
 const SCRIPT_EXTENSIONS = /\.(ts|js|mjs)$/;
@@ -33,17 +21,7 @@ export const TIMER_HELPERS = new Set([
   'scripts/timing.mjs',
 ]);
 
-/**
- * What the rules say never to add.
- * Comments are stripped first, so a mention in prose is not counted as code.
- * The catch pattern allows a line break inside the braces, so a `catch (e) {\n}` counts too.
- * `as const` is not here on purpose: it narrows a literal, it is not an escape from the types.
- *
- * A label naming a token would be counted by its own scan, so the labels name the thing in words
- * and the regular expressions are built from parts. `npm run quality` printing `colon any` is the
- * price of a scan that cannot inflate itself, and `node scripts/quality.mjs --where` gives the real
- * tokens in the output.
- */
+
 export const METRICS = [
   { key: 'anyOrUnknown', label: 'colon any / colon unknown', re: new RegExp(String.fromCharCode(58) + '\\s*(?:' + ['any', 'unknown'].join('|') + ')\\b', 'g') },
   { key: 'asCasts', label: 'as casts', re: /\s+as\s+[A-Za-z_$][\w$.]*/g },
@@ -51,7 +29,7 @@ export const METRICS = [
   { key: 'emptyCatch', label: 'empty catch', re: /catch\s*(?:\([^)]*\))?\s*\{\s*\}/g },
 ];
 
-/** Every .ts / .js / .mjs file under FOLDERS. A violation is a violation in whichever language. */
+
 export function sourceFiles(dir = ROOT) {
   const out = [];
   const walk = (d) => {
@@ -284,12 +262,12 @@ export function timerCountsByFile(dir = ROOT) {
   return counts;
 }
 
-/** Block comments and whole-line comments gone, so an example in a comment is not counted as code. */
+
 export function withoutComments(text) {
   return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 }
 
-/** The current counts, plus the files they came from, so a pass is never a pass by reading nothing. */
+
 export function countQuality(dir = ROOT) {
   const counts = Object.fromEntries(METRICS.map((m) => [m.key, 0]));
   const files = sourceFiles(dir);
@@ -343,7 +321,7 @@ function readFloor() {
   return JSON.parse(fs.readFileSync(FLOOR_FILE, 'utf8'));
 }
 
-/** Count the files that hold each metric, so "heaviest in" stays true without writing it down. */
+
 export function heaviest(dir = ROOT, limit = 4) {
   const per = {};
   for (const file of sourceFiles(dir)) {

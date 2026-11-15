@@ -1,53 +1,6 @@
 #!/usr/bin/env node
-/**
- * evalscan: fails if dist/ reaches eval() or the Function constructor.
- *
- * Why: the extension pages and the service worker run under the MV3 CSP (`script-src 'self'`),
- * which blocks eval and the Function constructor. A library that probes them once (as zod did,
- * with `new Function('')`) costs a CSP violation event, and a real call breaks a feature only in
- * the packaged extension.
- *
- * How: every .js file under dist/ is parsed (with Vite's parser, so comments and strings never
- * count), each hit is mapped back to its ORIGINAL source file and line through the sourcemap
- * next to the file, and the result is compared with ALLOWLIST below. Any hit that is not on the
- * list exits 1. It is a static scan, and it is a guard against an accident, not a wall against
- * someone who wants to hide a call.
- *
- * What counts as a hit:
- *   - a call or `new` of eval or Function, however the callee is written: eval(x), new Function(x),
- *     (0, eval)(x), new (Function)(x), globalThis.Function(x), window['eval'](x)
- *   - any other USE of the global `eval` or `Function` as a value: an alias (`const F = Function`),
- *     Reflect.construct(Function, ...), Function.call/apply/bind(...),
- *     eval.call(...), a tagged template (Function`x`), Function.prototype.constructor, and the
- *     same through globalThis, window, self or this (`const F = globalThis.Function`)
- *   - setTimeout, setInterval or setImmediate called with a string or template literal
- *   Harmless uses are not hits: `x instanceof Function`, `typeof Function`, `x === Function`, and
- *   `Function.prototype.<name>` where the name is not `constructor` (toString, call, apply, bind).
- *   A local variable that happens to be called Function is a false alarm on purpose (fail closed).
- *
- * What it does NOT catch (each one was tried and is not seen):
- *   - `.constructor(...)` on anything but Function.prototype: (async function () {}).constructor(x),
- *     fn.constructor(x), and a destructured constructor: `const { constructor: F } = () => {}`
- *   - a name built at run time: `globalThis['Fun' + 'ction'](...)`, `window[name](...)`,
- *     Reflect.get(globalThis, 'Function')
- *   - setTimeout(variable) where the variable holds a string, the scan only sees literals
- *   - import('data:...') and other dynamic imports of a URL: scripts/build.mjs rejects any dynamic
- *     import in the worker and in content scripts, but not in the side panel page
- *
- * The allowlist is narrow but not exact. An entry matches the ORIGINAL file, the kind of hit, a
- * snippet that must be in the ORIGINAL source line of the hit, and a maximum count. It does not know the enclosing
- * function or context: a second call with the same snippet on another line of that file is
- * allowed until the count is used up, even if it sits in a different function and does something
- * else. Raise `max` only after reading the new call.
- *
- * The maps are read, never scanned. Build first (`npm run build`), because dist/ is what ships.
- * The build writes them with sourcemap 'hidden': the .map files are next to the built files, but
- * the built files have no sourceMappingURL line. loadMap() reads `<file>.map` and nothing else, and
- * a built file that does end in a sourceMappingURL comment is an error: the build changed, and a
- * comment (or a string that looks like one) must not choose which map the hits are attributed by.
- * A file with no map is still scanned, but its hits point at the built file and no allowlist entry
- * matches them.
- */
+
+
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -56,31 +9,13 @@ import { parseSync } from 'vite';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = path.join(ROOT, 'dist');
 
-/**
- * Hits that are on purpose. An entry is narrow: one original source file, plus the kind of hit,
- * plus a snippet that must appear on the ORIGINAL source line of the hit (the line the map points
- * at), plus the number of times it may occur. A second copy of the snippet in that file, the same
- * snippet in another file, or another kind of hit on that line is a new hit and fails. Add an
- * entry only with a reason.
- *
- * The list is empty: no dependency that ships in the bundle probes eval or the Function
- * constructor, so every hit fails the scan. When a dependency needs an entry, add it with a
- * reason, an exact version pin, and a test here.
- *
- * An entry would name a file under node_modules/. That is what keeps the list from
- * hiding a hit in our own sources: a hit in src/ or content/ has a different file, so
- * no library entry can match it (tests/evalscan.test.js pins that). Never add an entry for our own
- * code, fix the code. A library entry says why the call cannot run or why it is harmless, and names
- * the version that was read. Versions are exact pins, so an entry goes stale loudly (its snippet or
- * kind stops matching, and the hit fails) when an upgrade changes the line.
- */
+
 export const ALLOWLIST = [];
 
-// ---- sourcemap reading ----------------------------------------------------------------------
 
 const BASE64 = new Map([...'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'].map((c, i) => [c, i]));
 
-/** One base64 VLQ segment -> its numbers. */
+
 function decodeVlq(segment) {
   const numbers = [];
   let value = 0;
@@ -100,7 +35,7 @@ function decodeVlq(segment) {
   return numbers;
 }
 
-/** `mappings` -> per generated line, the segments [generatedColumn, sourceIndex, sourceLine, sourceColumn] in column order. */
+
 function decodeMappings(mappings) {
   const lines = [];
   let source = 0;
@@ -112,7 +47,7 @@ function decodeMappings(mappings) {
     for (const raw of line ? line.split(',') : []) {
       const n = decodeVlq(raw);
       column += n[0];
-      if (n.length < 4) continue; // a segment with no source
+      if (n.length < 4) continue;
       source += n[1];
       sourceLine += n[2];
       sourceColumn += n[3];
@@ -123,14 +58,10 @@ function decodeMappings(mappings) {
   return lines;
 }
 
-/** A `//# sourceMappingURL=` comment on the last non-empty line of a built file: where a real one always is. */
+
 const TRAILING_MAP_COMMENT = /^[ \t]*\/\/[#@][ \t]*sourceMappingURL=/;
 
-/**
- * The map that belongs to a built file, or null: always `<file>.map`. The map is never taken from a comment inside the
- * code, because that could be a string of our own code that names a forged map. A built file that ends in such a
- * comment is refused, since the build is meant to write hidden maps (vite.config.mjs).
- */
+
 export function loadMap(file, code) {
   const lastLine = code.trimEnd().split('\n').pop() ?? '';
   if (TRAILING_MAP_COMMENT.test(lastLine)) {
@@ -148,12 +79,7 @@ export function loadMap(file, code) {
   };
 }
 
-/**
- * Where a generated (line, column), both 0-based, comes from: { file, line, column, text }, or
- * null when the map has nothing on that line. The segment at or before the column wins. A call
- * such as `(0, eval)(x)` starts on a bracket that has no segment of its own, so then the first
- * segment after the column is used.
- */
+
 function originalPosition(map, line, column) {
   let found = null;
   for (const segment of map.lines[line] || []) {
@@ -176,7 +102,6 @@ function displayPath(abs) {
   return (rel.startsWith('..') ? abs : rel).split(path.sep).join('/');
 }
 
-// ---- finding the hits -----------------------------------------------------------------------
 
 const DANGEROUS = new Set(['eval', 'Function']);
 const GLOBAL_OBJECTS = new Set(['globalThis', 'window', 'self', 'global', 'top', 'parent', 'frames']);
@@ -185,7 +110,7 @@ const COMPARISONS = new Set(['instanceof', '===', '!==', '==', '!=']);
 const FUNCTION_LIKE = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
 const MODULE_NAMES = new Set(['ImportSpecifier', 'ImportDefaultSpecifier', 'ImportNamespaceSpecifier', 'ExportSpecifier', 'ExportNamespaceSpecifier']);
 
-/** Every node of a parsed program with the path up to the root ({ node, key, up }), without recursion (minified bundles can nest very deep). */
+
 function* walk(root) {
   const stack = [{ node: root, key: null, up: null }];
   while (stack.length) {
@@ -202,7 +127,7 @@ function* walk(root) {
   }
 }
 
-/** The node a callee really is: parentheses, `?.` and `(0, x)` peeled off. */
+
 function peel(callee) {
   for (;;) {
     if (callee.type === 'ParenthesizedExpression' || callee.type === 'ChainExpression') callee = callee.expression;
@@ -211,7 +136,7 @@ function peel(callee) {
   }
 }
 
-/** The name a member expression reads: a.b -> "b", a['b'] -> "b", anything computed at run time -> null. */
+
 function memberName(member) {
   const { property } = member;
   if (!member.computed && property.type === 'Identifier') return property.name;
@@ -219,7 +144,7 @@ function memberName(member) {
   return null;
 }
 
-/** The name a callee ends in: eval, window.eval, (0, eval), globalThis['Function'] and so on. */
+
 function calleeName(callee) {
   const node = peel(callee);
   if (node.type === 'Identifier') return node.name;
@@ -227,13 +152,13 @@ function calleeName(callee) {
   return null;
 }
 
-/** Is this member expression `globalThis.x`, `window.x`, `self.x`, `this.x` (the ways to reach a global by name)? */
+
 function onGlobalObject(member) {
   const object = peel(member.object);
   return object.type === 'ThisExpression' || (object.type === 'Identifier' && GLOBAL_OBJECTS.has(object.name));
 }
 
-/** True when an identifier at this position is a NAME (a property, a label, a declaration), not a use of the global. */
+
 function isNotAReference({ node, key, up }) {
   const parent = up.node;
   const grand = up.up && up.up.node;
@@ -243,7 +168,7 @@ function isNotAReference({ node, key, up }) {
   if (MODULE_NAMES.has(parent.type)) return true;
   if (['LabeledStatement', 'BreakStatement', 'ContinueStatement'].includes(parent.type) && key === 'label') return true;
   if (parent.type === 'MetaProperty') return true;
-  // Declarations and patterns: this makes a new binding (or assigns into a pattern), it does not read the global.
+
   if (parent.type === 'VariableDeclarator' && key === 'id') return true;
   if ((FUNCTION_LIKE.has(parent.type) || parent.type === 'ClassDeclaration' || parent.type === 'ClassExpression') && (key === 'id' || key === 'params')) return true;
   if (parent.type === 'CatchClause' && key === 'param') return true;
@@ -253,30 +178,30 @@ function isNotAReference({ node, key, up }) {
   return false;
 }
 
-/** A use that cannot create code: `x instanceof Function`, `typeof Function`, `x === Function`. */
+
 function isComparison(up) {
   const parent = up.up.node;
   return (parent.type === 'BinaryExpression' && COMPARISONS.has(parent.operator)) || (parent.type === 'UnaryExpression' && parent.operator === 'typeof');
 }
 
-/** `Function.prototype.toString`, `.call`, `.apply`, `.bind`: anything but `.constructor` (or a name only known at run time). */
+
 function isSafePrototypeMember(item) {
-  const proto = item.up; // the node that holds the identifier, hopefully `Function.prototype`
+  const proto = item.up;
   if (proto.node.type !== 'MemberExpression' || item.key !== 'object' || memberName(proto.node) !== 'prototype') return false;
-  const outer = proto.up; // what `Function.prototype` is used in
+  const outer = proto.up;
   if (outer.node.type === 'MemberExpression' && proto.key === 'object') {
     const name = memberName(outer.node);
     return name !== null && name !== 'constructor';
   }
-  return isComparison(proto); // x === Function.prototype
+  return isComparison(proto);
 }
 
-/** The hits of one parsed program, as { kind, node }. `node` is where to point. */
+
 export function findHits(program) {
   const hits = [];
-  const seen = new Set(); // the callee nodes already reported as calls, so the value pass does not report them again
+  const seen = new Set();
 
-  // Pass 1: calls, `new`, and timers given a string.
+
   for (const { node } of walk(program)) {
     if (node.type === 'CallExpression' || node.type === 'NewExpression') {
       const name = calleeName(node.callee);
@@ -292,7 +217,7 @@ export function findHits(program) {
     }
   }
 
-  // Pass 2: the global eval or Function used as a value in any other way.
+
   for (const item of walk(program)) {
     const { node } = item;
     if (seen.has(node) || !item.up) continue;
@@ -309,11 +234,7 @@ export function findHits(program) {
   return hits;
 }
 
-/**
- * Matches every hit against the allowlist: { results: [{ hit, entry }], used }. `entry` is the allowlist
- * entry that took the hit, or null when it is not allowed. An entry takes at most `max` hits, in the
- * order given, so the caller sorts first. `hit` is { kind, file, text }, where file is the ORIGINAL file.
- */
+
 export function classifyHits(hits, list = ALLOWLIST) {
   const used = new Map(list.map((entry) => [entry, 0]));
   const results = hits.map((hit) => {
@@ -329,7 +250,7 @@ function jsFiles(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) files.push(...jsFiles(full));
-    else if (/\.(?:js|mjs|cjs)$/.test(entry.name)) files.push(full); // never the .map files
+    else if (/\.(?:js|mjs|cjs)$/.test(entry.name)) files.push(full);
   }
   return files.sort();
 }
@@ -340,7 +261,7 @@ function lineStarts(code) {
   return starts;
 }
 
-/** 0-based line of an offset, given the sorted line start offsets. */
+
 function lineOf(starts, offset) {
   let low = 0;
   let high = starts.length - 1;
@@ -352,7 +273,6 @@ function lineOf(starts, offset) {
   return low;
 }
 
-// ---- main -----------------------------------------------------------------------------------
 
 function main() {
   if (!fs.existsSync(DIST)) {
@@ -372,7 +292,7 @@ function main() {
     const shown = displayPath(file);
     const { program, errors } = parseSync(shown, code, { lang: 'js', sourceType: 'unambiguous' });
     if (errors.length) {
-      // Fail closed: a file that cannot be parsed cannot be vouched for.
+
       console.error(`evalscan: cannot parse ${shown}: ${errors[0].message}`);
       process.exit(1);
     }
@@ -380,7 +300,7 @@ function main() {
     try {
       map = loadMap(file, code);
     } catch (error) {
-      // Fail closed: a map that cannot be trusted cannot vouch for a hit.
+
       console.error(`evalscan: ${error.message}`);
       process.exit(1);
     }
@@ -393,7 +313,7 @@ function main() {
       hits.push({
         kind,
         dist: `${shown}:${line + 1}:${column + 1}`,
-        // Without a map the built file is all we can point at, and no allowlist entry can match it.
+
         file: origin ? origin.file : shown,
         line: origin ? origin.line : line + 1,
         column: origin ? origin.column : column + 1,
@@ -424,5 +344,5 @@ function main() {
   process.exitCode = denied ? 1 : 0;
 }
 
-// Run only when started as a script: tests/evalscan.test.js imports findHits and must not trigger a scan.
+
 if (fs.realpathSync(process.argv[1] ?? '') === fs.realpathSync(fileURLToPath(import.meta.url))) main();

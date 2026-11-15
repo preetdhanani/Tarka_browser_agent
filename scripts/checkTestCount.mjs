@@ -1,16 +1,6 @@
 #!/usr/bin/env node
-// Enforces the test-count floor in tests/test-count-floor.json (BUG-47).
-//
-// The floor file used to be pure decoration: nothing compared its number to
-// the real suite, so a refactor that deleted a hundred tests still passed
-// while the file looked like protection. This script runs the same suite npm
-// test runs, parses the node --test summary, and fails when the count drops
-// below the floor.
-//
-// Usage:
-//   node scripts/checkTestCount.mjs             fail if the count < floor
-//   node scripts/checkTestCount.mjs --update    also raise the floor to the
-//                                               actual count (never lowers it)
+
+
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,7 +17,7 @@ const res = spawnSync(
   { cwd: ROOT, encoding: 'utf8', shell: process.platform === 'win32', maxBuffer: 64 * 1024 * 1024 }
 );
 
-// TAP summary lines: "# tests 3350", "# pass 3349", "# fail 1".
+
 const tap = `${res.stdout}\n${res.stderr}`;
 const match = tap.match(/^# tests (\d+)\s*$/m);
 if (!match) {
