@@ -1,8 +1,4 @@
-/**
- * Sidepanel Controller Script for Tarka AI Agent
- * Connects to Background Agent Engine, renders timeline, session history drawer, plan checklist, progress banner, settings, and backend logs.
- * Employs persistent per-provider API key storage, automatic model fetching, instant key auto-saving, and a smart searchable combobox component.
- */
+
 
 import { Storage, DEFAULT_SETTINGS, DEFAULT_PROVIDER_CONFIGS, CHAT_INDEX_KEY } from '../src/shared/storage.ts';
 import { extractReadableAnswer } from '../src/shared/answerText.ts';
@@ -27,144 +23,104 @@ let backgroundPort = null;
 let currentSettings = { ...DEFAULT_SETTINGS };
 let customProviderDialog = null;
 
-// The TAB this panel is attached to. One session exists per tab (background.ts
-// keeps a Map keyed by tabId), so every message this panel sends must say which tab it belongs
-// to. The panel has to work this out for itself: a side-panel port reaches the background
-// worker with no sender.tab at all, so the worker cannot tell which tab a panel came from.
-//
-// Chrome only shows a tab-scoped side panel for the ACTIVE tab, so the active tab of this
-// panel's own window is, by construction, the tab this document is attached to.
+
 let myTabId = null;
 
-/**
- * Send a message to the background worker, always tagged with this panel's own tabId so it
- * can be routed to the correct per-tab session rather than whichever one happens to exist.
- */
+
 function sendBgMessage(msg, cb) {
   chrome.runtime.sendMessage({ ...msg, tabId: myTabId }, cb);
 }
-// The chat on screen: the runner's chatId (its Recent tasks entry), from the last state it sent.
+
 let currentSessionId = null;
 let currentActiveLogFilter = 'all';
 let rawLogsCache = [];
 let apiKeyFetchDebounce = null;
 let allFetchedModels = [];
-// The provider id the list above was fetched for. The composer's model menu uses it to notice
-// that the provider changed since then and fetch the new provider's list before showing it.
+
+
 let allFetchedModelsProvider = null;
 
-// The authoritative selected model.
-//
-// This used to be read back out of the hidden <select id="modelSelect">, but that element
-// only holds options from the last renderModelOptions() call. Assigning a value with no
-// matching <option> silently leaves select.value === '', so switching to a provider whose
-// default was not already in the list persisted model: '' and then fell back to whatever
-// happened to be first in the hardcoded list. Keep the truth here instead of in the DOM.
+
 let selectedModel = null;
-// The Settings picker's "Enter custom model name..." row. It is a UI choice (open the text field),
-// never a model id: it must not reach selectedModel, the screen or the storage.
+
+
 const CUSTOM_MODEL_OPTION = '__custom__';
-// True while that text field is open, so the row stays marked as the one chosen.
+
 let customModelFieldOpen = false;
 let currentEffort = 'auto';
-// The level the user picked. currentEffort is what this model can take of it (the nearest level it
-// supports), so switching to a model that supports more brings the pick back.
+
+
 let preferredEffort = 'auto';
-// The levels the chosen model supports (background/llm/effort.ts), and why. Until the background
-// answers, every level is offered.
-/** Whether the last rendered state was a running or paused run, to notice when one ends. */
+
+
 let effortRunWasActive = false;
 let effortSupport = { levels: ['auto', 'off', 'low', 'medium', 'high', 'max'], note: '' };
-// 'auto' runs the task straight through; 'manual' stops at the plan and waits for the
-// user's approval before the first action. Persisted as settings.autoApprove.
+
+
 let approvalMode = 'auto';
-// Guards the window between clicking send and the background confirming the task started.
+
 let isSubmittingTask = false;
-// Mirrors the engine status the panel last rendered, so the submit guard knows whether
-// renderState() has taken ownership of the send button.
+
+
 let isTaskActive = false;
-// The provider and model the live run started with, for the run's model chip. Taken when this
-// panel submits the task, or at the first live state a panel opened mid-run sees; cleared when
-// the run ends. A model changed in Settings during the run applies to the next run, not this one.
+
+
 let runModelSnapshot = null;
 let portReconnectAttempts = 0;
 let portReconnectTimer = null;
-// False only for this panel instance's very first connect. Distinguishes opening the panel
-// from reconnecting after Chrome reclaimed the service worker.
+
+
 let hasConnectedBefore = false;
-// Out-of-order render guard. The live port and the GET_AGENT_STATE resync are two independent
-// async channels with no ordering guarantee, so a slow resync reply can arrive after a newer
-// live push and roll the UI backwards. stateVersion orders them - but it restarts near zero
-// whenever Chrome rebuilds the service worker, so it is only comparable within one boot.
-// bootId scopes the comparison; a new boot resets the watermark instead of silently discarding
-// every update from the fresh worker forever (which would freeze the panel permanently).
+
+
 let lastRenderedStateVersion = -1;
 let lastBootId = null;
-// The last state that passed the staleness gate, so a failure that happens outside a broadcast
-// (a refused confirm, a dead worker) can re-render the timeline it belongs to.
+
+
 let lastState = null;
-// The task-level error the panel shows as a card in the timeline. It is panel state, not a DOM
-// node, so a re-render cannot swallow it: it is cleared when a new task starts or the chat changes.
+
+
 let taskError = null;
 
-// Expand/collapse state for the batched action groups. renderState() rewrites the whole
-// timeline on every state broadcast (~7x per step), so this must live OUTSIDE the DOM or a
-// group would snap shut the instant the agent did anything.
-const turnExpandOverride = new Map(); // turn number -> explicit user choice
-const expandedRows = new Set();       // "turn:index" of rows whose reasoning is showing
-// Same reason, for the answer audit <details> on a finish card: the key is the turn number as a
-// string. Without this a details block the user opened would snap shut on the next broadcast.
+
+const turnExpandOverride = new Map();
+const expandedRows = new Set();
+
+
 const openAuditDetails = new Set();
-// And for the summary of a "Chat compacted" divider: the key is the row's index in the history.
+
 const openCompactSummaries = new Set();
 
-// The context meter of the composer (contextMeter.js). The runner sends its numbers with every
-// state; the panel keeps the last ones so the ring and the card can be drawn again on their own.
+
 let lastContextState = null;
-/** A task is running or paused: Compact is off, and the ring shows the last model call. */
+
 let lastContextBusy = false;
-/** This panel sent COMPACT_CHAT and waits for the answer. */
+
 let compactPending = false;
 
-/**
- * The pictures this panel has fetched, by id: the data URL, and the decoded <img> element itself.
- *
- * The timeline is rebuilt from scratch on every state broadcast, so an <img> inside the rebuilt
- * subtree would decode again on every one of them and the eye would catch a blank frame. Moving
- * an already-decoded element into the new subtree does not decode it again, so the element is
- * kept here and re-attached after each render.
- */
-const shotCache = new Map(); // imageId -> { dataUrl: string, img: HTMLImageElement, thumb: HTMLImageElement }
-/** The ids being fetched now, so a picture shown in two places is asked for once. */
+
+const shotCache = new Map();
+
 const shotLoading = new Set();
 
-/** The ids whose bytes the background said it no longer has, so the panel stops asking. */
+
 const shotGone = new Set();
-// Turns whose notes the reader closed although they open by default (an unverified answer).
+
 const closedAuditDetails = new Set();
 
-/**
- * Following the run: while this is on, every render, every picture that attaches and every thought
- * the reader opens in the newest turn keep the timeline at its bottom. It is on by default, and on
- * again at New chat, a new task, an opened chat, and when the reader scrolls back to the bottom. It
- * goes off only when the reader scrolls up themself (a wheel, a touch, a key or the scrollbar), or
- * when the panel lands on the top of a tall finish card; content that grows never turns it off.
- */
+
 let followTimeline = true;
-/** How near the bottom counts as at the bottom, in px. */
+
 const FOLLOW_SLACK_PX = 80;
-/** When the reader last moved the timeline themself (a wheel up, a touch, a key), and whether they hold its scrollbar. */
+
 let readerScrollAt = 0;
 let readerOnScrollbar = false;
-/** How long after the reader's own gesture a scroll still counts as theirs, in ms. */
+
 const READER_SCROLL_MS = 600;
-/** The markup of the last render, to tell new content from a repeated broadcast. */
+
 let lastTimelineHtml = '';
 
 
-/**
- * Inline icon set - thin-line SVGs matching the Studio Mono system.
- */
 const ICONS = {
   check: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>',
   cross: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>',
@@ -193,15 +149,15 @@ const ICONS = {
   chevronRight: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 5 11 12 5 19"/></svg>',
   chevronDown: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="19 5 13 12 19 19"/></svg>',
   aim: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>',
-  // A plan step the harness skipped because no page of its source was ever read. Same 12px box
-  // as `check` so the two rows line up; a dash in a ring reads as "not done", never as "done".
+
+
   skip: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="8" y1="12" x2="16" y2="12"/></svg>'
 };
 
-/** Entries the Logs tab keeps, the same bound as the worker's log store. */
+
 const MAX_PANEL_LOGS = 500;
 
-/** Which nodes of the log trees are open, by "<entry id>|<path>", so a re-render keeps them. */
+
 const logTreeState = new Map();
 
 const THEME_MODES = ['system', 'light', 'dark'];
@@ -232,16 +188,16 @@ function applyApprovalMode(mode) {
 const EFFORT_LABEL = { auto: 'Auto', off: 'Off', low: 'Low', medium: 'Medium', high: 'High', max: 'Max' };
 const EFFORT_ORDER = ['off', 'low', 'medium', 'high', 'max'];
 
-/** A stored or picked value as a level: the old 'xhigh' is 'max', anything unknown is 'auto'. */
+
 function normalizeEffort(effort) {
   if (effort === 'xhigh') return 'max';
   return EFFORT_LABEL[effort] ? effort : 'auto';
 }
 
-/** The supported level nearest to the pick: Off on a model that cannot stop thinking is Low, Max where High is the top is High. */
+
 function nearestSupportedEffort(effort, levels) {
   if (levels.includes(effort)) return effort;
-  // A level that thinks never becomes Off: only Off itself, or a model with nothing else, may.
+
   const thinking = levels.filter((level) => level !== 'auto' && (effort === 'off' || level !== 'off'));
   if (effort === 'auto' || thinking.length === 0) return 'auto';
   const want = EFFORT_ORDER.indexOf(effort);
@@ -253,7 +209,7 @@ function setEffort(effort) {
   renderEffort();
 }
 
-/** The composer's effort button and menu, for the pick and the model's support. */
+
 function renderEffort() {
   const levels = effortSupport.levels && effortSupport.levels.length ? effortSupport.levels : ['auto'];
   currentEffort = nearestSupportedEffort(preferredEffort, levels);
@@ -277,10 +233,7 @@ function renderEffort() {
   if (note) note.textContent = effortSupport.note || '';
 }
 
-/**
- * Asks the background which effort levels the chosen provider and model take. Called whenever the
- * model changes. A late answer for a model that is no longer chosen is dropped.
- */
+
 let effortSupportAsk = 0;
 function refreshEffortSupport() {
   const provider = document.getElementById('providerSelect')?.value || currentSettings.provider;
@@ -302,18 +255,14 @@ function refreshEffortSupport() {
   });
 }
 
-/** The provider and model the Settings field sets the window of, and their key in settings.contextWindow. */
+
 function contextFieldTarget() {
   const provider = document.getElementById('providerSelect')?.value || currentSettings.provider;
   const model = (selectedModel && selectedModel !== CUSTOM_MODEL_OPTION ? selectedModel : '') || currentSettings.providerConfigs?.[provider]?.model || currentSettings.model || '';
   return { provider, model, key: `${provider}|${model}` };
 }
 
-/**
- * The Settings field "Context window": the user's own value for the chosen model, and under it the
- * window a run would use and where it comes from (the background resolves it, GET_CONTEXT_WINDOW).
- * A late answer for a model that is no longer chosen is dropped.
- */
+
 let contextFieldAsk = 0;
 function refreshContextWindowField() {
   const input = document.getElementById('contextWindowInput');
@@ -342,7 +291,7 @@ function refreshContextWindowField() {
   });
 }
 
-/** Saves the field: a token count for the chosen model, or no value of the user's when it is empty. */
+
 async function saveContextWindowField() {
   const input = document.getElementById('contextWindowInput');
   const hint = document.getElementById('contextWindowHint');
@@ -357,19 +306,19 @@ async function saveContextWindowField() {
     }
     return;
   }
-  // null removes the user's value for this model (Storage.saveSettings merges contextWindow).
+
   currentSettings = await Storage.saveSettings({ contextWindow: { [key]: tokens } });
   input.value = tokens ? String(tokens) : '';
   refreshContextWindowField();
 }
 
-/** The model the context card names: the run's while one is live, else the chosen one. */
+
 function contextModelName() {
   if (lastContextBusy && runModelSnapshot && runModelSnapshot.model) return runModelSnapshot.model;
   return selectedModel || currentSettings.model || '';
 }
 
-/** Draws the ring, and the card when it is open, from the last context state the runner sent. */
+
 function renderContextMeter() {
   const view = meterView(lastContextState, { busy: lastContextBusy, model: contextModelName(), pending: compactPending });
   const btn = document.getElementById('btnContext');
@@ -384,7 +333,7 @@ function renderContextMeter() {
   return view;
 }
 
-/** The card's Compact: one COMPACT_CHAT, the card says "Compacting…" until the answer, and a failure is a toast. */
+
 function compactChatFromPanel() {
   if (compactPending) return;
   compactPending = true;
@@ -401,8 +350,7 @@ function compactChatFromPanel() {
   });
 }
 
-/** The model shown in the composer, in step with the badge in the header. Clicking it opens the
-    provider's model menu, so the tooltip says both. */
+
 function refreshComposerModel() {
   const el = document.getElementById('composerModel');
   if (!el) return;
@@ -411,7 +359,7 @@ function refreshComposerModel() {
   el.title = `Model: ${label}. The models of the chosen provider are one click away.`;
 }
 
-/** The approval icon in the composer, the same two glyphs as the menu items. */
+
 const APPROVAL_ICON = {
   auto: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><polygon points="4 4 12 12 4 20"/><polygon points="11 4 19 12 11 20"/></svg>',
   manual: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 11V6a1.5 1.5 0 0 0-3 0v4"/><path d="M15 10V4.5a1.5 1.5 0 0 0-3 0V10"/><path d="M12 10V6a1.5 1.5 0 0 0-3 0v8"/><path d="M9 14l-1.6-2.7a1.5 1.5 0 0 0-2.6 1.5L7.7 18A6 6 0 0 0 13 21h1a6 6 0 0 0 6-6v-3a1.5 1.5 0 0 0-2 0"/></svg>'
@@ -422,9 +370,7 @@ const APPROVAL_TITLE = {
 };
 const MENU_CHECK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4.5 12.5 9.5 17.5 19.5 7"/></svg>';
 
-/**
- * Simple toast notification system
- */
+
 function showToast(message, type = 'info') {
   const container = document.getElementById('toastContainer');
   if (!container) return;
@@ -454,8 +400,8 @@ function applyTheme(mode) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // Resolve which TAB this panel belongs to BEFORE connecting - the port name and every
-  // message sent from here need it to reach the right per-tab session.
+
+
   try {
     if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
       const tabs = await new Promise((resolve) => chrome.tabs.query({ active: true, currentWindow: true }, (t) => resolve(t || [])));
@@ -465,12 +411,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     reportClientError('sidepanel:resolve-tab', err);
   }
 
-  // Logs are restored via initPortConnection() -> resyncAgentState() -> GET_AGENT_STATE below,
-  // not read directly from storage here. That used to be a second, racing path: the background
-  // worker's own restore of persisted logs is async, so a resync landing before it finished got
-  // back an empty array and this direct read's result was overwritten with it. The background
-  // now awaits its own restore before answering GET_AGENT_STATE (see logger.ts/background.ts),
-  // so it is the single, complete, authoritative source and this duplicate is no longer needed.
+
   await loadSettings();
   initTabs();
   initTimelineInteraction();
@@ -483,8 +424,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     applySettings: (s) => { currentSettings = s; },
     sendBgMessage,
     showToast,
-    // Puts a provider id into effect without a synthetic change event (which does not fire on
-    // programmatic assignment): rebuilds the options, then loads the provider into the form.
+
+
     providerSelected: async (id) => {
       document.getElementById('providerSelect').value = id;
       await applyProviderSelection(id);
@@ -495,13 +436,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await fetchDynamicModels(false);
 });
 
-/**
- * Keep the History button and list current when the background saves a chat.
- *
- * The background writes every chat (while a run goes, and when it ends), never this panel, so the
- * list follows the index in storage. Reading it once at startup left it showing "(0)" next to the
- * run that had just finished.
- */
+
 function followSavedSessionChanges() {
   if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.onChanged) return;
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -510,16 +445,12 @@ function followSavedSessionChanges() {
   });
 }
 
-// Ensure tabs are initialized even if DOMContentLoaded already fired (common in some preview/extension environments)
+
 if (document.readyState === 'complete' || document.readyState === 'interactive') {
   initTabs();
 }
 
-/**
- * The timeout a provider holds for itself, or 0 when it has none. Mirrors the first two steps of
- * timeoutMsOf (src/background/llm/settings.ts): providerConfigs[id].llmTimeoutMs, then a custom
- * provider's descriptor. When this is set, the engine never reads the global llmTimeoutMs.
- */
+
 function providerOwnTimeoutOf(settings, provider) {
   const configMs = Number(settings?.providerConfigs?.[provider]?.llmTimeoutMs);
   if (configMs > 0) return configMs;
@@ -528,19 +459,17 @@ function providerOwnTimeoutOf(settings, provider) {
   return 0;
 }
 
-/** The value the LLM Timeout field shows for a provider: the one the engine will use. */
+
 function timeoutShownFor(settings, provider) {
   const own = providerOwnTimeoutOf(settings, provider);
   if (own > 0) return own;
-  // A custom provider has no curated default, so its fallback is the global one.
+
   const isCustom = isCustomProviderId(provider, settings);
   const defaultTimeout = isCustom ? DEFAULT_SETTINGS.llmTimeoutMs : (DEFAULT_PROVIDER_CONFIGS[provider]?.llmTimeoutMs || DEFAULT_SETTINGS.llmTimeoutMs);
   return provider === 'nvidia' ? defaultTimeout : (settings.llmTimeoutMs || defaultTimeout);
 }
 
-/**
- * Load settings into form controls with per-provider memory restoration
- */
+
 async function loadSettings() {
   currentSettings = await Storage.getSettings();
   applyTheme(currentSettings.theme || 'system');
@@ -549,8 +478,7 @@ async function loadSettings() {
   const activeIsCustom = isCustomProviderId(activeProvider, currentSettings);
   const providerCfg = (currentSettings.providerConfigs && currentSettings.providerConfigs[activeProvider]) || (activeIsCustom ? {} : (DEFAULT_PROVIDER_CONFIGS[activeProvider] || {}));
 
-  // The options for user-added providers must exist BEFORE the value is assigned: assigning a
-  // <select> a value with no matching <option> silently leaves select.value === ''.
+
   buildProviderOptions(document.getElementById('providerSelect'), currentSettings.customProviders);
 
   document.getElementById('providerSelect').value = activeProvider;
@@ -572,7 +500,7 @@ async function loadSettings() {
   setEffort(currentSettings.effortDefault || 'medium');
   applyApprovalMode(currentSettings.autoApprove === false ? 'manual' : 'auto');
 
-  // Visibility: Hide Ollama settings if not using Ollama
+
   const ollamaGroup = document.getElementById('ollamaNumPredictGroup');
   if (ollamaGroup) {
     ollamaGroup.style.display = activeProvider === 'ollama' ? 'flex' : 'none';
@@ -584,7 +512,7 @@ async function loadSettings() {
   updateSelectedModel(providerCfg.model || currentSettings.model);
 }
 
-/** The Research section from the stored settings (getSettings already filled the defaults). */
+
 function loadResearchSettings(research) {
   const r = research || DEFAULT_SETTINGS.research;
   const enabled = document.getElementById('researchEnabledSelect');
@@ -595,7 +523,7 @@ function loadResearchSettings(research) {
   syncResearchFields();
 }
 
-/** The research fields the current choice uses: no backend when research is off, no URL unless SearXNG. */
+
 function syncResearchFields() {
   const on = document.getElementById('researchEnabledSelect')?.value !== 'off';
   const searxng = document.getElementById('researchBackendSelect')?.value === 'searxng';
@@ -614,7 +542,7 @@ function syncResearchFields() {
   }
 }
 
-/** The Research section as the settings object stores it. */
+
 function researchFromForm() {
   return {
     enabled: document.getElementById('researchEnabledSelect')?.value !== 'off',
@@ -623,16 +551,13 @@ function researchFromForm() {
   };
 }
 
-/** Edit and Delete apply to a user-added provider only; the row stays hidden for the built-ins. */
+
 function syncCustomProviderActions(providerId) {
   const actions = document.getElementById('customProviderActions');
   if (actions) actions.style.display = isCustomProviderId(providerId, currentSettings) ? 'flex' : 'none';
 }
 
-/**
- * Update active model label and backing select element. Takes a real model id only; the custom
- * row of the Settings picker goes through pickComboboxModel, which opens the text field instead.
- */
+
 function updateSelectedModel(modelName) {
   if (modelName === CUSTOM_MODEL_OPTION) {
     setCustomModelFieldOpen(true);
@@ -645,8 +570,8 @@ function updateSelectedModel(modelName) {
 
   if (labelEl) labelEl.textContent = modelName || 'Select a model...';
   if (selectEl) {
-    // Keep the backing <select> in step for anything that still reads it, adding the option
-    // when it is absent so the assignment cannot silently no-op.
+
+
     if (modelName && !Array.from(selectEl.options).some(o => o.value === modelName)) {
       const opt = document.createElement('option');
       opt.value = modelName;
@@ -659,7 +584,7 @@ function updateSelectedModel(modelName) {
   refreshComposerModel();
 }
 
-/** Shows or hides the Settings field for a model id typed by hand. */
+
 function setCustomModelFieldOpen(open) {
   const wasOpen = customModelFieldOpen;
   customModelFieldOpen = open;
@@ -667,17 +592,13 @@ function setCustomModelFieldOpen(open) {
   if (!customInput) return;
   customInput.style.display = open ? 'block' : 'none';
   if (open) {
-    // A fresh field each time it opens; picking the row again while typing keeps the text.
+
     if (!wasOpen) customInput.value = '';
     customInput.focus();
   }
 }
 
-/**
- * A click on a row of the Settings model picker. The custom row only opens the text field: there
- * is nothing to save until an id is typed there (see commitTypedModel). A listed model is put into
- * effect and saved at once.
- */
+
 async function pickComboboxModel(value) {
   closeComboboxMenu();
   if (value === CUSTOM_MODEL_OPTION) {
@@ -689,7 +610,7 @@ async function pickComboboxModel(value) {
   await autoSaveCurrentForm();
 }
 
-/** Saves the id typed in the Settings custom field, once there is one. */
+
 async function commitTypedModel() {
   const value = (document.getElementById('modelCustomInput')?.value || '').trim();
   if (!value) return;
@@ -697,9 +618,7 @@ async function commitTypedModel() {
   await autoSaveCurrentForm();
 }
 
-/**
- * Render model options into custom searchable combobox menu
- */
+
 function renderModelOptions(modelsList) {
   const selectEl = document.getElementById('modelSelect');
   const optionsContainer = document.getElementById('modelComboboxOptions');
@@ -713,7 +632,7 @@ function renderModelOptions(modelsList) {
   if (savedModel && savedModel !== CUSTOM_MODEL_OPTION && !combinedList.includes(savedModel)) {
     combinedList.unshift(savedModel);
   }
-  // An id typed by hand and not saved yet is still the selected one, so it stays in the list.
+
   if (currentSelected && currentSelected !== CUSTOM_MODEL_OPTION && !combinedList.includes(currentSelected)) {
     combinedList.unshift(currentSelected);
   }
@@ -733,8 +652,8 @@ function renderModelOptions(modelsList) {
   }
 
   if (combinedList.length === 0) {
-    // A custom provider with an empty saved list is a real state, not a failed fetch: the picker
-    // says so and keeps accepting ids typed by hand.
+
+
     const emptySource = Array.isArray(modelsList) && modelsList.length === 0 && providerMeta(activeProvider, currentSettings).isCustom;
     optionsContainer.innerHTML = `<div class="subtext-hint" style="padding: 10px; text-align: center;">${emptySource ? CUSTOM_EMPTY_MODELS_TEXT : 'No matching models found.'}</div>`;
     return;
@@ -850,13 +769,11 @@ function closeComboboxMenu() {
   }
 }
 
-/**
- * Auto-save active form fields to Storage silently
- */
+
 async function autoSaveCurrentForm() {
   const provider = document.getElementById('providerSelect').value;
-  // selectedModel only ever holds a real id (the custom row is not one), checked once more here
-  // because this is the one place a model reaches the storage and, from there, the provider.
+
+
   const finalModel = (selectedModel && selectedModel !== CUSTOM_MODEL_OPTION) ? selectedModel : '';
 
   const apiKey = document.getElementById('apiKeyInput').value.trim();
@@ -865,37 +782,34 @@ async function autoSaveCurrentForm() {
   const previousModel = (currentSettings.providerConfigs && currentSettings.providerConfigs[provider]
     && currentSettings.providerConfigs[provider].model) || '';
 
-  // The input's min="5000" is not enforced on read, and the field is in ms - a user typing "1"
-  // or "1000" (thinking seconds) would otherwise make every LLM call abort almost immediately.
+
   const llmTimeoutMs = Math.max(5000, parseInt(document.getElementById('llmTimeoutInput').value, 10) || (DEFAULT_PROVIDER_CONFIGS[provider]?.llmTimeoutMs || DEFAULT_SETTINGS.llmTimeoutMs));
 
   const newSettings = {
     provider,
     baseUrl,
     apiKey,
-    // Guard against writing an empty model over a good one. Even with selectedModel as the
-    // source of truth, an empty value here would silently clear the provider's saved choice.
+
+
     model: finalModel || previousModel,
     maxSteps: parseInt(document.getElementById('maxStepsInput').value, 10) || DEFAULT_SETTINGS.maxSteps,
     actionDelayMs: parseInt(document.getElementById('delayInput').value, 10) || DEFAULT_SETTINGS.actionDelayMs,
     ollamaNumPredict: parseInt(document.getElementById('ollamaNumPredictInput').value, 10) || DEFAULT_SETTINGS.ollamaNumPredict,
     llmTimeoutMs,
-    // Screenshots are always on: there is no user toggle for them.
+
     screenshots: true,
     effortDefault: document.getElementById('effortDefaultSelect')?.value || currentSettings.effortDefault || 'medium',
     effortAdaptive: (document.getElementById('effortAdaptiveSelect')?.value || 'on') !== 'off',
     research: researchFromForm()
   };
 
-  // A provider with a timeout of its own (a custom provider's, set in its dialog) is read before
-  // the global one, so the edit goes there; writing only the global value would change nothing
-  // and the field would snap back. NVIDIA's own timeout is written by Storage.saveSettings itself.
+
   if (provider !== 'nvidia' && providerOwnTimeoutOf(currentSettings, provider) > 0) {
     delete newSettings.llmTimeoutMs;
     newSettings.providerConfigs = {
       [provider]: { ...(currentSettings.providerConfigs?.[provider] || {}), llmTimeoutMs }
     };
-    // The dialog shows the descriptor's value; keep it the same number.
+
     const descriptor = currentSettings.customProviders?.[provider];
     if (descriptor) {
       newSettings.customProviders = { ...currentSettings.customProviders, [provider]: { ...descriptor, llmTimeoutMs } };
@@ -903,15 +817,13 @@ async function autoSaveCurrentForm() {
   }
 
   currentSettings = await Storage.saveSettings(newSettings);
-  // Show the value that was stored: one below the minimum was raised above, and the field must not
-  // keep showing the raw number that was typed.
+
+
   document.getElementById('llmTimeoutInput').value = timeoutShownFor(currentSettings, provider);
   updateModelBadge(newSettings.model);
 }
 
-/**
- * Fetch dynamic models with storage caching & search filter support
- */
+
 async function fetchDynamicModels(forceRefresh = false) {
   const statusEl = document.getElementById('modelFetchStatus');
   const btnFetch = document.getElementById('btnFetchModels');
@@ -926,8 +838,8 @@ async function fetchDynamicModels(forceRefresh = false) {
     baseUrl: document.getElementById('baseUrlInput').value.trim(),
     apiKey: document.getElementById('apiKeyInput').value.trim(),
     forceRefresh,
-    // The background resolves a user-added provider from the snapshot it is handed (its descriptor
-    // carries the protocol and the saved list); it reads no settings of its own for this message.
+
+
     providerConfigs: currentSettings.providerConfigs,
     customProviders: currentSettings.customProviders
   };
@@ -969,14 +881,12 @@ async function fetchDynamicModels(forceRefresh = false) {
   });
 }
 
-// The provider and model the effort levels and the context-window field were last asked for.
-// Rendering the picker again (typing in its search, re-rendering the list) marks the selected row
-// without changing the model, and the two background asks must not fire per keystroke.
+
 let lastModelAskKey = null;
 
 function updateModelBadge(modelName) {
-  // Every real model change passes here, so the effort levels and the context window field follow
-  // the model. A render that keeps the same model (the search filtering the list) skips them.
+
+
   const provider = document.getElementById('providerSelect')?.value || currentSettings.provider;
   const askKey = `${provider}|${modelName || ''}`;
   if (askKey !== lastModelAskKey) {
@@ -988,7 +898,7 @@ function updateModelBadge(modelName) {
   const badge = document.getElementById('currentModelBadge');
   if (badge) {
     badge.textContent = modelName || 'Model';
-    // The badge truncates to one line, so the full id has to stay reachable on hover.
+
     badge.title = modelName || '';
   }
 }
@@ -1021,24 +931,12 @@ function initTabs() {
   });
 }
 
-/**
- * Connection to the background service worker.
- *
- * Chrome terminates MV3 service workers aggressively, which kills this port. Without an
- * onDisconnect handler the panel keeps holding a dead port forever: the agent keeps running
- * and driving the browser, but every STATE_UPDATE and LOG_ENTRY it emits goes nowhere - the
- * timeline freezes and the log pane stays empty. That is exactly the "everything goes blank"
- * failure. So: detect the drop, tell the user, and reconnect with backoff.
- */
+
 function initPortConnection() {
   connectPort();
 }
 
-/**
- * Resolves which tab this panel belongs to. Called once at startup and again on
- * every reconnect while the id is still unknown, so a panel that woke up before
- * the tab was queryable does not stay stuck on a bare port name (BUG-21).
- */
+
 async function resolveMyTabId() {
   try {
     if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
@@ -1058,18 +956,11 @@ async function resolveMyTabId() {
 function connectPort() {
   if (typeof chrome === 'undefined' || !chrome.runtime) return;
 
-  // A panel whose tab id is still unknown re-resolves it before connecting, so
-  // the reconnect uses the suffixed port name instead of the bare one the
-  // background ignores (BUG-21).
+
   const doConnect = () => {
     try {
-      // The '_fresh'/plain distinction is kept only for the background worker's own connect log
-      // line - one session exists per tab now, and reopening the panel on a tab that already has
-      // one (running or finished) always reflects it rather than clearing on a "genuine open".
-      // Deliberately starting over is CLEAR_HISTORY's job, not a side effect of reconnecting.
-      // What actually matters here is tabId, so this panel is routed to ITS OWN tab's session
-      // rather than a shared one - riding in the port name itself is simple, synchronous, and
-      // available the instant the port is created.
+
+
       const base = hasConnectedBefore ? 'tarka_sidepanel' : 'tarka_sidepanel_fresh';
       hasConnectedBefore = true;
       const portName = myTabId !== null ? `${base}:${myTabId}` : base;
@@ -1119,18 +1010,7 @@ function connectPort() {
   }
 }
 
-/**
- * Reopen the panel on the tab a task just moved into.
- *
- * Chrome shows a tab-scoped panel only on the tab it was opened for, so the moment the
- * background worker brings a new tab to the front, this panel is hidden and none is showing on
- * the new tab. Only sidePanel.open() can show one there, and only with a user gesture - which
- * this document still has from the Enter/click that submitted the task, for about five seconds.
- * The worker has no gesture at all, which is why it asks here instead of opening it itself.
- *
- * A session can have several panels connected (the one hidden on the tab the run left, for a
- * start), but only the one that submitted the task holds the gesture, so only it acts.
- */
+// Chrome requires a user gesture for sidePanel.open().
 function followRunToTab(payload) {
   if (!payload || typeof payload.tabId !== 'number' || payload.fromTabId !== myTabId) return;
   if (!chrome.sidePanel || !chrome.sidePanel.open) return;
@@ -1149,13 +1029,7 @@ function scheduleReconnect() {
   }, delayMs);
 }
 
-/**
- * Pull authoritative state after every (re)connect. This doubles as the wake-up call that
- * revives a sleeping service worker, and its response is the only confirmation that the
- * round trip actually works - which is why the backoff counter resets here rather than in
- * connectPort(). chrome.runtime.connect() succeeds optimistically even against a dead
- * context, so resetting on connect alone would pin the backoff at its 300ms floor forever.
- */
+
 function resyncAgentState() {
   if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) return;
 
@@ -1181,14 +1055,7 @@ function resyncAgentState() {
   });
 }
 
-/**
- * Send a control command and REPORT whether it landed.
- *
- * Pause / Stop / New Session were previously fire-and-forget with no callback and no
- * lastError check. If the service worker was asleep or mid-restart the command evaporated
- * silently - the button appeared to work while the agent carried on driving the page. For
- * Stop in particular that is a safety problem, not just a cosmetic one.
- */
+
 function sendControlMessage(action, done) {
   if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) return;
 
@@ -1212,12 +1079,7 @@ function sendControlMessage(action, done) {
   });
 }
 
-/**
- * Chrome loads this page fresh from disk every time the panel opens, but keeps the old background
- * worker running until the extension is reloaded. After a rebuild the two are different builds,
- * and the panel asks for things the old worker does not know (effort levels, for one). Compare the
- * stamps after every resync and offer the reload. An older worker does not know GET_BUILD either.
- */
+
 let staleWorkerLogged = false;
 function checkWorkerBuild() {
   if (!IS_BUILD) return;
@@ -1228,7 +1090,7 @@ function checkWorkerBuild() {
     const bar = document.getElementById('updateBanner');
     if (bar) {
       bar.hidden = !stale;
-      bar.dataset.workerBuild = stale ? 'stale' : 'same'; // read by the e2e side panel gate
+      bar.dataset.workerBuild = stale ? 'stale' : 'same';
     }
     const reload = document.getElementById('btnReloadExtension');
     if (reload) reload.onclick = () => chrome.runtime.reload();
@@ -1247,11 +1109,7 @@ function setConnectionBanner(isDisconnected) {
   if (isDisconnected && textEl) textEl.textContent = 'Reconnecting…';
 }
 
-/**
- * Push a log entry generated in the panel itself into the log pane. Failures on this side of
- * the boundary (a dead port, most importantly) cannot reach the background logger, so without
- * this they would leave no trace anywhere - the "logs were empty too" symptom.
- */
+
 function appendLocalLog(level, module, message) {
   try {
     addLogEntry({
@@ -1263,13 +1121,11 @@ function appendLocalLog(level, module, message) {
       message,
       data: null
     });
-  } catch (_) { /* log pane may not exist yet during boot */ }
+  } catch (_) {  }
   console.warn(`[${module}]`, message);
 }
 
-/**
- * Forward panel-side exceptions to the background log so nothing fails invisibly.
- */
+
 function reportClientError(source, err) {
   const message = (err && err.message) || String(err);
   appendLocalLog('ERROR', 'Sidepanel', `[${source}] ${message}`);
@@ -1334,8 +1190,6 @@ function initEventListeners() {
   });
 
 
-
-  // API Key visibility toggle
   const btnToggleKey = document.getElementById('btnToggleKey');
   if (btnToggleKey) {
     btnToggleKey.addEventListener('click', () => {
@@ -1348,7 +1202,7 @@ function initEventListeners() {
     });
   }
 
-  // Composer approval mode: one icon, two choices, like the reference's menu.
+
   const approvalBtn = document.getElementById('btnApprovalMode');
   const approvalMenu = document.getElementById('approvalMenu');
   const effortBtn = document.getElementById('btnEffort');
@@ -1370,7 +1224,7 @@ function initEventListeners() {
     setMenuOpen(contextMenu, contextBtn, false);
   };
 
-  // The context ring opens its card; the card's clicks stay inside it (the document click closes menus).
+
   if (contextBtn && contextMenu) {
     contextBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1386,8 +1240,8 @@ function initEventListeners() {
       const what = target.getAttribute('data-ctx');
       if (what === 'compact') {
         compactChatFromPanel();
-        // The card's job is done once Compact was clicked: close it, so an open card cannot sit
-        // over the timeline (a "Chat compacted" divider lands right above the composer).
+
+
         closeComposerMenus();
       } else if (what === 'settings') {
         closeComposerMenus();
@@ -1430,14 +1284,13 @@ function initEventListeners() {
     });
   }
 
-  // Model menu: the models of the chosen provider, scrollable, opened from the model name.
+
   if (modelBtn && modelMenu) {
     const modelSearch = document.getElementById('modelMenuSearch');
     const modelCustom = document.getElementById('modelMenuCustom');
     const listEl = document.getElementById('modelMenuList');
 
-    // The same list the Settings picker shows, with every id the provider serves. The saved id
-    // is kept at the top even when the endpoint itself no longer mentions it.
+
     const modelsForMenu = () => {
       const provider = document.getElementById('providerSelect')?.value || currentSettings.provider;
       const list = allFetchedModels.slice();
@@ -1486,8 +1339,8 @@ function initEventListeners() {
       if (!willOpen) return;
       setMenuOpen(modelMenu, modelBtn, true);
       if (modelSearch) modelSearch.value = '';
-      // The list belongs to one provider; a provider switch anywhere in the settings makes the
-      // cached list wrong, so it is fetched again for the provider that is active now.
+
+
       if (allFetchedModelsProvider !== (document.getElementById('providerSelect')?.value || currentSettings.provider)) {
         if (listEl) listEl.innerHTML = '<div class="menu-empty">Loading models...</div>';
         await fetchDynamicModels(false);
@@ -1523,7 +1376,7 @@ function initEventListeners() {
     if (e.key === 'Escape') closeComposerMenus();
   });
 
-  // New chat: clears the run history of this tab, the same action the drawer's delete uses.
+
   const newChatBtn = document.getElementById('btnNewChat');
   if (newChatBtn) {
     newChatBtn.addEventListener('click', () => {
@@ -1535,8 +1388,8 @@ function initEventListeners() {
           return;
         }
         currentSessionId = null;
-        // CLEAR_HISTORY resets the runner's version counter, so the next broadcast is lower
-        // than the watermark this panel holds. Drop the watermark or that state is ignored.
+
+
         resetChatView();
         const input = document.getElementById('taskInput');
         if (input) {
@@ -1549,8 +1402,7 @@ function initEventListeners() {
     });
   }
 
-  // A model id typed in the Settings custom field: saved like the base URL (debounced while
-  // typing, at once on change or blur), and only once it is not empty.
+
   const modelCustomInput = document.getElementById('modelCustomInput');
   if (modelCustomInput) {
     let modelCustomDebounce = null;
@@ -1567,7 +1419,7 @@ function initEventListeners() {
     modelCustomInput.addEventListener('blur', commitNow);
   }
 
-  // The context window field: saved on change and on Enter; an empty field removes the user's value.
+
   const contextWindowInput = document.getElementById('contextWindowInput');
   if (contextWindowInput) {
     contextWindowInput.addEventListener('change', () => { saveContextWindowField(); });
@@ -1579,21 +1431,21 @@ function initEventListeners() {
     });
   }
 
-  // Auto-save for all number inputs and toggles
+
   ['maxStepsInput', 'delayInput', 'ollamaNumPredictInput', 'llmTimeoutInput', 'effortDefaultSelect', 'effortAdaptiveSelect'].forEach(id => {
     const el = document.getElementById(id);
     if (el) {
       el.addEventListener('change', autoSaveCurrentForm);
     }
   });
-  // The Research section saves on change like the fields above, and shows only the fields it uses.
+
   ['researchEnabledSelect', 'researchBackendSelect', 'searxngUrlInput'].forEach((id) => {
     const el = document.getElementById(id);
     if (!el) return;
     el.addEventListener('change', () => { syncResearchFields(); autoSaveCurrentForm(); });
     if (id === 'searxngUrlInput') el.addEventListener('input', syncResearchFields);
   });
-  // The default effort is also the composer's effort from now on, as it is when the panel opens.
+
   const effortDefaultSelect = document.getElementById('effortDefaultSelect');
   if (effortDefaultSelect) {
     effortDefaultSelect.addEventListener('change', () => setEffort(effortDefaultSelect.value || 'medium'));
@@ -1620,7 +1472,7 @@ function initEventListeners() {
   });
 
   document.getElementById('btnCopyLogs').addEventListener('click', () => {
-    // Plain text, one line per entry, no leading/trailing air. Copy what the reader sees.
+
     const entries = rawLogsCache.map(log => {
       const time = log.timestamp || '';
       const level = log.level || 'INFO';
@@ -1645,9 +1497,7 @@ function initEventListeners() {
       });
     }
 
-    // The background worker keeps its own in-memory copy of every log entry and rewrites
-    // agent_logs_history from it on the very next log call, regardless of the storage.remove
-    // above. Without telling the worker too, cleared logs silently came back.
+
     sendControlMessage('CLEAR_LOGS', (ok) => {
       if (!ok) {
         appendLocalLog('WARN', 'Sidepanel', '[CLEAR_LOGS_INCOMPLETE] The background worker did not confirm the clear - it may still hold these logs in memory and rewrite them on its next log event.');
@@ -1659,7 +1509,7 @@ function initEventListeners() {
     fetchDynamicModels(true);
   });
 
-  // Auto-fetch models & auto-save settings on API Key input / paste / blur
+
   let apiKeyInputDebounce = null;
   let isPastingKey = false;
   const onApiKeyInput = () => {
@@ -1721,11 +1571,11 @@ function initEventListeners() {
     }, 200);
   });
 
-  // Switch per-provider memory when provider dropdown changes
+
   document.getElementById('providerSelect').addEventListener('change', async () => {
     const provider = document.getElementById('providerSelect').value;
     if (provider === CUSTOM_TRIGGER_VALUE) {
-      // The trigger is not a provider: put the previous selection back and open the Add dialog.
+
       document.getElementById('providerSelect').value = currentSettings.provider || 'openrouter';
       if (customProviderDialog) customProviderDialog.open('add');
       return;
@@ -1750,8 +1600,8 @@ function initEventListeners() {
     const settingsAfter = await Storage.deleteCustomProvider(id);
     if (settingsAfter) currentSettings = settingsAfter;
     await loadSettings();
-    // The picker may still hold the deleted provider's ids; the healed provider's own list
-    // (usually a cache hit) replaces them.
+
+
     await fetchDynamicModels(false);
     const fellBack = currentSettings.provider !== id && descriptor.id === id;
     const healedName = providerMeta(currentSettings.provider, currentSettings).displayName;
@@ -1772,12 +1622,7 @@ function initEventListeners() {
   });
 }
 
-/**
- * Put one provider into effect: load its saved URL, key, model and timeout into the form, update
- * the settings object, autosave, and refresh the model list. The body of the provider-change
- * handler, also called after a custom provider is added or deleted so the form follows without a
- * synthetic change event.
- */
+
 async function applyProviderSelection(provider) {
   const activeIsCustom = isCustomProviderId(provider, currentSettings);
   const providerConfigs = currentSettings.providerConfigs || DEFAULT_PROVIDER_CONFIGS;
@@ -1788,8 +1633,7 @@ async function applyProviderSelection(provider) {
     ollamaGroup.style.display = provider === 'ollama' ? 'flex' : 'none';
   }
 
-  // The dropdown options may have changed (a provider was added or deleted), so rebuild them here
-  // as well; the assignment below needs its option to exist.
+
   buildProviderOptions(document.getElementById('providerSelect'), currentSettings.customProviders);
   document.getElementById('providerSelect').value = provider;
   syncCustomProviderActions(provider);
@@ -1808,13 +1652,13 @@ async function applyProviderSelection(provider) {
   const timeoutToSet = timeoutShownFor({ ...currentSettings, providerConfigs }, provider);
   document.getElementById('llmTimeoutInput').value = timeoutToSet;
 
-  // Update settings object
+
   currentSettings.provider = provider;
   currentSettings.baseUrl = baseUrlToSet;
   currentSettings.apiKey = savedCfg.apiKey || '';
   currentSettings.model = modelToSet;
-  // The global timeout follows the field only for a provider that reads it; a provider's own
-  // value must not leak into the global one the other providers use.
+
+
   if (provider !== 'nvidia' && providerOwnTimeoutOf({ ...currentSettings, providerConfigs }, provider) === 0) {
     currentSettings.llmTimeoutMs = timeoutToSet;
   }
@@ -1830,8 +1674,7 @@ async function startTask() {
   const prompt = document.getElementById('taskInput').value.trim();
   if (!prompt) return;
 
-  // A custom endpoint has no default model to fall back on, so an empty model would be sent as
-  // an empty string. Fail here, at the button, with the fix named.
+
   const activeProviderId = currentSettings.provider || 'openrouter';
   const activeMeta = providerMeta(activeProviderId, currentSettings);
   if (activeMeta.isCustom && !(currentSettings.providerConfigs?.[activeProviderId]?.model || currentSettings.model)) {
@@ -1839,10 +1682,7 @@ async function startTask() {
     return;
   }
 
-  // Claim synchronously, before the first await. renderState() does disable this button, but
-  // only once a running STATE_UPDATE has made the round trip, and both the click handler and
-  // the Enter key land here directly. The engine guards this too; this half is what stops the
-  // duplicate message being sent at all, and gives immediate visual feedback.
+
   if (isSubmittingTask) return;
   isSubmittingTask = true;
   if (btn) btn.disabled = true;
@@ -1851,13 +1691,13 @@ async function startTask() {
     await startTaskInner(prompt);
   } finally {
     isSubmittingTask = false;
-    // renderState() owns the button from here: it re-disables while the task runs, and
-    // re-enables when it ends. Only release it if the task never got that far.
+
+
     if (btn && !isTaskActive) btn.disabled = false;
   }
 }
 
-/** The provider and model the settings hold now, as the run chip names them. */
+
 function currentRunModel() {
   const provider = currentSettings.provider || 'openrouter';
   return {
@@ -1867,19 +1707,19 @@ function currentRunModel() {
 }
 
 async function startTaskInner(prompt) {
-  // Auto-sync form state into Storage before launching task
+
   await autoSaveCurrentForm();
-  // A new task is starting: its own failure (if any) is the one worth showing.
+
   clearTaskError();
   runModelSnapshot = currentRunModel();
-  // A new task is watched from its first row on.
+
   setFollowTimeline(true);
 
   appendLocalLog('INFO', 'Sidepanel', `[TASK_SUBMIT] Sending task to background worker: "${prompt}"`);
 
   sendBgMessage({ action: 'START_TASK', payload: { prompt, effort: currentEffort, autoApprove: approvalMode !== 'manual' } }, (res) => {
-    // Without this check a failed wake-up leaves res undefined and the whole submission
-    // vanishes with no alert, no log and no UI change - the task simply never starts.
+
+
     if (chrome.runtime.lastError) {
       const msg = chrome.runtime.lastError.message;
       appendLocalLog('ERROR', 'Sidepanel', `[TASK_SUBMIT_FAILED] Background worker did not accept the task (${msg}). Reconnecting and retrying is usually enough.`);
@@ -1902,14 +1742,7 @@ async function startTaskInner(prompt) {
   });
 }
 
-/**
- * Surface a task-level failure in the timeline rather than a modal alert(), which the user
- * has to dismiss and which leaves no record of what went wrong.
- *
- * The message is kept in panel state and drawn by the timeline render, so it survives the next
- * state broadcast; it is cleared when a new task starts or the chat changes. Before the first
- * state has arrived there is nothing to re-render, so the card is appended directly.
- */
+
 function showTaskError(message) {
   taskError = String(message || '');
   if (lastState) {
@@ -1922,7 +1755,7 @@ function showTaskError(message) {
   timeline.scrollTop = timeline.scrollHeight;
 }
 
-/** Clears the held task error and takes the card out of the timeline when one is on screen. */
+
 function clearTaskError() {
   if (!taskError) return;
   taskError = null;
@@ -1932,8 +1765,8 @@ function clearTaskError() {
 async function loadSessionHistory() {
   const sessions = await Storage.getSessions();
   const historyBtn = document.getElementById('btnToggleHistory');
-  // Icon only, like the rest of the header. The count stays in the tooltip: a number in the
-  // button overflowed the header at 320px.
+
+
   if (historyBtn) {
     historyBtn.title = `Recent tasks (${sessions.length})`;
     historyBtn.setAttribute('aria-label', `Recent tasks (${sessions.length})`);
@@ -1981,33 +1814,20 @@ async function loadSessionHistory() {
   });
 }
 
-/**
- * Every engine state this panel gets, from the port or from a resync, goes through here.
- *
- * The state names the chat it belongs to (its Recent tasks entry): that id is part of the finish
- * card's identity and marks the chat in the list. The background saves the chat; this panel never
- * writes one. renderState adopts it, but only once the state has passed the staleness gate, so an
- * out-of-order duplicate can never move the panel to another chat.
- */
+
 function receiveState(state) {
   if (!state) return;
   renderState(state);
 }
 
-/**
- * What the panel forgets when the chat on screen is swapped (New chat, a chat opened from Recent
- * tasks): the version watermark (CLEAR_HISTORY restarts the runner's counter), the groups the
- * reader opened or closed (turn numbers start again), the finish card it landed on, and the
- * scroll: the new chat is followed from its end.
- */
+
 function resetChatView() {
   lastRenderedStateVersion = -1;
   turnExpandOverride.clear();
   expandedRows.clear();
   seenFinishKey = null;
-  // The view state of the chat that was on screen: its open summaries and audit sections, the
-  // files it handed over, the code boxes the reader unfolded, and any task error it held. The
-  // keys of all of these name turns or rows of that chat, so none of them may leak into the next.
+
+
   openCompactSummaries.clear();
   openAuditDetails.clear();
   closedAuditDetails.clear();
@@ -2017,18 +1837,13 @@ function resetChatView() {
   setFollowTimeline(true);
 }
 
-/**
- * Opens a chat from Recent tasks as this tab's live chat. The background takes its history, plan
- * and records (LOAD_CHAT) and sends the state, which renders it: the context ring, Compact and the
- * next request all work on it, and a "resume" typed now goes on from where it stopped. Refused
- * while a task runs (the panel says why).
- */
+
 async function loadSelectedSession(sessionId) {
   const drawer = document.getElementById('historyDrawer');
   if (drawer) drawer.style.display = 'none';
   const toggle = document.getElementById('btnToggleHistory');
   if (toggle) toggle.setAttribute('aria-expanded', 'false');
-  // Reset before the request: the state of the opened chat can reach the port before the answer.
+
   const previous = currentSessionId;
   resetChatView();
   const res = await new Promise((resolve) => {
@@ -2076,9 +1891,7 @@ function renderEmptyState() {
   }
 }
 
-/**
- * Render Agent Execution State into UI
- */
+
 function renderState(state) {
   if (!state) return;
 
@@ -2090,12 +1903,11 @@ function renderState(state) {
       lastBootId = state.bootId;
       lastRenderedStateVersion = -1;
     }
-    if (state.stateVersion <= lastRenderedStateVersion) return; // stale/duplicate
+    if (state.stateVersion <= lastRenderedStateVersion) return;
     lastRenderedStateVersion = state.stateVersion;
   }
 
-  // The chat this state belongs to is adopted only now, after the staleness gate: a stale
-  // broadcast must not move the panel to another chat.
+
   if (typeof state.chatId === 'string' && state.chatId) currentSessionId = state.chatId;
   lastState = state;
 
@@ -2124,26 +1936,25 @@ function renderState(state) {
       processingBanner.style.display = 'flex';
       processingBanner.classList.toggle('paused', status === 'paused');
     }
-    // A pause with no card of its own says why (a Resume button with no reason looks like the agent stopped by itself).
+
     if (processingPhaseText) processingPhaseText.textContent = pendingApproval
       ? 'Waiting for your approval'
       : (pauseReasonText(state) || currentPhase || `Processing step ${stepCount}...`);
-    
-    // The bar walks the step limit the settings hold (CONTRACT-STATE: the runner no longer sends
-    // a budget object, and the panel does not read one).
+
+
     const maxSteps = currentSettings.maxSteps || DEFAULT_SETTINGS.maxSteps;
     const currentSteps = stepCount || 1;
     const pct = Math.min(100, Math.round((currentSteps / Math.max(1, maxSteps)) * 100));
     if (progressBarFill) {
       progressBarFill.style.width = `${pct}%`;
-      // A hold at the plan is not progress through the steps; the bar would claim 4% of a run
-      // that has not executed anything yet.
+
+
       if (progressBarFill.parentElement) progressBarFill.parentElement.style.display = pendingApproval ? 'none' : '';
     }
 
     isTaskActive = true;
-    // The plan card is the only decision while it is up: Cancel there ends the run, so the
-    // control bar would only repeat it.
+
+
     if (controlBar) controlBar.style.display = pendingApproval ? 'none' : 'flex';
     if (taskInput) taskInput.disabled = true;
     if (btnStartTask) btnStartTask.disabled = true;
@@ -2156,8 +1967,8 @@ function renderState(state) {
     if (!runModelSnapshot) runModelSnapshot = currentRunModel();
 
     if (btnPause) {
-      // The plan card owns the decision while it is up: Resume would only re-enter the loop
-      // without an approval, so it is replaced by Approve/Cancel on the card.
+
+
       btnPause.style.display = pendingApproval ? 'none' : '';
       if (status === 'paused') {
         btnPause.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Resume`;
@@ -2180,31 +1991,26 @@ function renderState(state) {
     runModelSnapshot = null;
   }
 
-  // New chat clears the run history, which would strand a plan hold that is still waiting for
-  // an answer. It is only available between runs.
+
   const newChatBtn = document.getElementById('btnNewChat');
   if (newChatBtn) {
     newChatBtn.disabled = isTaskActive;
     newChatBtn.title = isTaskActive ? 'Stop the task before starting a new chat' : 'New chat';
   }
 
-  // The context meter follows every state: the last model call while a run is live, the estimate
-  // of the next request between runs, and 0% for an empty chat.
+
   lastContextState = state.context || null;
   lastContextBusy = status === 'running' || status === 'paused';
   renderContextMeter();
 
 
-
-  // A run that ended may have learned that its model refuses the reasoning fields (or which values
-  // it accepts): ask again, so the composer offers what the next run will really send.
   if (effortRunWasActive && status !== 'running' && status !== 'paused') refreshEffortSupport();
   effortRunWasActive = status === 'running' || status === 'paused';
   const processingEffortBadge = document.getElementById('processingEffortBadge');
   if (processingEffortBadge) {
     if (status === 'running' || status === 'paused') {
-      // The chip names the model's reasoning level, and only when one is sent: not for Auto and
-      // not for a model that takes none.
+
+
       const activeEffort = state.effort?.level || (currentEffort !== 'auto' ? currentEffort : null);
       if (activeEffort && activeEffort !== 'auto' && effortSupport.levels.length > 1 && !pendingApproval) {
         processingEffortBadge.textContent = `${EFFORT_LABEL[normalizeEffort(activeEffort)] || activeEffort}`;
@@ -2218,9 +2024,7 @@ function renderState(state) {
     }
   }
 
-  // The run shows which provider and model it uses (featere/custom-endpoint A6.3): what the
-  // settings held when the task started, kept for the whole run. A user-added provider appears
-  // under its display name, exactly as it does in the picker.
+
   const processingModelChip = document.getElementById('processingModelChip');
   if (processingModelChip) {
     if (status === 'running' || status === 'paused') {
@@ -2229,8 +2033,8 @@ function renderState(state) {
       const runModel = run.model;
       if (runProvider.exists && runModel && !pendingApproval) {
         processingModelChip.textContent = `${runProvider.displayName} · ${runModel}`;
-        // The label of a built-in can be long ("OpenAI-Compatible (Groq, ...)"): the chip clamps
-        // to one line, and the hover text carries the whole thing.
+
+
         processingModelChip.title = `${runProvider.displayName} · ${runModel}`;
         processingModelChip.style.display = 'inline-block';
       } else {
@@ -2244,11 +2048,7 @@ function renderState(state) {
   renderTimelineFromState(state);
 }
 
-/**
- * The timeline part of a state render: the turns, the holds, and (when one is held) the task error
- * card. Split from renderState so a failure that happens between broadcasts (a refused confirm, a
- * dead worker) can put its card up at once, and so the card survives every later broadcast.
- */
+
 function renderTimelineFromState(state) {
   const { status, currentPhase, history, pendingApproval, pendingConfirm, planSteps } = state;
   const timeline = document.getElementById('timeline');
@@ -2265,8 +2065,8 @@ function renderTimelineFromState(state) {
   lastTimelineHtml = html;
   timeline.innerHTML = html;
   attachShotSlots();
-  // Following: the newest row stays in view however the content grew. A reader who scrolled up
-  // keeps their place, and the Jump button tells them that something new came in below.
+
+
   if (followTimeline) {
     if (scrollTimelineToLatest(timeline, finishArrived) === 'card-top') setFollowTimeline(false);
   } else if (changed) {
@@ -2274,45 +2074,40 @@ function renderTimelineFromState(state) {
   }
 }
 
-/** The card of a task-level failure, as the timeline renders it. */
+
 function taskErrorCardHtml(message) {
   return `<div class="result-badge error" style="margin-top: 8px; padding: 10px 12px; border-radius: 8px; font-size: 12px; line-height: 1.5; align-items: flex-start;">${ICONS.warning}<span><strong>Task error:</strong><br>${escapeHtml(message)}</span></div>`;
 }
 
-/** Whether the timeline follows the run now (for the tests). */
+
 function isFollowingTimeline() {
   return followTimeline;
 }
 
-/** Turns following on or off. On hides the Jump button: there is nothing below to jump to. */
+
 function setFollowTimeline(on) {
   followTimeline = !!on;
   if (followTimeline) showJumpToLatest(false);
 }
 
-/** Shows or hides the round "Jump to latest" button above the composer. */
+
 function showJumpToLatest(show) {
   const btn = document.getElementById('btnJumpLatest');
   if (btn) btn.hidden = !show;
 }
 
-/** The distance from the timeline's view to its bottom, in px. */
+
 function timelineGap(timeline) {
   return (Number(timeline.scrollHeight) || 0) - (Number(timeline.scrollTop) || 0) - (Number(timeline.clientHeight) || 0);
 }
 
-/** Puts the newest row in view while following is on. */
+
 function keepTimelineAtBottom() {
   const timeline = document.getElementById('timeline');
   if (timeline && followTimeline) timeline.scrollTop = timeline.scrollHeight;
 }
 
-/**
- * Following goes with the reader's scrolling: back within FOLLOW_SLACK_PX of the bottom turns it
- * on, and a scroll away from the bottom turns it off only when the reader moved the timeline
- * themself. Content that grows moves nothing (no scroll event), and keys typed into the composer
- * never reach the timeline, so neither can turn it off.
- */
+
 function initTimelineFollow(timeline) {
   const markReader = () => { readerScrollAt = Date.now(); };
   timeline.addEventListener('wheel', (e) => { if ((e.deltaY || 0) < 0) markReader(); }, { passive: true });
@@ -2320,7 +2115,7 @@ function initTimelineFollow(timeline) {
   timeline.addEventListener('keydown', (e) => {
     if (['ArrowUp', 'PageUp', 'Home'].includes(e.key) || (e.key === ' ' && e.shiftKey)) markReader();
   });
-  // A press in the scrollbar's strip (right of the content box) is the reader dragging it.
+
   timeline.addEventListener('pointerdown', (e) => {
     if (typeof e.offsetX === 'number' && e.offsetX >= timeline.clientWidth) readerOnScrollbar = true;
   });
@@ -2343,17 +2138,7 @@ function initTimelineFollow(timeline) {
   }
 }
 
-/**
- * Puts the pictures into the slots the render just created: the picture slots of the rows and of a
- * group's "Captured page" section, and the thumbnails in the heads of the groups.
- *
- * A picture that is cached is moved in from its element, which decodes nothing. Each picture has
- * two elements, the picture and its thumbnail, so a head and a section that show the same picture
- * never take one element from each other. A picture that is not cached yet is fetched once, decoded
- * off-screen, and then attached to every slot that shows it, so it never appears half-drawn. A
- * picture the background no longer has says so in a muted line (and its thumbnail is left out),
- * never a broken <img>.
- */
+
 function attachShotSlots() {
   const slots = document.querySelectorAll('#timeline .act-shot-slot, #timeline .act-head-thumb');
   for (const slot of slots) {
@@ -2374,7 +2159,7 @@ function attachShotSlots() {
   }
 }
 
-/** The muted line of a picture that is not there (or the removal of its thumbnail). */
+
 function markShotGone(slot, imageId) {
   if (slot.classList.contains('act-head-thumb')) {
     slot.remove();
@@ -2384,12 +2169,12 @@ function markShotGone(slot, imageId) {
   slot.innerHTML = `<span class="act-shot-gone">${why}</span>`;
 }
 
-/** Puts one decoded picture (or its placeholder) into one slot. */
+
 function attachShotPicture(slot, img, dataUrl) {
   const width = Number(slot.getAttribute('data-w')) || img.naturalWidth || 4;
   const height = Number(slot.getAttribute('data-h')) || img.naturalHeight || 3;
-  // The markup reserved the picture's shape from the stored size; a slot without one gets it
-  // here, from the picture itself, so the layout does not jump again.
+
+
   if (width > 0 && height > 0) slot.style.aspectRatio = `${width} / ${height}`;
   slot.innerHTML = '';
   img.width = width;
@@ -2401,7 +2186,7 @@ function attachShotPicture(slot, img, dataUrl) {
   keepTimelineAtBottom();
 }
 
-/** Puts the thumbnail element of a picture into a group's head. Decorative: the head's label names it. */
+
 function attachShotThumb(slot, thumb) {
   slot.innerHTML = '';
   thumb.alt = '';
@@ -2409,22 +2194,15 @@ function attachShotThumb(slot, thumb) {
   slot.appendChild(thumb);
 }
 
-/**
- * Fetches one picture by id, decodes it, and attaches it to every slot that shows it.
- *
- * Only a real answer from the background decides anything: a reply that carries the bytes stores
- * the picture, and a reply that does not marks it gone. The panel's own timeout (a busy worker)
- * only ends the waiting - it never marks the picture gone, and an answer that arrives after it
- * still stores and draws the picture. `timeoutMs` exists for the tests; production waits 3 s.
- */
+
 function loadShotPicture(imageId, timeoutMs = 3000) {
   if (shotLoading.has(imageId)) return;
   shotLoading.add(imageId);
   const dataUrlFor = (data, mediaType) => (String(data).startsWith('data:')
     ? String(data)
     : `data:${mediaType || 'image/jpeg'};base64,${data}`);
-  // This request's own lifecycle: the flag is held until the bytes are decoded (or the wait
-  // ends), so a re-render cannot start a second fetch for the same picture meanwhile.
+
+
   let settled = false;
   const release = () => {
     if (settled) return;
@@ -2432,25 +2210,25 @@ function loadShotPicture(imageId, timeoutMs = 3000) {
     shotLoading.delete(imageId);
   };
   const attach = () => {
-    // The timeline may have been rendered again while the picture was loading: its slots now are
-    // the ones that get it.
+
+
     attachShotSlots();
   };
 
-  /** Applies one real answer: the picture goes into the cache, or it is recorded as gone. */
+
   const applyAnswer = (answer) => {
     if (answer && answer.success && answer.data) {
       const dataUrl = dataUrlFor(answer.data, answer.mediaType);
       const img = new Image();
       img.src = dataUrl;
       img.decode().then(() => {
-        // The thumbnail is a second element of the same decoded bytes, made once here.
+
         shotCache.set(imageId, { dataUrl, img, thumb: img.cloneNode() });
         release();
         attach();
       }, () => {
-        // The bytes came back but they are not a picture the browser can decode. That is not the
-        // same as "the session dropped it", and saying so would be a wrong explanation.
+
+
         shotGone.add(imageId);
         shotGone.add(`${imageId}#undecodable`);
         release();
@@ -2466,13 +2244,13 @@ function loadShotPicture(imageId, timeoutMs = 3000) {
   try {
     sendBgMessage({ action: 'GET_SCREENSHOT', payload: { imageId } }, (resp) => {
       if (chrome.runtime.lastError || !resp) {
-        // No reply (the channel closed, the worker is gone): unknown, not gone. The next render
-        // asks again.
+
+
         release();
         return;
       }
       release();
-      // A real answer always decides, even one that arrives after the timer gave up waiting.
+
       applyAnswer(resp);
     });
   } catch (_) {
@@ -2480,25 +2258,13 @@ function loadShotPicture(imageId, timeoutMs = 3000) {
     return;
   }
   setTimeout(() => {
-    // Still nothing after the wait: stop waiting. The slot stays empty until the next render
-    // asks again; nothing is marked gone.
+
+
     release();
   }, timeoutMs);
 }
 
-/**
- * Where the panel lands when the newest finish card appears.
- *
- * Following the bottom is right while a run is live, but a finish card can be taller than the
- * panel (a long answer with a table). Ending at its bottom then hides its title, its subtitle and
- * the start of "What could not be verified", and the reader first sees the middle of the answer.
- * So when the card's top would be scrolled out of view, the panel lands on the top of the card
- * instead. The card's top is visible at the bottom scroll position exactly when the card fits
- * (with the gap and the padding below it), so short cards end at the bottom as they always did.
- *
- * `cardTop` is the card's offset inside the scrolled content. `margin` is the air kept above the
- * card: less than the gap to the group above it, so no sliver of that group shows.
- */
+
 const FINISH_LANDING_MARGIN = 8;
 
 function finishLandingTop({ cardTop, viewHeight, scrollHeight, margin = FINISH_LANDING_MARGIN }) {
@@ -2507,12 +2273,10 @@ function finishLandingTop({ cardTop, viewHeight, scrollHeight, margin = FINISH_L
   return cardStart >= bottom ? scrollHeight : cardStart;
 }
 
-// The finish card the panel has already dealt with (landed on, or left alone because the reader
-// was scrolled up). renderState runs on every broadcast: the landing must happen once per card,
-// or a reader who scrolled down through a long answer would be thrown back to its top.
+
 let seenFinishKey = null;
 
-/** Identity of the newest finish entry: the session, its place in the history and the answer length. */
+
 function finishCardKey(history) {
   const list = Array.isArray(history) ? history : [];
   for (let i = list.length - 1; i >= 0; i--) {
@@ -2523,7 +2287,7 @@ function finishCardKey(history) {
   return null;
 }
 
-/** True once for each finish card, when it first shows up in a render of a run that is no longer live. */
+
 function noteFinishCard(status, history) {
   if (status === 'running' || status === 'paused') return false;
   const key = finishCardKey(history);
@@ -2532,11 +2296,7 @@ function noteFinishCard(status, history) {
   return true;
 }
 
-/**
- * The scroll step of renderState while following: the bottom, or the top of a finish card that
- * just arrived and is taller than the view. Returns 'card-top' for that landing (following then
- * stops, so the reader is not thrown past the card's start), else 'bottom'.
- */
+
 function scrollTimelineToLatest(timeline, finishArrived) {
   const lastTurn = timeline.lastElementChild;
   const card = finishArrived && lastTurn && lastTurn.querySelector ? lastTurn.querySelector('.finish-card') : null;
@@ -2550,23 +2310,14 @@ function scrollTimelineToLatest(timeline, finishArrived) {
   return landing >= timeline.scrollHeight ? 'bottom' : 'card-top';
 }
 
-/**
- * Batched action rendering.
- *
- * A session is a sequence of turns. Each turn is: the goal you typed, a collapsible group of
- * one-line action rows showing what the agent actually did, then the answer. While a turn runs
- * its group is open so you can watch; once it finishes the group collapses to a single summary
- * line so a long session stays readable. Reasoning hides behind each row until you click it.
- */
 
-/** Split flat history into turns. A turn starts at each user_goal entry. */
 function buildTurns(history) {
   const turns = [];
   let cur = null;
   (history || []).forEach((item, idx) => {
     if (item.type === 'chat_compacted') {
-      // A Compact is its own item between turns: it belongs to no run, has no steps, and the
-      // turn after it starts fresh.
+
+
       turns.push({
         compacted: true,
         idx,
@@ -2599,7 +2350,7 @@ function buildTurns(history) {
     if (item.type === 'agent_response' && item.action) {
       cur.entries.push({ kind: 'action', idx, action: item.action, thought: item.thought || '', outcome: null });
     } else if (item.type === 'execution_result') {
-      // Attach the outcome to the action row it belongs to.
+
       for (let i = cur.entries.length - 1; i >= 0; i--) {
         if (cur.entries[i].kind === 'action' && !cur.entries[i].outcome) {
           cur.entries[i].outcome = item;
@@ -2616,8 +2367,8 @@ function buildTurns(history) {
     } else if (item.type === 'user_answer') {
       cur.entries.push({ kind: 'answer', idx, content: item.content });
     } else if (item.type === 'confirm_review') {
-      // The decision on a confirmation card, kept so the record of the run shows what the user
-      // allowed or denied, and whether the origin was remembered for the rest of the run.
+
+
       cur.entries.push({
         kind: 'confirm',
         idx,
@@ -2628,21 +2379,21 @@ function buildTurns(history) {
     } else if (item.type === 'finish') {
       cur.answer = item.answer;
       cur.answerUnconfirmed = !!item.unconfirmed;
-      // How the run went, as the model said it with finish. Absent on a plain-text reply and on
-      // runs saved before finish had it: those keep the older card (failed step -> Failed).
+
+
       cur.outcome = Object.prototype.hasOwnProperty.call(OUTCOME_CARD, item.outcome) ? item.outcome : null;
-      // The supporting material of a structured answer, shown in its own section.
+
       cur.evidence = item.evidence || '';
-      // Written by the engine's answer audit (agent/answerAudit.ts). Absent on older runs and on
-      // saved sessions from before the audit existed: those render exactly as they always did.
+
+
       cur.audit = item.audit || null;
       cur.table = item.table || null;
       cur.runStats = item.runStats || null;
-      // The files the run hands over with its answer (finish records_file or files).
+
       cur.files = Array.isArray(item.files) ? item.files.filter((f) => f && typeof f.name === 'string' && typeof f.content === 'string') : null;
     } else if (item.type === 'partial_result') {
-      // The run ended before it finished (a Stop, the step cap, a blocked site, a stop-early, unusable
-      // model replies). It has an answer slot like a finish, but renderFinishCard never calls it Done.
+
+
       cur.answer = item.answer;
       cur.partial = true;
       cur.partialReason = typeof item.reason === 'string' ? item.reason : '';
@@ -2654,7 +2405,7 @@ function buildTurns(history) {
   return turns;
 }
 
-/** The first sentence of a text (or its first line), without a closing colon, at most 140 characters. Plain text: escape it before it goes into HTML. */
+
 function firstSentence(text) {
   const t = String(text == null ? '' : text).trim();
   const line = t.split('\n')[0] || '';
@@ -2663,7 +2414,7 @@ function firstSentence(text) {
   return sentence.length > 140 ? `${sentence.slice(0, 139)}…` : sentence;
 }
 
-/** One-line human description of an action: icon, verb, and the thing it acted on. */
+
 function describeAction(action, outcome) {
   const label = (outcome && outcome.label) || '';
   const quote = (t) => `<em>${escapeHtml(String(t).length > 44 ? String(t).slice(0, 43) + '…' : String(t))}</em>`;
@@ -2675,13 +2426,12 @@ function describeAction(action, outcome) {
       const part = Number.isInteger(action.part) && action.part > 1 ? ` (part ${escapeHtml(String(action.part))})` : '';
       return { icon: ICONS.eye, text: action.element_id !== undefined && action.element_id !== null ? `Read the text of ${label ? quote(label) : `element ${escapeHtml(String(action.element_id))}`}${part}` : `Read page text${part}` };
     }
-    // A row of a session saved before read_page replaced it.
+
     case 'read_page_text':return { icon: ICONS.eye, text: 'Read page text' };
     case 'click':         return {
       icon: ICONS.pointer,
-      // A coordinate click has no element and no label, and "Clicked element undefined" is what
-      // the old wording would have said. The pixels are the picture's pixels, and the user is
-      // looking at that same picture in the thumbnail, so the wording says so.
+
+
       text: label
         ? `Clicked ${quote(label)}`
         : (action.x !== undefined && action.x !== null
@@ -2691,7 +2441,7 @@ function describeAction(action, outcome) {
     case 'take_screenshot': return { icon: ICONS.camera, text: 'Looked at the page' };
     case 'type':          return { icon: ICONS.keyboard, text: `${action.mode === 'append' ? 'Appended' : 'Typed'} ${quote(action.text || '')}${label ? ` into ${quote(label)}` : ''}` };
     case 'scroll': {
-      // The engine measures a scroll: the row says what really moved, or that nothing did.
+
       const measured = /^(Scrolled .+? (?:down|up) \d+px|Did not move: [^.]*)/.exec(String((outcome && outcome.message) || ''));
       return { icon: ICONS.scrollIco, text: measured ? escapeHtml(measured[1]) : `Scrolled ${escapeHtml(action.direction || 'down')}` };
     }
@@ -2699,7 +2449,7 @@ function describeAction(action, outcome) {
     case 'go_forward':    return { icon: ICONS.back, text: 'Went forward' };
     case 'get_page_elements': return { icon: ICONS.pointer, text: 'Listed the clickable elements' };
     case 'find_elements': return { icon: ICONS.search, text: `Searched elements for ${quote(action.query || '')}` };
-    // Research outside the tab: the row says what was searched, and what was read from where.
+
     case 'web_search':    return { icon: ICONS.search, text: `Searched the web: ${quote(action.query || '')}` };
     case 'fetch_url': {
       const file = (() => { try { return decodeURIComponent(new URL(action.url).pathname.split('/').filter(Boolean).pop() || ''); } catch (_) { return ''; } })();
@@ -2716,18 +2466,18 @@ function describeAction(action, outcome) {
     }
     case 'wait':          return { icon: ICONS.clock, text: `Waited ${escapeHtml(String(action.amount || 1))}s` };
     case 'save_data': {
-      // The engine counts what was new and what is saved in all: the row says that, not what was sent.
+
       const saved = /^Saved \d+ new records? \(\d+ in total\)/.exec(String((outcome && outcome.message) || ''));
       const n = Number(action.count) || 0;
       return { icon: ICONS.doc, text: saved ? escapeHtml(saved[0]) : `Saved ${n} record${n === 1 ? '' : 's'}` };
     }
     case 'finish':
-      // A finish the engine's answer audit sent back is not a finish: the run went on. Say so, and why.
+
       return outcome && outcome.finishRefused
         ? { icon: ICONS.warning, text: 'Finish not accepted', detail: firstSentence(outcome.error) }
         : { icon: ICONS.complete, text: 'Gave the final answer' };
     case 'record_finding': {
-      // The model's own words (field names and values): quote() escapes them.
+
       if (action.field) {
         const value = action.value == null ? '' : (typeof action.value === 'string' ? action.value : JSON.stringify(action.value));
         return { icon: ICONS.doc, text: value ? `Saved ${quote(action.field)}: ${quote(value)}` : `Saved ${quote(action.field)}` };
@@ -2739,37 +2489,18 @@ function describeAction(action, outcome) {
   }
 }
 
-/**
- * Should this turn's group be open? Explicit user choice always wins. Otherwise: open while
- * the turn is live so you can watch it, and open if it ended without producing an answer so
- * the reason is visible. A turn that finished successfully collapses, even if some individual
- * action failed along the way - recovering from a failed click is normal, not a bad outcome.
- */
+
 function isTurnExpanded(turn, isLive, incomplete) {
   if (turnExpandOverride.has(turn.turn)) return turnExpandOverride.get(turn.turn);
-  // A run that ended before it finished stays open too: the steps are how it got there.
+
   return isLive || incomplete || !!turn.partial;
 }
 
-/**
- * Answer audit display: the finish card, its "what could not be verified" block, the plan rows.
- *
- * The engine audits every final answer against the pages it really read (agent/answerAudit.ts)
- * and attaches the result to the finish history entry as `audit`:
- *   { verdict: 'verified' | 'partial' | 'unverified', opened: [{host, url}], notOpened: [host],
- *     notes: [{code, severity: 'lie' | 'gap' | 'soft', text}], sendBacks: number }
- * The panel only DISPLAYS that verdict. It never re-judges an answer, and it never turns a worse
- * verdict into a better one. Everything below is a pure string builder so it can be tested
- * without a DOM (tests/sidepanelAudit.test.js).
- *
- * Escaping: the notes are written by code, but the URLs and hosts come from pages on the open
- * web and the answer comes from the model, so every string goes through escapeHtml and none is
- * ever put into the page raw. A URL only becomes a link when it starts with http:// or https://.
- */
+
 const PLAN_STATUSES = ['pending', 'in_progress', 'completed', 'skipped'];
 const AUDIT_VERDICTS = ['verified', 'partial', 'unverified'];
 const NOTE_SEVERITY_RANK = { lie: 0, gap: 1, soft: 2 };
-// Spoken label for the coloured dot in front of a note (colour alone must not carry the meaning).
+
 const NOTE_SEVERITY_LABEL = { lie: 'Problem', gap: 'Gap', soft: 'Note' };
 
 const AUDIT_SUBTITLE = {
@@ -2777,15 +2508,10 @@ const AUDIT_SUBTITLE = {
   partial: 'Not every source was checked.'
 };
 const UNCONFIRMED_NOTICE = 'The model replied in plain text instead of finishing the task.';
-// How many unchecked sources the subtitle of a partial answer names before it says "and N more".
+
 const SUBTITLE_SOURCES = 3;
 
-/**
- * The subtitle of a partial answer. It names the sources that were never opened, because that is
- * the one thing a reader wants to know at a glance ("Not every source was checked: shop-b.test.").
- * Returns HTML: the names come from the task text and from web pages, so each one is escaped here.
- * With no name to give it keeps the general sentence.
- */
+
 function partialSubtitle(notOpened) {
   if (!notOpened.length) return AUDIT_SUBTITLE.partial;
   const names = notOpened.slice(0, SUBTITLE_SOURCES).map(escapeHtml).join(', ');
@@ -2797,13 +2523,7 @@ function hostOfUrl(url) {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch (_) { return ''; }
 }
 
-/**
- * Makes sure an `audit` from the history is safe to render: right types, no duplicates, notes
- * sorted worst first. Returns null when there is no audit object at all (the entry is then
- * rendered exactly as before the audit existed). An audit with a verdict this build does not know
- * is shown as 'unverified': a newer engine may add verdicts, and an unknown one must never be
- * shown as a green "Done".
- */
+
 function normalizeAudit(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const list = (v) => (Array.isArray(v) ? v : []);
@@ -2844,7 +2564,7 @@ function normalizeAudit(raw) {
   };
 }
 
-/** A URL is only made clickable when it is plainly http(s). Anything else is shown as text. */
+
 function isHttpUrl(url) {
   return /^https?:\/\//i.test(url);
 }
@@ -2866,13 +2586,7 @@ function renderAuditNotes(notes) {
   ).join('')}</ul>`;
 }
 
-/**
- * The native <details> under (or above) the answer.
- *   mode 'attention' (unverified, partial): "What could not be verified" - the notes, the sources
- *        that were never opened, and the pages that were read.
- *   mode 'verified': a quiet "Checked against N pages" line that opens to the pages and soft notes.
- * Returns '' when there is nothing to open, and then a verified card still gets the plain line.
- */
+
 function renderAuditDetails(audit, turnNo, mode) {
   const attention = mode === 'attention';
   const pageCount = audit.opened.length;
@@ -2902,22 +2616,17 @@ function renderAuditDetails(audit, turnNo, mode) {
 
   const cls = `audit ${attention ? 'attention' : 'verified'}`;
   if (!sections.length) {
-    // Nothing to open (a verified answer that read no page and has no notes): keep the line, drop the toggle.
+
     return attention ? '' : `<div class="${cls}"><div class="audit-line">${summaryText}</div></div>`;
   }
   const key = escapeHtml(String(turnNo));
-  // An unverified answer shows what is wrong with it without a click, unless the reader closed it.
+
   const byDefault = attention && audit.verdict === 'unverified' && !closedAuditDetails.has(String(turnNo));
   const isOpen = openAuditDetails.has(String(turnNo)) || byDefault;
   return `<details class="${cls}" data-audit-key="${key}"${isOpen ? ' open' : ''}><summary class="audit-summary"><span class="audit-chev">${ICONS.chevron}</span><span>${summaryText}</span></summary><div class="audit-body">${sections.join('')}</div></details>`;
 }
 
-/**
- * The card of a finish that says how the run went (the finish tool's `outcome`). The title follows
- * the outcome, never whether a step failed on the way: a run can fail a step and still answer
- * (a blocked search, then the answer from another source), and a run can fail nothing and still
- * not do the task (a button that does nothing). A failed step is a quiet note under the title.
- */
+
 const OUTCOME_CARD = {
   done: { title: 'Done', cls: '', icon: 'complete' },
   partial: { title: 'Partly done', cls: 'partial', icon: 'warning' },
@@ -2929,26 +2638,7 @@ function failedStepsNote(count) {
   return n > 0 ? `${n} step${n === 1 ? '' : 's'} failed along the way.` : '';
 }
 
-/**
- * The finish card. Verdict decides the card:
- *   unverified -> danger card "Unconfirmed answer"     partial -> warning card "Partial answer"
- *   verified   -> today's green "Done" plus a quiet "Checked against N pages" line
- *   no audit   -> today's card, byte for byte ("Done", or "Unconfirmed answer" for a freeform reply)
- * The old `unconfirmed` flag (the model never called finish, Tarka inferred the end from a plain
- * reply) is a separate fact and stays visible next to a verdict: it turns a green or amber card
- * red, and it adds one line saying why. A verified-but-unconfirmed answer keeps the title
- * "Unconfirmed answer": its content was checked, but the model never said it was done.
- *
- * A step that failed is the third fact. A run whose click never reached the page and that said
- * so in the answer still did not do the task: a green "Done" next to "the click failed" is the
- * one thing a user must never be shown, because it is the green tick on a run that did nothing.
- */
-/**
- * The files of a finish, one chip each with its name and size. A click opens the file's preview,
- * where the reader can look at it, copy it, or download it (always the user's click, never on its
- * own). The content stays in the history row; the chip only names it by turn and index, and the
- * click looks it up in shownFiles.
- */
+
 const shownFiles = new Map();
 
 function fileSize(chars) {
@@ -2967,7 +2657,7 @@ function renderFileChips(turn) {
   return `<div class="finish-files">${chips}</div>`;
 }
 
-/** Saves one file of a finish card through the browser's own download, named as the run named it. */
+
 function downloadShownFile(key) {
   const file = shownFiles.get(key);
   if (!file) {
@@ -2984,7 +2674,7 @@ function downloadShownFile(key) {
   setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
-/** Folds or unfolds one code box, and remembers it: the timeline is rewritten on every update. */
+
 function toggleCodeFold(button) {
   const box = button.closest('.code-box');
   if (!box) return;
@@ -2996,24 +2686,19 @@ function toggleCodeFold(button) {
   button.textContent = folded ? `Show all ${button.getAttribute('data-lines')} lines` : 'Show less';
 }
 
-/** The text a preview shows: a JSON file pretty-printed when it parses, every other file as written. */
+
 function previewText(file) {
   const content = String(file.content == null ? '' : file.content);
   if (/\.json$/i.test(file.name || '')) {
     try {
       return { text: JSON.stringify(JSON.parse(content), null, 2), lang: 'json' };
-    } catch { /* shown as written */ }
+    } catch {  }
   }
   const ext = (/\.([a-z0-9]+)$/i.exec(file.name || '') || [])[1] || '';
   return { text: content, lang: ext.toLowerCase() === 'json' ? 'json' : '' };
 }
 
-/**
- * The preview of one file of a finish card: a native modal dialog on document.body, outside the
- * timeline (which is rewritten on every update), so it stays open while a run goes on. Escape,
- * the focus trap and the backdrop come with showModal. Copy copies the file as it is stored,
- * Download saves it through the browser's own download.
- */
+
 let filePreviewDialog = null;
 
 function filePreview() {
@@ -3037,7 +2722,7 @@ function filePreview() {
     if (e.target.closest('.file-download')) downloadShownFile(key);
   });
   dialog.addEventListener('close', () => {
-    // The chip that opened it may have been drawn again since: find it by its key.
+
     const key = dialog.getAttribute('data-file');
     const chip = key ? document.querySelector(`.file-chip[data-file="${CSS.escape(key)}"]`) : null;
     if (chip) chip.focus();
@@ -3067,24 +2752,22 @@ function renderFinishCard(turn) {
   if (turn.partial) return renderPartialCard(turn);
   const audit = normalizeAudit(turn.audit);
   const unconfirmed = !!turn.answerUnconfirmed;
-  // With an audit the card already says all of it (title, subtitle, the notes below): the stored answer keeps the
-  // warning line and the notes section the engine wrote into it, for copying, but they are not shown a second time.
+
+
   const raw = audit ? withoutEngineNotes(turn.answer) : turn.answer;
-  // The safety net for answers that are still a JSON object: the engine pulls the readable part
-  // out before it stores the answer, but a session saved by an older build still holds the raw
-  // JSON, and a wall of braces is not something to show a person. The engine's own answer is
-  // left exactly as it is.
+
+
   const extracted = extractReadableAnswer(raw);
   const shown = extracted.text;
-  // If the answer is a failure marker (MOCK-FAIL: ...), the task did not actually succeed even
-  // though the model called finish. Show it as a failed answer, not as green "Done".
+
+
   const isFailedAnswer = /^MOCK-FAIL:/i.test(String(shown || ''));
-  // A step of this turn failed. The run reported it and ended, so the card is a red one: the
-  // user has to see that the task did not go through, not a green tick.
+
+
   const hadFailedStep = !!turn.failed;
   const body = `<div class="finish-body">${formatMarkdownText(shown)}</div>${renderFileChips(turn)}`;
-  // The supporting material of a structured answer, in a section the reader opens. It is shown
-  // only when there is something to show, and never in place of the answer.
+
+
   const evidenceText = extracted.evidence || turn.evidence || '';
   const evidenceHtml = evidenceText
     ? `<details class="audit verified answer-evidence"><summary class="audit-summary"><span class="audit-chev">${ICONS.chevron}</span><span>Evidence</span></summary><div class="audit-body"><div class="audit-plain">${escapeHtml(evidenceText)}</div></div></details>`
@@ -3123,8 +2806,8 @@ function renderFinishCard(turn) {
     classes.push('partial');
     subs.push(partialSubtitle(audit.notOpened));
   } else if (hadFailedStep) {
-    // A step failed, so the task did not go through. A verified answer is a claim about the
-    // answer, not about the run: the run still failed, and the card says so.
+
+
     title = 'Failed'; icon = ICONS.warning;
     classes.push('failed');
   } else if (unconfirmed) {
@@ -3143,17 +2826,12 @@ function renderFinishCard(turn) {
     : '';
   const attention = audit.verdict !== 'verified';
   const details = renderAuditDetails(audit, turn.turn, attention ? 'attention' : 'verified');
-  // The caveat goes above a doubtful answer, so it is seen before the answer is read, and below a
-  // checked one, where it is only a receipt.
+
+
   return `<div class="${classes.join(' ')}"><div class="finish-title">${icon} ${title}</div>${subHtml}${attention ? details : ''}${body}${evidenceHtml}${tableHtml}${statsHtml}${attention ? '' : details}</div>`;
 }
 
-/**
- * The finish tool's table (CONTRACT-TABLE): { columns: string[], rows: string[][] }. Rendered as a
- * real table, the header row built from `columns` and one row per `rows` entry, in the same
- * scrollable wrapper the answer's own markdown tables use. Every cell is escaped. Anything that is
- * not that shape (an older session, a malformed row) renders nothing instead of breaking the card.
- */
+
 function renderFinishTable(table) {
   const columns = table && Array.isArray(table.columns) ? table.columns : null;
   const rows = table && Array.isArray(table.rows) ? table.rows : null;
@@ -3161,17 +2839,13 @@ function renderFinishTable(table) {
   const head = `<thead><tr>${columns.map((c) => `<th scope="col">${escapeHtml(c)}</th>`).join('')}</tr></thead>`;
   const body = `<tbody>${rows.map((row) => {
     const cells = Array.isArray(row) ? row : [];
-    // escapeHtml treats every falsy value as empty, so a number 0 or false has to be stringified first.
+
     return `<tr>${columns.map((_, i) => `<td>${escapeHtml(cells[i] == null ? '' : String(cells[i]))}</td>`).join('')}</tr>`;
   }).join('')}</tbody>`;
   return `<div class="md-table-wrap" role="region" aria-label="Table" tabindex="0"><table class="md-table">${head}${body}</table></div>`;
 }
 
-/**
- * The run's numbers, as one quiet line under the answer (the runner attaches runStats to the
- * finish row and to the closing partial row). Rendered defensively: a run without stats, an
- * older session, or an object with nothing in it shows no line at all.
- */
+
 function renderRunStats(stats) {
   if (!stats || typeof stats !== 'object') return '';
   const calls = Number(stats.modelCalls) || 0;
@@ -3188,23 +2862,16 @@ function renderRunStats(stats) {
   return `<div class="finish-stats">${escapeHtml(parts.join(' · '))}</div>`;
 }
 
-/**
- * The card of a run that ended before it finished (a partial_result entry). It is never "Done" and
- * never has the complete icon: the title says how the run ended, the card has the amber edge of a
- * partial answer, and the subtitle says why. The engine writes the why as the first paragraph of
- * the answer ("Task was stopped by user.", "Stopped early: ...", "Site domain x is blocked ...");
- * it moves to the subtitle so it is not said twice. When that paragraph is the table, or a long
- * text, the subtitle is a fixed sentence for the reason and the whole answer stays in the body.
- */
+
 const PARTIAL_TITLE = {
   stopped: 'Stopped by you',
   max_steps: 'Stopped at the step limit',
   interrupted: 'Interrupted',
   closed: 'Interrupted'
 };
-/** The reasons of a run that was cut off before it finished: its card offers Resume. */
+
 const RESUMABLE_REASONS = ['stopped', 'interrupted', 'closed'];
-/** What the Resume button sends, exactly as if the user had typed it. */
+
 const RESUME_PROMPT = 'Resume the unfinished task.';
 const PARTIAL_SUBTITLE = {
   stopped: 'The run was stopped before it finished.',
@@ -3216,7 +2883,7 @@ const PARTIAL_SUBTITLE = {
   closed: 'The run was cut off when the browser or panel closed.'
 };
 const PARTIAL_SUBTITLE_FALLBACK = 'The run ended before it finished.';
-// A first paragraph longer than this, or with a line break, is an answer, not a reason line.
+
 const PARTIAL_REASON_MAX = 200;
 
 function splitPartialReason(answer) {
@@ -3241,19 +2908,18 @@ function renderPartialCard(turn) {
   const tableHtml = renderFinishTable(turn.table);
   const statsHtml = renderRunStats(turn.runStats);
 
-  // An unverified audit turns the edge red, as on any other card (the .unverified rule comes after .partial).
+
   const classes = ['finish-card', 'partial', 'has-sub'];
   if (audit && audit.verdict === 'unverified') classes.push('unverified');
   const details = audit ? renderAuditDetails(audit, turn.turn, audit.verdict === 'verified' ? 'verified' : 'attention') : '';
-  // The newest turn of a chat that rests can go on: Resume sends the same request as typing it.
+
   const resume = turn.resumable && RESUMABLE_REASONS.includes(reasonCode)
     ? `<div class="finish-actions"><button type="button" class="btn btn-secondary btn-xs finish-resume" data-resume="1">Resume</button></div>`
     : '';
   return `<div class="${classes.join(' ')}"><div class="finish-title">${ICONS.warning} ${title}</div><div class="finish-subs"><div class="finish-sub">${subtitle}</div></div>${details}${body}${tableHtml}${statsHtml}${resume}</div>`;
 }
 
-// What the engine writes into an annotated answer (annotateAnswer in agent/answerAudit.ts): one warning line on top, and a
-// section at the end. Both repeat what the finish card shows from the audit.
+
 const ENGINE_BANNERS = [
   'WARNING - UNVERIFIED ANSWER: parts of this answer are not backed by any page Tarka read. See the notes at the end.',
   'PARTIAL ANSWER: not every source was checked. See the notes at the end.'
@@ -3269,12 +2935,7 @@ function withoutEngineNotes(answer) {
   return banner ? lead.slice(banner.length).replace(/^\s+/, '') : text;
 }
 
-/**
- * Why the run is paused, in one line, for a pause that has no card of its own: the confirmation
- * and plan holds each draw their own card (renderTurns), so this says nothing for them. '' when
- * the run is not paused. `pauseReason` comes from the runner, and the only reason it produces is
- * 'user' (the Pause button); anything else is unknown, said honestly.
- */
+
 function pauseReasonText(state) {
   if (!state || state.status !== 'paused') return '';
   if (state.pendingApproval || state.pendingConfirm) return '';
@@ -3283,7 +2944,7 @@ function pauseReasonText(state) {
     : 'Paused. Press Resume to continue.';
 }
 
-/** Plan progress. Only 'completed' counts as done: a skipped step is not progress. */
+
 function planCounts(planSteps) {
   const steps = Array.isArray(planSteps) ? planSteps : [];
   return {
@@ -3293,10 +2954,7 @@ function planCounts(planSteps) {
   };
 }
 
-/**
- * The plan checklist rows. A 'skipped' step (its source was never read) gets its own icon and a
- * " - not checked" suffix and is NOT struck through: struck through means done, and it is not.
- */
+
 function renderPlanRows(planSteps) {
   return `<div class="act-plan">${(planSteps || []).map((st) => {
     const status = PLAN_STATUSES.includes(st.status) ? st.status : 'pending';
@@ -3308,10 +2966,7 @@ function renderPlanRows(planSteps) {
   }).join('')}</div>`;
 }
 
-/**
- * The manual-approve hold: the plan the model proposed, with the two decisions. Shown only
- * while state.pendingApproval is set (manual mode); auto mode never renders it.
- */
+
 function renderPlanApprovalCard(pendingApproval) {
   const steps = Array.isArray(pendingApproval?.plan) ? pendingApproval.plan : [];
   if (steps.length === 0) return '';
@@ -3331,7 +2986,7 @@ function renderPlanApprovalCard(pendingApproval) {
   </div>`;
 }
 
-/** The "Chat compacted" divider: its own item between turns, with the summary in a section the reader opens. */
+
 function renderCompactedItem(item) {
   const key = String(item.idx);
   const n = item.summarizedTurns;
@@ -3347,13 +3002,13 @@ function renderCompactedItem(item) {
 
 function renderTurns(history, status, currentPhase, pendingApproval = null, pendingConfirm = null, planSteps = null) {
   const items = buildTurns(history);
-  // The runs alone: a Compact divider is not a turn, so it is never the live turn, never gets the
-  // synthetic end card, and counts no steps.
+
+
   const turns = items.filter((t) => !t.compacted);
   const busy = status === 'running' || status === 'paused';
   const isErrorEnded = status === 'error' || status === 'stopped';
-  // While the plan card is up it IS the plan: the checklist under it would list the same steps
-  // twice and count "step 1 of N" for a run that has not started.
+
+
   const progressPlan = pendingApproval ? null : planSteps;
 
   if (turns.length === 0 && (pendingApproval || pendingConfirm)) {
@@ -3362,8 +3017,7 @@ function renderTurns(history, status, currentPhase, pendingApproval = null, pend
     items.push(held);
   }
 
-  // If the run ended with an error/stopped but no finish card was produced, add a synthetic one
-  // to the last turn: "Failed" with the error when there is one, else the "Stopped by you" card.
+
   if (isErrorEnded && turns.length > 0) {
     const lastTurn = turns[turns.length - 1];
     if (!lastTurn.answer && !lastTurn.partial) {
@@ -3387,20 +3041,19 @@ function renderTurns(history, status, currentPhase, pendingApproval = null, pend
     const isLast = turn === finalTurn;
     const isLive = busy && isLast;
     const count = turn.entries.filter(e => e.kind === 'action').length;
-    // "Did not finish" means no answer was produced - not merely that one action failed.
+
     const incomplete = !isLive && !turn.answer && turn.entries.length > 0;
     const open = isTurnExpanded(turn, isLive, incomplete);
-    // The page as the agent last saw it in this turn: the newest picture of its steps. A finished
-    // group shows it at the top of its body ("Captured page") instead of under its row; a collapsed
-    // group shows it small at the end of its head. While the turn runs it follows the newest one.
+
+
     const captured = lastShotOf(turn);
     const capturedGone = !!(captured && shotGone.has(captured.imageId));
     const capturedSection = !!(captured && !isLive);
 
-    // Header doubles as the progress indicator.
+
     let headline;
     if (isLive) {
-      // Only 'completed' is progress; a skipped step must never move the counter.
+
       const { done, total } = planCounts(progressPlan);
       headline = total
         ? `Working · step ${Math.min(done + 1, total)} of ${total} · ${count} action${count === 1 ? '' : 's'}`
@@ -3417,8 +3070,8 @@ function renderTurns(history, status, currentPhase, pendingApproval = null, pend
         return `<div class="act-row answer"><span class="act-ico">${ICONS.keyboard}</span><span class="act-text">You answered: <em>${escapeHtml(e.content)}</em></span></div>`;
       }
       if (e.kind === 'confirm') {
-        // The user's decision on a confirmation card: what was asked, what was decided, and
-        // whether the origin was remembered for the rest of the run.
+
+
         const allowed = e.decision === 'approved';
         const mark = e.remembered ? '<span class="act-detail">remembered for this task</span>' : '';
         return `<div class="act-row confirm"><span class="act-ico">${ICONS.shield}</span><span class="act-text">${allowed ? 'You allowed' : 'You denied'}: ${escapeHtml(e.actionSummary)}${mark}</span></div>`;
@@ -3427,9 +3080,9 @@ function renderTurns(history, status, currentPhase, pendingApproval = null, pend
       const key = `${turn.turn}:${e.idx}`;
       const shown = expandedRows.has(key);
       const refused = !!(e.outcome && e.outcome.finishRefused);
-      // A refused finish is not a failed action (no red cross): it is the engine's answer check saying "not yet".
+
       const bad = !!(e.outcome && e.outcome.success === false) && !refused;
-      // Only a live turn pulses: a turn that ended (and the finish that ended it) has no result coming.
+
       const pending = isLive && !e.outcome && !(e.action.action === 'finish' && turn.answer);
       const why = e.thought
         ? `<div class="act-why" ${shown ? '' : 'hidden'}>${escapeHtml(e.thought)}</div>`
@@ -3438,9 +3091,8 @@ function renderTurns(history, status, currentPhase, pendingApproval = null, pend
                   : pending ? '<span class="act-state live"></span>'
                   : '';
       const detail = d.detail ? `<span class="act-detail">${escapeHtml(d.detail)}</span>` : '';
-      // A step that took a picture gets a slot for it. The slot holds no <img> in the rendered
-      // HTML: after the innerHTML write, the already-decoded element is moved in (see
-      // attachShotSlots), so a re-render costs no decode and the picture does not flicker.
+
+
       const shot = e.outcome && e.outcome.imageId && !(capturedSection && e.outcome.imageId === captured.imageId)
         ? shotSlotHtml(e.outcome.imageId, e.outcome.imageWidth, e.outcome.imageHeight)
         : '';
@@ -3453,10 +3105,7 @@ function renderTurns(history, status, currentPhase, pendingApproval = null, pend
         </div>`;
     }).join('');
 
-    // The checklist is a live-progress view, so a finished turn hides it - except the last turn
-    // when a step was skipped. That is the one fact about a finished run the plan still has to
-    // say ("idealo.de - not checked"). The plan belongs to the current run only (the background
-    // replaces it per run), so no earlier turn ever shows it.
+
     const showPlan = Array.isArray(progressPlan) && progressPlan.length > 0
       && (isLive || (isLast && planCounts(progressPlan).skipped > 0));
     const planDetail = showPlan ? renderPlanRows(progressPlan) : '';
@@ -3469,8 +3118,7 @@ function renderTurns(history, status, currentPhase, pendingApproval = null, pend
       ? renderActionConfirmationCard(pendingConfirm)
       : '';
 
-    // Like the other holds, the plan card belongs to the live turn only: under every turn it
-    // would repeat its Approve/Cancel buttons for runs that are long over.
+
     const planPrompt = (isLive && pendingApproval)
       ? renderPlanApprovalCard(pendingApproval)
       : '';
@@ -3500,7 +3148,7 @@ function renderTurns(history, status, currentPhase, pendingApproval = null, pend
   }).join('');
 }
 
-/** The newest picture a turn's steps took ({ imageId, width, height }), or null. */
+
 function lastShotOf(turn) {
   for (let i = turn.entries.length - 1; i >= 0; i--) {
     const o = turn.entries[i].outcome;
@@ -3509,12 +3157,7 @@ function lastShotOf(turn) {
   return null;
 }
 
-/**
- * The slot of one picture. It holds no <img> in the rendered HTML: after the innerHTML write, the
- * already-decoded element is moved in (attachShotSlots), so a re-render costs no decode and the
- * picture does not flicker. Its shape is reserved from the stored size before the bytes arrive, so
- * nothing below it moves when they do (and a reader following the run stays at the bottom).
- */
+
 function shotSlotHtml(imageId, width, height, extraClass = '') {
   const w = Number(width) || 0;
   const h = Number(height) || 0;
@@ -3522,7 +3165,7 @@ function shotSlotHtml(imageId, width, height, extraClass = '') {
   return `<div class="act-shot-slot${extraClass ? ` ${extraClass}` : ''}" data-shot="${escapeHtml(String(imageId))}" data-w="${escapeHtml(String(w))}" data-h="${escapeHtml(String(h))}"${ratio}></div>`;
 }
 
-/** The "Captured page" section at the top of a finished group's body: the turn's last picture at full width. */
+
 function capturedSectionHtml(captured, gone) {
   const picture = gone
     ? '<span class="act-shot-gone">Picture no longer kept</span>'
@@ -3530,16 +3173,13 @@ function capturedSectionHtml(captured, gone) {
   return `<div class="act-captured"><div class="act-captured-label">Captured page</div>${picture}</div>`;
 }
 
-/**
- * One delegated listener for the whole timeline. Bound once at startup, so it survives the
- * innerHTML rewrites that renderState performs on every state broadcast.
- */
+
 function initTimelineInteraction() {
   const timeline = document.getElementById('timeline');
   if (!timeline) return;
   initTimelineFollow(timeline);
 
-  /** Something the reader opened in the newest turn keeps the bottom in view while following. */
+
   const keepIfLast = (el) => {
     const turnEl = el.closest('.turn');
     if (turnEl && turnEl === timeline.lastElementChild) keepTimelineAtBottom();
@@ -3575,7 +3215,7 @@ function initTimelineInteraction() {
 
 
   timeline.addEventListener('click', (e) => {
-    // Resume on an Interrupted or Stopped card: the same request as typing it in the composer.
+
     const resumeBtn = e.target.closest('[data-resume]');
     if (resumeBtn) {
       const input = document.getElementById('taskInput');
@@ -3584,7 +3224,7 @@ function initTimelineInteraction() {
       return;
     }
 
-    // The manual-approve plan card: Approve releases the hold, Cancel ends the run.
+
     const planBtn = e.target.closest('[data-plan-decision]');
     if (planBtn) {
       const decision = planBtn.getAttribute('data-plan-decision');
@@ -3600,7 +3240,7 @@ function initTimelineInteraction() {
       return;
     }
 
-    // The add-domain card of a plan revision: Allow runs the new site, Deny continues without it.
+
     const allowBtn = e.target.closest('.btn-confirm-allow');
     if (allowBtn) {
       allowBtn.disabled = true;
@@ -3651,8 +3291,8 @@ function initTimelineInteraction() {
 
     toggle(e.target);
   });
-  // A <details> toggle event does not bubble, so listen in the capture phase. The open state is
-  // kept in openAuditDetails because renderState rewrites the timeline on every broadcast.
+
+
   timeline.addEventListener('toggle', (e) => {
     const d = e.target;
     if (d && d.matches && d.matches('details.compact-summary')) {
@@ -3678,14 +3318,14 @@ function initTimelineInteraction() {
   });
 }
 
-/** Whether the log list is scrolled to (near) its end, so a new entry may keep it there. */
+
 function logsAtBottom(logOutput) {
   return logOutput.scrollHeight - logOutput.scrollTop - logOutput.clientHeight < 40;
 }
 
 const LOGS_WAITING_HTML = '<div class="subtext-hint log-empty">Nothing logged yet. Start a task and every model call and step appears here.</div>';
 
-/** The whole Logs tab, for a filter change or a resync. Open trees stay open (logTreeState). */
+
 function renderFilteredLogs() {
   const logOutput = document.getElementById('logOutput');
   if (!logOutput) return;
@@ -3701,10 +3341,7 @@ function renderFilteredLogs() {
   if (stick) logOutput.scrollTop = logOutput.scrollHeight;
 }
 
-/**
- * One live entry: kept, and appended to the view when the filter shows it. Appending (not a full
- * re-render) keeps open trees open and does not move a reader who scrolled up.
- */
+
 function addLogEntry(entry) {
   if (!entry) return;
   rawLogsCache.push(entry);
@@ -3718,7 +3355,7 @@ function addLogEntry(entry) {
   if (stick) logOutput.scrollTop = logOutput.scrollHeight;
 }
 
-/** The clicks of the Logs tab: open and close a tree node, show a long string, copy an entry. */
+
 function initLogInteractions() {
   const logOutput = document.getElementById('logOutput');
   if (!logOutput) return;
@@ -3757,29 +3394,7 @@ function initLogInteractions() {
   });
 }
 
-/**
- * The model's answer as HTML: text with a little markdown on top.
- *
- * Two renderers live behind this one function.
- *   legacy - **bold** and "- item" bullets on pre-wrapped text. It is what the panel always did and
- *            it is still what an answer gets when it has no heading and no table, byte for byte
- *            (tests/sidepanelMarkdown.test.js holds a copy of the old function as an oracle).
- *   blocks - used only when the answer has an ATX heading ("## Prices found"), a pipe table, a
- *            fenced code block or an http(s) link.
- *            Without it those showed as raw "##" and as rows of "|", which a sans-serif font makes
- *            look like a capital I. It renders headings, pipe tables, bullet and numbered lists with
- *            a hanging indent (a wrapped line lines up under its own text, not under the bullet) and
- *            plain paragraphs.
- *
- * Safety, the rule for both: every character of model text goes through escapeHtml BEFORE any
- * markup exists, and every tag and attribute in the output is written here, from constants. The
- * only text that reaches a class name is a fixed alignment letter or a heading level. Links are
- * rendered by the blocks renderer only, and only http(s) ones (richInline): "[x](javascript:...)"
- * stays text. A fenced code block becomes a code box with a Copy button (renderCodeBox).
- *
- * Cost: one pass over the lines, and every scan below is linear. A 500-row table and a 50 000
- * character line render in a few milliseconds.
- */
+
 function formatMarkdownText(text) {
   if (!text) return '';
   const source = String(text);
@@ -3787,29 +3402,23 @@ function formatMarkdownText(text) {
   return blocks ? renderMarkdownBlocks(blocks) : legacyMarkdown(source);
 }
 
-/** True when the answer has a heading, a table, a code fence or a link, that is, when the blocks renderer takes over. */
+
 function hasMarkdownBlocks(text) {
   return !!text && parseMarkdownBlocks(String(text)) !== null;
 }
 
-/** True when the text holds a pipe table at the block level (a table inside a code fence is not one). */
+
 function hasMarkdownTable(text) {
   const blocks = text ? parseMarkdownBlocks(String(text)) : null;
   return !!blocks && blocks.some((block) => block.type === 'table');
 }
 
-// ---- legacy renderer -------------------------------------------------------------------------
 
-/**
- * An inline code span: one backtick, text on one line, one backtick. A double or triple backtick
- * (a fence) is not one, so ```x``` stays as it was written. It runs on ESCAPED text, so the span's
- * content is already safe, and it is never bolded: `**x**` shows the stars.
- */
 const INLINE_CODE = /(?<!`)`([^`\n]+)`(?!`)/g;
 
 const markdownBold = (escaped) => escaped.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
 
-/** Escaped text with its `code` spans rendered, and `rest` applied to the text between them. */
+
 function withCodeSpans(escaped, rest) {
   let out = '';
   let at = 0;
@@ -3820,7 +3429,7 @@ function withCodeSpans(escaped, rest) {
   return out + rest(escaped.slice(at));
 }
 
-/** Escape first, then `code` spans and **bold** around them. Both renderers build their inline text with this. */
+
 function markdownInline(text) {
   return withCodeSpans(escapeHtml(text), markdownBold);
 }
@@ -3832,15 +3441,7 @@ function legacyMarkdown(text) {
 const WHITESPACE_RUN = /\s*/y;
 const isLineTerminator = (code) => code === 10 || code === 13 || code === 0x2028 || code === 0x2029;
 
-/**
- * str.replace(/^[\s]*[-*]\s+(.*)$/gm, '• $1'), the line the panel always had, without its cost.
- * That regex is quadratic on a long run of blank lines (every line start of the run scans the rest
- * of the run again: 50 000 newlines took almost 3 seconds). Same matches, same quirks - the match
- * may start at a blank line and eat it, and \s+ may span lines - found in one pass: when an
- * attempt at a line start fails, every later line start inside the same whitespace run fails the
- * same way, so the scan jumps past that run. tests/sidepanelMarkdown.test.js checks it against
- * the regex on a large random corpus.
- */
+
 function legacyBullets(str) {
   const n = str.length;
   let out = '';
@@ -3864,7 +3465,7 @@ function legacyBullets(str) {
         scanFrom = end;
       }
     }
-    // Next candidate: the line start after the first line terminator at or beyond scanFrom.
+
     let next = scanFrom;
     while (next < n && !isLineTerminator(str.charCodeAt(next))) next++;
     if (next >= n) break;
@@ -3873,18 +3474,15 @@ function legacyBullets(str) {
   return out + str.slice(copied);
 }
 
-// ---- blocks renderer -------------------------------------------------------------------------
 
-// A table wider than this is not a table: it stays text. It bounds the DOM a hostile row can make.
 const MARKDOWN_MAX_COLUMNS = 40;
-// A cell this short is kept on one line. Without it the table layout squeezes a narrow column by
-// breaking "shop-a.test" after its hyphen and "1.389,00 EUR" at its space, and the long column next
-// to it keeps the room. A longer cell wraps at its spaces.
+
+
 const MARKDOWN_SHORT_CELL = 16;
 const MARKDOWN_MAX_LIST_DEPTH = 3;
 const isSpaceCode = (code) => code === 32 || code === 9;
 
-/** "## Title" -> { level: 2, text: 'Title' }. Up to three spaces of indent, 1 to 6 hashes, a space, a title. */
+
 function matchHeading(line) {
   let at = 0;
   while (at < 3 && line.charCodeAt(at) === 32) at++;
@@ -3892,14 +3490,14 @@ function matchHeading(line) {
   while (level < 7 && line.charCodeAt(at + level) === 35) level++;
   if (level < 1 || level > 6 || !isSpaceCode(line.charCodeAt(at + level))) return null;
   let title = line.slice(at + level).trim();
-  // An optional closing run of hashes ("## Title ##") belongs to the syntax, not to the title.
+
   let end = title.length;
   while (end > 0 && title.charCodeAt(end - 1) === 35) end--;
   if (end < title.length && (end === 0 || isSpaceCode(title.charCodeAt(end - 1)))) title = title.slice(0, end).trim();
   return title ? { level, text: title } : null;
 }
 
-/** "  - item", "* item", "• item", "3. item" -> { depth, ordered, marker, number, text }. The marker needs a space and the item a text. */
+
 function matchListItem(line) {
   let at = 0;
   let indent = 0;
@@ -3934,7 +3532,7 @@ function matchListItem(line) {
   return { depth: Math.min(MARKDOWN_MAX_LIST_DEPTH, Math.floor(indent / 2)), ordered, marker, number, text };
 }
 
-/** Does the line hold a pipe that is not written "\|"? */
+
 function hasUnescapedPipe(line) {
   let from = 0;
   for (;;) {
@@ -3945,11 +3543,7 @@ function hasUnescapedPipe(line) {
   }
 }
 
-/**
- * The cells of one table row. The outer pipes are optional; "\|" is a pipe inside a cell. A pipe
- * splits a cell wherever it is written, also inside backticks (GitHub does the same): a model that
- * wants a pipe in a cell has to escape it. Cells are trimmed.
- */
+
 function splitTableRow(line) {
   let row = line.trim();
   if (row.charCodeAt(0) === 124) row = row.slice(1);
@@ -3981,16 +3575,7 @@ function splitTableRow(line) {
 const TABLE_DELIMITER_LINE = /^[ \t|:-]+$/;
 const TABLE_DELIMITER_CELL = /^:?-+:?$/;
 
-/**
- * A pipe table starting at lines[at]: a header row, then a delimiter row ("|---|:--:|") with the
- * same number of cells, then body rows until a blank line, a heading, a list item or a line
- * without a pipe. Both of the first two rows must hold a pipe, so "---" under a title is not a
- * table. Returns { block, next } or null.
- *
- * Body rows are made to fit the header: a short row is padded with empty cells and the cells
- * beyond the last column are joined into it with " | ", so a stray cell is never dropped (GitHub
- * drops them). Alignment colons in the delimiter row become a class on the cells.
- */
+
 function matchTable(lines, at) {
   const headerLine = lines[at];
   const delimiterLine = lines[at + 1];
@@ -4021,12 +3606,7 @@ function matchTable(lines, at) {
   return { block: { type: 'table', aligns, head, rows }, next };
 }
 
-/**
- * Splits an answer into blocks, or returns null when it has no heading and no table (the legacy
- * renderer then takes the text as it is). Blocks: heading, table, list (items with their
- * continuation lines), paragraph (consecutive non-blank lines, single line breaks kept).
- * A blank line ends a paragraph or a list.
- */
+
 function parseMarkdownBlocks(source) {
   const lines = source.replace(/\r\n?/g, '\n').split('\n');
   const blocks = [];
@@ -4036,7 +3616,7 @@ function parseMarkdownBlocks(source) {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    // A fence comes first: inside it no other block exists, so "# x" or "| a |" stay code.
+
     const fence = matchFenceOpen(line);
     if (fence) {
       const body = [];
@@ -4073,7 +3653,7 @@ function parseMarkdownBlocks(source) {
       continue;
     }
     const item = matchListItem(line);
-    // A numbered item interrupts a paragraph only as "1." (so "In 2019. It rained" stays prose).
+
     if (item && (!paragraph || !item.ordered || item.number === 1 || list)) {
       if (!list || list.ordered !== item.ordered) {
         list = { type: 'list', ordered: item.ordered, items: [] };
@@ -4084,7 +3664,7 @@ function parseMarkdownBlocks(source) {
       continue;
     }
     if (list) {
-      // A line that follows an item and starts nothing else continues that item.
+
       list.items[list.items.length - 1].lines.push(line.trim());
       continue;
     }
@@ -4097,10 +3677,7 @@ function parseMarkdownBlocks(source) {
   return special ? blocks : null;
 }
 
-/**
- * A fence line: up to three spaces, three or more backticks or tildes, and an info string ("json").
- * A backtick fence's info string has no backtick, so "```fence```" on one line is not a fence.
- */
+
 function matchFenceOpen(line) {
   const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
   if (!match) return null;
@@ -4109,18 +3686,13 @@ function matchFenceOpen(line) {
   return { char: match[1][0], size: match[1].length, info };
 }
 
-/** The line that closes a fence: the same character, at least as many, nothing after them. */
+
 function isFenceClose(line, fence) {
   const match = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
   return !!match && match[1][0] === fence.char && match[1].length >= fence.size;
 }
 
-/**
- * Links in the model's RAW text: [label](http...) or a bare http(s) address. They are found before
- * any escaping, with a character whitelist (no space, < > " ' or backtick), and the label and the
- * address are escaped separately when the tag is written. Any other scheme never matches, so
- * "[x](javascript:...)" stays text.
- */
+
 const URL_CHARS = '[^\\s<>"\'`()]';
 const LINK = new RegExp(
   `\\[([^\\]\\n]+)\\]\\((https?:\\/\\/${URL_CHARS}+(?:\\(${URL_CHARS}*\\)${URL_CHARS}*)*)\\)` +
@@ -4128,14 +3700,14 @@ const LINK = new RegExp(
   'g'
 );
 const hasLink = (text) => /https?:\/\/[^\s<>"'`]/.test(text);
-/** A bare address does not end in the sentence's punctuation. */
+
 const URL_TAIL = /[.,;:!?*_~]+$/;
 
 function linkTag(url, label) {
   return `<a class="md-link" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
 }
 
-/** Raw text to HTML: `code` spans, links, and **bold** on the text between them. */
+
 function richInline(text) {
   const raw = String(text);
   const out = [];
@@ -4169,17 +3741,15 @@ function markdownTableInline(text) {
   return richInline(text);
 }
 
-// ---- code boxes ------------------------------------------------------------------------------
 
-/** A code box with more lines than this folds, with a button to show all of it. */
 const CODE_FOLD_LINES = 15;
-/** The code boxes the reader unfolded, by key: the timeline is rewritten on every state update. */
+
 const unfoldedCode = new Set();
-/** Rendered JSON colouring, by key, so a re-render does not tokenize a long file again. */
+
 const codeCache = new Map();
 const CODE_CACHE_MAX = 40;
 
-/** A short, stable key for a text (FNV-1a, 32 bit, plus the length). */
+
 function textKey(text) {
   let hash = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
@@ -4189,7 +3759,7 @@ function textKey(text) {
   return `${(hash >>> 0).toString(36)}-${text.length.toString(36)}`;
 }
 
-/** Is this code JSON? Its language says so, or it has none and it parses. */
+
 function isJsonCode(text, lang) {
   if (/^(json|jsonc|json5|geojson)$/i.test(lang)) return true;
   if (lang) return false;
@@ -4203,7 +3773,7 @@ function isJsonCode(text, lang) {
   }
 }
 
-/** Keys, strings, numbers and true/false/null in spans. Linear: one regex pass, every piece escaped on its own. */
+
 const JSON_TOKEN = /("(?:[^"\\\n]|\\.)*")(\s*:)?|\b(true|false|null)\b|(?<![\w.])-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/g;
 
 function highlightJson(text) {
@@ -4233,11 +3803,7 @@ function codeHtml(text, lang) {
   return html;
 }
 
-/**
- * A code block as a box: the language and a Copy button on top, the code below. The Copy button
- * copies the code element's own text, so there is no second copy of it to get out of step.
- * `head: false` leaves the top out (the file preview has its own buttons), `fold: false` never folds.
- */
+
 function renderCodeBox(text, info = '', { head = true, fold = true } = {}) {
   const lang = String(info).split(/\s+/)[0] || '';
   const lines = text ? text.split('\n').length : 0;
@@ -4253,14 +3819,14 @@ function renderCodeBox(text, info = '', { head = true, fold = true } = {}) {
   return `<div class="code-box${folded ? ' folded' : ''}" data-code-key="${key}">${headHtml}<pre class="code-pre" tabindex="0"><code>${codeHtml(text, lang)}</code></pre>${foldHtml}</div>`;
 }
 
-/** Copies text: the async clipboard first, then a hidden textarea for a page without focus. */
+
 async function copyText(text) {
   try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       await navigator.clipboard.writeText(text);
       return true;
     }
-  } catch { /* falls through to the textarea */ }
+  } catch {  }
   try {
     const area = document.createElement('textarea');
     area.value = text;
@@ -4277,7 +3843,7 @@ async function copyText(text) {
   }
 }
 
-/** Shows how a copy went on its button for a moment. */
+
 function flashCopied(button, ok, idle = 'Copy') {
   button.textContent = ok ? 'Copied' : 'Copy failed';
   button.classList.toggle('copied', ok);
@@ -4300,8 +3866,8 @@ function renderMarkdownTable(table) {
   const body = table.rows.length
     ? `<tbody>${table.rows.map((row) => `<tr>${row.map((text, i) => cell('td', text, i)).join('')}</tr>`).join('')}</tbody>`
     : '';
-  // The wrapper scrolls sideways, so a wide table stays inside the card. It can take the keyboard
-  // focus because a scrollable area that cannot be focused cannot be scrolled without a mouse.
+
+
   return `<div class="md-table-wrap" role="region" aria-label="Table" tabindex="0"><table class="md-table">${head}${body}</table></div>`;
 }
 
@@ -4333,8 +3899,7 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-// Exported only so the sidepanel tests can call the pure renderers and reach the panel's state.
-// The page itself never imports this file; the export list does not change how it loads in the browser.
+
 export {
   buildTurns, renderTurns, renderCompactedItem, renderContextMeter, renderFinishCard, renderAuditDetails, renderPlanRows, normalizeAudit,
   planCounts, pauseReasonText, escapeHtml, initTimelineInteraction, openAuditDetails, closedAuditDetails, openCompactSummaries, describeAction, firstSentence, withoutEngineNotes,
