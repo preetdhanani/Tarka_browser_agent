@@ -5,7 +5,7 @@ export interface ImageBudget {
   maxTargetTokens: number;
 }
 
-// Vision models count images in 28-pixel token cells, and some pad dimensions to that grid.
+
 export const IMAGE_BUDGET: ImageBudget = {
   pxPerToken: 28,
   maxTargetPx: 1568,

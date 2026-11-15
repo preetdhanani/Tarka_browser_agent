@@ -12,7 +12,7 @@ const BLOCK_NOTE = /\n\[([^\]\n]*?) truncated: showing (\d+) of (\d+) characters
 
 const MIN_CUT_SHARE = 0.5;
 
-// JavaScript string offsets count UTF-16 code units, so cuts cannot split a surrogate pair.
+
 function splitsSurrogatePair(text: string, at: number): boolean {
   if (at <= 0 || at >= text.length) return false;
   const high = text.charCodeAt(at - 1);
