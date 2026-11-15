@@ -488,7 +488,7 @@ export class TarkaMCPServer {
       }
 
       case 'take_screenshot': {
-        return await this.takeScreenshot(tabId, args);
+        return await this.takeScreenshot(tabId);
       }
 
       case 'click': {
@@ -640,7 +640,7 @@ export class TarkaMCPServer {
     return cdp.sendCommand(tabId, method, params, control);
   }
 
-  private async takeScreenshot(tabId: number, args: Record<string, any>): Promise<ToolOutcome> {
+  private async takeScreenshot(tabId: number): Promise<ToolOutcome> {
     if (this.visionUnavailable) {
       return {
         text: 'Error: this model cannot see pictures, so the screenshot was not taken. Use read_page instead.',
@@ -791,7 +791,7 @@ export class TarkaMCPServer {
     const line = observationLine(exec?.effectDetail, urlAfter);
     const result: ToolOutcome = { text: `${text}\n${line}` };
     if (!this.visionUnavailable && isLargeChange(exec?.effectDetail)) {
-      const shot = await this.takeScreenshot(tabId, {});
+      const shot = await this.takeScreenshot(tabId);
       if (shot.image && !shot.isError) {
         result.image = shot.image;
         result.text += '\nThe view changed a lot: a fresh screenshot of it is attached.';
