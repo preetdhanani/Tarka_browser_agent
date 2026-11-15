@@ -1,9 +1,3 @@
-/**
- * Tarka ActionExecutor Entry Point
- * IIFE entry point for content/actionExecutor.js classic script bundle.
- * Preserves re-injection safety and window global references.
- */
-
 import { ActionExecutor } from './actionExecutor.ts';
 
 if (typeof window !== 'undefined') {

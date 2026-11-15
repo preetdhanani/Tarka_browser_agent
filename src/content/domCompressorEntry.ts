@@ -1,8 +1,3 @@
-/**
- * Tarka DOMCompressor Content Script Entry
- * Injected in ISOLATED world at document_idle.
- * Attaches DOMCompressor class and singleton instances to window.
- */
 import { DOMCompressor } from './domCompressor.ts';
 
 declare global {
