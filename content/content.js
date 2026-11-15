@@ -1,18 +1,15 @@
-/**
- * Content Script Entry Point for Tarka AI Agent
- * Listens for background agent execution messages and executes actions or returns DOM snapshot state.
- */
+
 
 (function init() {
   console.log('[Tarka Agent] Content script active.');
 
-  // Guard against duplicate listener registration
+
   if (window.__tarka_listener_registered) {
     return;
   }
   window.__tarka_listener_registered = true;
 
-  // Forward anything that fails in this page context to the central log
+
   const reportContentError = (source, err) => {
     try {
       chrome.runtime.sendMessage({
@@ -27,8 +24,8 @@
       // Extension context may already be invalidated (e.g. page navigating away) - ignore.
     }
   };
-  // The window's error events carry the PAGE's errors too (a site's own broken script, a
-  // ResizeObserver loop). Only what comes from the extension's own files is ours to log.
+
+
   const OWN_SCRIPT = /chrome-extension:\/\//;
   window.addEventListener('error', (event) => {
     const stack = (event.error && event.error.stack) || '';
@@ -41,7 +38,7 @@
     reportContentError(window.location.href, event.reason);
   });
 
-  // Mutation tracking for DOM quiet and effect probes
+
   window.__tarka_mutations = 0;
   window.__tarka_last_mutation = Date.now();
   try {
@@ -67,18 +64,14 @@
       const cls = el.className.trim().split(/\s+/).slice(0, 2).join('.');
       if (cls) desc += `.${cls}`;
     }
-    // innerText is what a person reads; textContent would also give a host's <style> text
-    // ("@font-face{...}"), which names nothing. textContent is only the fallback.
+
+
     const text = (typeof el.innerText === 'string' ? el.innerText : (el.textContent || '')).trim().replace(/\s+/g, ' ').slice(0, 30);
     if (text) desc += ` "${text}"`;
     return desc;
   }
 
-  /**
-   * The element really at a point. document.elementFromPoint stops at a shadow host, so a page
-   * built from web components answers its outer host for every point; this goes on into each
-   * open shadow root to the innermost element.
-   */
+
   function deepElementFromPoint(x, y) {
     if (typeof document.elementFromPoint !== 'function') return null;
     let hit = document.elementFromPoint(x, y);
@@ -99,7 +92,7 @@
     if (composedContains(hit, target) || composedContains(target, hit)) return true;
     if (hit.tagName === 'IFRAME') return true;
 
-    // Both target and hit are inside the same interactive container (e.g. button, anchor, input, label)
+
     const interactiveSel = 'a, button, [role="button"], [role="link"], label, select, input, textarea, summary';
     if (typeof target.closest === 'function' && typeof hit.closest === 'function') {
       const targetParent = target.closest(interactiveSel);
@@ -109,7 +102,7 @@
       }
     }
 
-    // Ignore overlay element if it has pointer-events: none
+
     if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
       try {
         const style = window.getComputedStyle(hit);
@@ -122,7 +115,7 @@
     return false;
   }
 
-  /** Whether `outer` contains `inner` across shadow boundaries (a host contains its shadow tree). */
+
   function composedContains(outer, inner) {
     for (let node = inner, depth = 0; node && depth < 4096; depth++) {
       if (node === outer) return true;
@@ -140,10 +133,10 @@
     return h.toString(16);
   }
 
-  /** How far a control may move, in CSS pixels, before the layout counts as changed (a rounding step). */
+
   const LAYOUT_GRID_PX = 4;
 
-  /** The controls inside the viewport as tag, role and box on a small grid: the hit-test map of the page. */
+
   function layoutParts(nodes) {
     const vw = window.innerWidth || 0;
     const vh = window.innerHeight || 0;
@@ -183,9 +176,8 @@
     }
 
     const interactiveHash = hashString(parts.join(';'));
-    // The layout a coordinate click relies on: where each control in the viewport is, never what
-    // it says. A kernel status or a clock that changes its text all the time leaves it alone; a
-    // control that moved, appeared or went away changes it.
+
+
     const layoutHash = hashString(layoutParts(nodes).join(';'));
     const priceRegex = /[€$£¥₹]\s?\d|\d\s?(?:[€$£¥₹]|EUR\b|USD\b|GBP\b)/gi;
     const priceMatches = (pageText || '').match(priceRegex);
@@ -210,17 +202,13 @@
     };
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // The effect probe's facts: what an action did to the page, measured, never guessed. Every
-  // "changed" is null when it cannot be measured (no baseline), so it is reported as unknown.
-  // ---------------------------------------------------------------------------------------------
 
   const DIFF_MAX_CHARS = 400;
   const LINE_MAX_CHARS = 200;
   const MAX_TEXT_NODES = 6000;
   const MAX_LINES = 800;
 
-  /** The focused element, through open shadow roots; null when only the page itself has focus. */
+
   function deepActiveElement() {
     let el = document.activeElement;
     for (let depth = 0; el && el.shadowRoot && el.shadowRoot.activeElement && depth < 32; depth++) el = el.shadowRoot.activeElement;
@@ -229,11 +217,7 @@
 
   const NOT_TEXT_INPUTS = ['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image', 'range', 'color', 'hidden'];
 
-  /**
-   * The field kinds whose value must never be read as text and never shown as pixels: the same
-   * classification perception.ts's computeFieldKind gives, mirrored here because this file is a
-   * standalone classic script with no imports. A parity test holds the two together.
-   */
+
   function computeFieldKindOf(el) {
     if (!el) return undefined;
     const tag = String(el.tagName || '').toLowerCase();
@@ -242,19 +226,15 @@
     const attr = (name) => String((el.getAttribute && el.getAttribute(name)) || '').toLowerCase();
     const combined = `${attr('name')} ${String(el.id || '').toLowerCase()} ${attr('autocomplete')}`;
     if (lowerType === 'password' || combined.includes('password') || combined.includes('passwort')) return 'password';
-    // A code or token the user receives by email is still a one-time secret: the code signal
-    // decides before the email kind does.
+
+
     if (/(?:e-?mail|mail)[-_ ]?(?:code|otp|token)/i.test(combined)) return 'otp';
     if (lowerType === 'email' || combined.includes('email') || combined.includes('e-mail')) return 'email';
     if (/card|cc-number|cvv|cvc|cardnumber|kreditkarte/i.test(combined) || (lowerType === 'tel' && combined.includes('cc'))) return 'cc';
-    // A "code" or "token" name is masked only when the field can hold a secret the user must type
-    // in: a one-time code, a verification code, an API or session token. Names that contain "code"
-    // for other reasons (postal code, promo code, country code) stay fillable, so an ordinary
-    // address or checkout form is not refused wholesale. An unknown "code" field stays masked.
-    // otp, 2fa and mfa match as substrings on purpose: camelCase names like otpCode carry no
-    // separator, and they are unambiguous enough to mask on sight.
+
+
     if (/(?:postal|zip|post|area|country|currency|sort|qr|bar|promo|coupon|voucher|discount)[-_ ]?code/i.test(combined)) {
-      // Falls through: the address and text kinds below decide.
+
     } else if (
       /otp|2fa|mfa/i.test(combined) ||
       /(?:^|[^a-z0-9])tan(?:[^a-z0-9]|$)/i.test(combined) ||
@@ -269,19 +249,19 @@
     return 'text';
   }
 
-  /** The kinds whose value never leaves the page: password, payment card, one-time code. */
+
   const MASKED_FIELD_KINDS = ['password', 'cc', 'otp'];
 
-  /** Whether this element's value is one the text path refuses to read. */
+
   function isMaskedField(el) {
     const kind = computeFieldKindOf(el);
     return kind !== undefined && MASKED_FIELD_KINDS.includes(kind);
   }
 
-  /** The marker a masked field answers with instead of its content: only whether it holds anything. */
+
   const REDACTED_MARKER = '[REDACTED: populated]';
 
-  /** Whether clicking this element submits its form (a button without a type, type submit, or an input submit/image). */
+
   function isSubmitControlOf(el) {
     if (!el || typeof el.closest !== 'function' || !el.closest('form')) return false;
     const tag = String(el.tagName || '').toLowerCase();
@@ -290,9 +270,7 @@
     return tag === 'input' && (type === 'submit' || type === 'image');
   }
 
-  /** Where the element's form sends: a host only when the action is an http(s) URL on another host than the page's,
-   * and formMethod 'get' only when "get" is written explicitly (the control's formmethod, else the form's method).
-   * Mirrors perception.ts's computeFormTarget, so both risk-fact paths answer the same. */
+
   function formTargetOf(el) {
     const form = el && typeof el.closest === 'function' ? el.closest('form') : null;
     if (!form) return {};
@@ -307,7 +285,7 @@
           out.formActionHost = url.hostname.toLowerCase();
         }
       } catch (_) {
-        // An action that is no URL sends nowhere else.
+
       }
     }
     const method = (attr(el, 'formmethod') || attr(form, 'method')).toLowerCase();
@@ -315,7 +293,7 @@
     return out;
   }
 
-  /** Whether the form around this element holds a masked field (a password, card or one-time code input). */
+
   function formHasMaskedFieldOf(el) {
     const form = el && typeof el.closest === 'function' ? el.closest('form') : null;
     if (!form || typeof form.querySelectorAll !== 'function') return false;
@@ -327,7 +305,7 @@
     return false;
   }
 
-  /** Whether a submit control can actually be pressed: not disabled, and not in a disabled fieldset. */
+
   function submitControlPressable(control) {
     if (control.disabled) return false;
     try {
@@ -336,7 +314,7 @@
     return true;
   }
 
-  /** How a submit control reads to a person: its aria-label, then its text (a button) or its value or alt (an input). */
+
   function submitControlLabel(control) {
     const tag = String(control.tagName || '').toLowerCase();
     const attr = (name) => String((control.getAttribute && control.getAttribute(name)) || '').trim();
@@ -346,13 +324,7 @@
     return (attr('aria-label') || text).replace(/\s+/g, ' ').trim().slice(0, 60);
   }
 
-  /**
-   * The label of the form's default button: the first submit control in tree order, the one the
-   * browser's implicit submission (Enter in a single-line field) would press. A disabled first
-   * control means Enter submits nothing, so the answer is ''. Controls associated only through
-   * the form= attribute from outside the form element are not seen here, the same known gap
-   * formTargetOf and formHasMaskedFieldOf have.
-   */
+
   function formSubmitLabelOf(el) {
     const form = el && typeof el.closest === 'function' ? el.closest('form') : null;
     if (!form || typeof form.querySelectorAll !== 'function') return '';
@@ -365,7 +337,7 @@
     return '';
   }
 
-  /** The risk facts of one element, for the gate and the dispatch-time checks. Pure reads, no page changes. */
+
   function securityFactsOf(el) {
     const tag = el && el.tagName ? String(el.tagName).toLowerCase() : '';
     const type = tag === 'input' ? String((el.getAttribute && el.getAttribute('type')) || el.type || '') : '';
@@ -382,7 +354,7 @@
     };
   }
 
-  /** Whether typing into this element writes text. A focused frame is unknown (null): its document is not ours to read. */
+
   function isEditableElement(el) {
     if (!el) return false;
     if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') return null;
@@ -391,15 +363,14 @@
     return !!el.isContentEditable;
   }
 
-  /** The outermost contenteditable element around `el`: the editor's own box. */
+
   function editingHost(el) {
     let host = el;
     while (host && host.parentElement && host.parentElement.isContentEditable) host = host.parentElement;
     return host;
   }
 
-  /** The text a field holds: an input's value, or the text of the editor (a CodeMirror .cm-content, or the editing host).
-   * A masked field (password, card, one-time code) never gives its characters: only whether it holds anything. */
+
   function fieldTextOf(el) {
     if (!el) return null;
     if (isMaskedField(el)) {
@@ -415,7 +386,7 @@
     return String(typeof host.innerText === 'string' ? host.innerText : (host.textContent || ''));
   }
 
-  /** How a person would name an element: its role and accessible name ('textbox "Code cell editor"'). */
+
   function labelOfElement(el) {
     if (!el || el.nodeType !== 1) return '';
     const tag = el.tagName.toLowerCase();
@@ -432,8 +403,7 @@
     return name ? `${role} "${name}"` : describeElement(el);
   }
 
-  /** The line of text the caret is on, in a text field or an editor; null when there is none.
-   * A masked field answers null whatever its caret does: its characters never leave the page. */
+
   function caretLineOf(el) {
     if (!el) return null;
     if (isMaskedField(el)) return null;
@@ -457,7 +427,7 @@
     if (line && line !== host && host.contains(line)) {
       return String(line.innerText || line.textContent || '').replace(/\n+$/, '').slice(0, LINE_MAX_CHARS);
     }
-    // One text node holding several lines (a pre-wrap box): the line around the caret offset.
+
     if (anchor.nodeType === 3) {
       const value = String(anchor.nodeValue || '');
       const pos = Math.min(sel.anchorOffset || 0, value.length);
@@ -470,7 +440,7 @@
     return all.split('\n')[0].slice(0, LINE_MAX_CHARS);
   }
 
-  /** The nearest scrollable box around an element, or null when only the window scrolls. */
+
   function scrollContainerOf(el) {
     for (let node = el, depth = 0; node && node.nodeType === 1 && depth < 64; depth++) {
       if (node === document.body || node === document.documentElement) return null;
@@ -485,7 +455,7 @@
     return null;
   }
 
-  /** The lines of text a person sees in the viewport now, in page order. */
+
   function visibleTextLines() {
     const lines = [];
     if (!document.body || typeof document.createTreeWalker !== 'function') return lines;
@@ -493,7 +463,7 @@
     const vh = window.innerHeight || 0;
     const shown = new Map();
     const range = typeof document.createRange === 'function' ? document.createRange() : null;
-    const walker = document.createTreeWalker(document.body, 4 /* NodeFilter.SHOW_TEXT */);
+    const walker = document.createTreeWalker(document.body, 4 );
     let count = 0;
     let node;
     while ((node = walker.nextNode()) && count < MAX_TEXT_NODES && lines.length < MAX_LINES) {
@@ -529,7 +499,7 @@
     return lines;
   }
 
-  /** The page as an action leaves it: url, focus, scroll, the scroll box and the visible text. */
+
   function measurePageState() {
     const focused = deepActiveElement();
     const editable = isEditableElement(focused);
@@ -555,7 +525,7 @@
     };
   }
 
-  /** Visible lines that appeared and went away, as multisets in page order. */
+
   function lineDiff(before, after) {
     const left = new Map();
     for (const line of before) left.set(line, (left.get(line) || 0) + 1);
@@ -579,7 +549,7 @@
     return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1))}…`;
   }
 
-  /** The facts of an action: the page now, compared with the baseline the probe took before it. */
+
   function effectDetail(baseState, baseUrl) {
     const now = measurePageState();
     const has = !!baseState;
@@ -636,7 +606,7 @@
           ...(payload || {})
         };
         const snapshot = window.domCompressor.getSnapshot(effectivePayload);
-        // Numbers on the page only on an explicit request: element badges are off by default.
+
         if (effectivePayload.showBadges === true && window.actionExecutor) {
           window.actionExecutor.renderBadges(snapshot.elements);
         }
@@ -645,7 +615,7 @@
       } catch (err) {
         sendResponse({ success: false, error: err.message });
       }
-      return true; // Keep message channel open for async response
+      return true;
     }
 
     if (action === 'RESOLVE_ELEMENT_POINT') {
@@ -698,7 +668,7 @@
             const role = typeof el.getAttribute === 'function' ? (el.getAttribute('role') || el.type || undefined) : undefined;
             const text = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60);
 
-            // Animate visual cursor to target and highlight element
+
             if (window.actionExecutor) {
               if (typeof window.actionExecutor.highlightElement === 'function') {
                 window.actionExecutor.highlightElement(el);
@@ -714,8 +684,8 @@
               tag,
               role,
               text,
-              // The risk facts of the element as it is NOW (not as the snapshot saw it), so the
-              // dispatcher can refuse a masked field or ask the user even at dispatch time.
+
+
               ...securityFactsOf(el)
             });
           } catch (e) {
@@ -745,13 +715,8 @@
         activeId: document.activeElement ? (document.activeElement.id || '') : '',
         state
       };
-      // CONTRACT-PROBE-FOCUS: the baseline focus carries the risk facts of the focused element
-      // (the ones securityFactsOf computes for the element paths), so the background can refuse
-      // a press that would submit a form with masked fields, one that targets another host, or
-      // one whose submit control asks for confirmation (a payment, an order, a deletion). The
-      // tag and input type come along too: Enter submits from any single-line input, so the
-      // background must be able to tell it from a textarea (where Enter is only a newline).
-      // When the facts cannot be read, they are left out: no false "clean" is claimed.
+
+
       let focusFacts = null;
       if (state && state.focusEl) {
         try {
@@ -852,9 +817,8 @@
     }
 
     if (action === 'HIDE_AGENT_UI') {
-      // Success only when the privacy covers are up: the executor draws them. A page where the
-      // executor did not load answers a failure, and the capture refuses rather than send a
-      // password field as pixels (fail closed).
+
+
       try {
         if (!window.actionExecutor || typeof window.actionExecutor.hideAgentUi !== 'function') {
           sendResponse({ success: false, error: 'The page executor is not loaded, so the privacy covers could not be put up.' });
@@ -869,8 +833,8 @@
     }
 
     if (action === 'CHECK_AGENT_UI') {
-      // After the capture: the covers are still up and nothing appeared that needed one. Anything
-      // but a clear yes throws the picture away (fail closed).
+
+
       try {
         const holds = !!(window.actionExecutor && typeof window.actionExecutor.masksHold === 'function' && window.actionExecutor.masksHold());
         sendResponse({ success: holds });
@@ -893,16 +857,16 @@
     }
 
     if (action === 'DESCRIBE_POINT') {
-      // What is actually at a pixel a model read off a screenshot, so a coordinate click says
-      // what it hit. A point on a password, card or OTP field refuses the click.
+
+
       try {
         if (!window.actionExecutor || typeof window.actionExecutor.describePoint !== 'function') {
           return sendResponse({ success: false, error: 'ActionExecutor engine not initialized on page.' });
         }
         let x = Number(payload && payload.x);
         let y = Number(payload && payload.y);
-        // A point just next to a control is moved onto it (see snapPoint): small buttons are easy
-        // to miss by a few pixels, and a click on the banner around a button does nothing.
+
+
         const snap = payload && payload.snap && typeof window.actionExecutor.snapPoint === 'function'
           ? window.actionExecutor.snapPoint(x, y)
           : null;
@@ -935,9 +899,8 @@
     }
 
     if (action === 'ELEMENT_SECURITY') {
-      // The risk facts of one element, before anything is dispatched: the gate asks this before a
-      // click or a type the user may have to approve. It must not scroll, animate or otherwise
-      // touch the page: nothing here may happen before the user has decided.
+
+
       try {
         if (!window.domCompressor) {
           return sendResponse({ success: false, error: 'DOMCompressor engine not initialized on page.' });
@@ -961,9 +924,8 @@
     }
 
     if (action === 'VERIFY_CLICK_POINT') {
-      // The last look before a click is dispatched: what is at the point NOW, and whether it is
-      // still the element the click was resolved for. A page that moved, covered or swapped its
-      // content between the resolve and the press is caught here, before the press.
+
+
       try {
         const x = Number(payload && payload.x);
         const y = Number(payload && payload.y);
@@ -976,9 +938,8 @@
         const askedForElement = targetId !== undefined && targetId !== null;
         let withinTarget = true;
         if (askedForElement && !target) {
-          // CONTRACT-TARGETGONE: the element the click was resolved for no longer resolves (it left
-          // the document, or the page navigated). Fail closed: the press must not go into whatever
-          // sits at the point now. targetGone stays as the information.
+
+
           withinTarget = false;
         } else if (target) {
           withinTarget = !!hit && (hit === target
@@ -1026,7 +987,7 @@
       } catch (err) {
         sendResponse({ success: false, error: err.message });
       }
-      return true; // Keep message channel open for async execution
+      return true;
     }
   });
 })();

@@ -20,28 +20,104 @@
   "comments": {
     "src": 2637,
     "sidepanel": 647,
-    "content": 87,
+    "content": 1,
     "scripts": 113
   },
   "timers": {
-    "src/background/background.ts": { "setTimeout": 1, "setInterval": 1, "requestAnimationFrame": 0 },
-    "src/background/browser/cdp.ts": { "setTimeout": 2, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/background/browser/execute.ts": { "setTimeout": 4, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/background/browser/frames.ts": { "setTimeout": 1, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/background/browser/input.ts": { "setTimeout": 6, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/background/browser/snapshot.ts": { "setTimeout": 1, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/background/llm/deadline.ts": { "setTimeout": 1, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/background/mcp/server.ts": { "setTimeout": 1, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/background/research/fetchText.ts": { "setTimeout": 1, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/background/runner/AgentRunner.ts": { "setTimeout": 2, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/background/runner/chatSaver.ts": { "setTimeout": 1, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/background/runner/runSnapshot.ts": { "setTimeout": 1, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/background/runner/runnerMeta.ts": { "setTimeout": 1, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/content/actions.ts": { "setTimeout": 1, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/content/cursor.ts": { "setTimeout": 4, "setInterval": 0, "requestAnimationFrame": 1 },
-    "src/content/scrollMeasure.ts": { "setTimeout": 1, "setInterval": 0, "requestAnimationFrame": 0 },
-    "src/shared/logger.ts": { "setTimeout": 1, "setInterval": 0, "requestAnimationFrame": 0 },
-    "sidepanel/sidepanel.js": { "setTimeout": 13, "setInterval": 0, "requestAnimationFrame": 0 },
-    "content/content.js": { "setTimeout": 3, "setInterval": 0, "requestAnimationFrame": 2 }
+    "src/background/background.ts": {
+      "setTimeout": 1,
+      "setInterval": 1,
+      "requestAnimationFrame": 0
+    },
+    "src/background/browser/cdp.ts": {
+      "setTimeout": 2,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/background/browser/execute.ts": {
+      "setTimeout": 4,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/background/browser/frames.ts": {
+      "setTimeout": 1,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/background/browser/input.ts": {
+      "setTimeout": 6,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/background/browser/snapshot.ts": {
+      "setTimeout": 1,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/background/llm/deadline.ts": {
+      "setTimeout": 1,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/background/mcp/server.ts": {
+      "setTimeout": 1,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/background/research/fetchText.ts": {
+      "setTimeout": 1,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/background/runner/AgentRunner.ts": {
+      "setTimeout": 2,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/background/runner/chatSaver.ts": {
+      "setTimeout": 1,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/background/runner/runSnapshot.ts": {
+      "setTimeout": 1,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/background/runner/runnerMeta.ts": {
+      "setTimeout": 1,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/content/actions.ts": {
+      "setTimeout": 1,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/content/cursor.ts": {
+      "setTimeout": 4,
+      "setInterval": 0,
+      "requestAnimationFrame": 1
+    },
+    "src/content/scrollMeasure.ts": {
+      "setTimeout": 1,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "src/shared/logger.ts": {
+      "setTimeout": 1,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "sidepanel/sidepanel.js": {
+      "setTimeout": 13,
+      "setInterval": 0,
+      "requestAnimationFrame": 0
+    },
+    "content/content.js": {
+      "setTimeout": 3,
+      "setInterval": 0,
+      "requestAnimationFrame": 2
+    }
   }
 }
