@@ -1,14 +1,3 @@
-/**
- * llm/index.ts - the LLM client and model surface.
- *
- *   generateCompletion(settings, messages, systemPrompt, { signal, json, schema }) -> string
- *   fetchAvailableModels(settings, forceRefresh)                                   -> string[]
- *
- * generateCompletion handles completion calls: one log line on dispatch, a deadline
- * (settings.llmTimeoutMs, 120 s by default) plus the task's abort signal, one log line when a call fails.
- * What is new is what happens under it. The provider call is a native fetch built for that call
- * (factory.ts, ollama.ts, agentRouter.ts), and the deadline and the signal really cancel its request (deadline.ts).
- */
 import { Logger } from '../../shared/logger.ts';
 import { callAgentRouter } from './agentRouter.ts';
 import { withDeadline } from './deadline.ts';
@@ -29,7 +18,6 @@ export { ProviderTimeoutError, isUserAbort, userAbortReason } from './deadline.t
 export { usageOfMessage, usageOfOllama, usageOfOpenAI } from './usage.ts';
 export type { ChatTurn, CompletionOptions, LlmSettings, TokenUsage } from './types.ts';
 
-// Tool calling support
 export interface ToolCall {
   id: string;
   function: { name: string; arguments: string };
@@ -38,26 +26,19 @@ export interface ToolCall {
 export interface ProviderOptions {
   tools?: any[];
   toolChoice?: 'auto' | 'none';
-  /** The run's abort signal: a Pause or a Stop cancels the request in flight. */
   signal?: AbortSignal;
-  /** How hard the model thinks (llm/effort.ts). Absent or 'auto': no reasoning field is sent. */
   effort?: EffortLevel;
 }
 
-/** One reply of the tool loop. `reasoning` is the model's thinking text when the provider returns it (for the log only). */
 export interface ToolReply {
   text?: string;
   tool_calls?: ToolCall[];
   reasoning?: string;
-  /** OpenRouter's reasoning_details, to be sent back with this assistant turn. */
   reasoningDetails?: unknown[];
-  /** The effort that went out on the wire, for the log: the dialect, the level and the fields, or null when nothing was sent. */
   effortSent?: { dialect: string; level: EffortLevel; source: string; fields: Record<string, unknown> } | null;
-  /** The tokens of the call as the provider reported them; absent when it reported none. */
   usage?: TokenUsage;
 }
 
-/** Built-in providers that speak OpenAI's /chat/completions with native tool calls. */
 const OPENAI_TOOL_PROVIDERS = ['openai', 'openai_compatible', 'openrouter', 'groq', 'nvidia', 'agent_router', 'anthropic'];
 
 export async function callProviderWithTools(
@@ -67,30 +48,20 @@ export async function callProviderWithTools(
   systemPrompt: string,
   options: ProviderOptions = {}
 ): Promise<ToolReply> {
-  // The caller's messages may already carry their own system message (the MCP client keeps one in
-  // its history); the systemPrompt argument is an additional prefix, prepended only when given.
   const formattedMessages = systemPrompt
     ? [{ role: 'system', content: systemPrompt }, ...messages]
     : messages;
   const toolChoice = options.toolChoice ?? 'auto';
   const custom = settings.customProviders?.[providerId];
-  // The chat path's missing-key check, before anything is dispatched: a provider that needs a key
-  // fails with today's text instead of the provider's 401. A custom endpoint keeps its own rules
-  // (a keyless one is legitimate), and Ollama has no key at all.
   if (!custom && (isChatProvider(providerId) || providerId === 'agent_router')) {
     assertApiKey(providerId, getApiKey(settings, providerId));
   }
-  // What this model takes is resolved before the deadline starts: for Ollama it may be one
-  // /api/show the first time (with its own short timeout, and the run's signal). A custom endpoint
-  // never gets an effort. The level sent is always one the model supports (the panel's nearest).
   const effortSettings = { ...settings, provider: providerId };
   const asked = options.effort ?? 'auto';
   const effort: EffortSupport | null = asked === 'auto' || custom ? null : await resolveEffortSupport(effortSettings, options.signal);
   const level = effort ? nearestSupportedLevel(asked, effort.levels) : 'auto';
   const thinks = effort !== null && effort.dialect !== 'none' && level !== 'auto';
 
-  // The same deadline as generateCompletion (per-provider timeout, NVIDIA default included), and
-  // the run's signal, so a Pause or Stop really cancels the request instead of waiting it out.
   return withDeadline({ provider: providerId, timeoutMs: timeoutMsOf(settings), signal: options.signal, source: timeoutSourceOf(settings) }, async (callSignal): Promise<ToolReply> => {
     if (providerId === 'ollama') {
       return callOllamaWithTools(settings, formattedMessages, options.tools, toolChoice, callSignal, thinks ? { support: effort!, level } : null);
@@ -98,14 +69,11 @@ export async function callProviderWithTools(
     if (OPENAI_TOOL_PROVIDERS.includes(providerId) || custom?.protocol === 'openai') {
       return callOpenAICompatibleWithTools(settings, formattedMessages, options.tools, toolChoice, providerId, callSignal, thinks ? { support: effort!, level } : null);
     }
-    // Gemini and Anthropic-protocol custom endpoints: tool calling is simulated through the prompt.
     const thinkingConfig = thinks ? geminiThinkingConfig(effort!.dialect, level, effort!.values) : undefined;
     try {
       const reply = await callWithPromptEngineering(settings, formattedMessages, options.tools, callSignal, thinkingConfig);
       return { ...reply, effortSent: thinkingConfig ? { dialect: effort!.dialect, level, source: effort!.source, fields: { thinkingConfig } } : null };
     } catch (error: any) {
-      // A model that refuses the thinkingConfig (a budget it cannot take, a level it does not
-      // know) gets the round again without it, and never gets it again.
       if (!thinkingConfig || callSignal.aborted || !refusedEffortField(error?.status, String(error?.message || ''), { thinkingConfig, thinkingBudget: 1, thinkingLevel: 1, thinking_config: 1, thinking_budget: 1, thinking_level: 1, thinking: 1 })) throw error;
       rememberRefused(effortSettings);
       return { ...await callWithPromptEngineering(settings, formattedMessages, options.tools, callSignal, undefined), effortSent: null };
@@ -113,20 +81,11 @@ export async function callProviderWithTools(
   });
 }
 
-/** The effort of one call: what the model takes, and the level asked for. Null: nothing is sent. */
 interface CallEffort {
   support: EffortSupport;
   level: EffortLevel;
 }
 
-/**
- * One call to one provider, with no deadline of its own. The abort signal in `options` goes straight to
- * the request. Errors have today's texts (errors.ts), and a missing key fails before any model is built.
- * Ollama and AgentRouter have their own modules (ollama.ts, agentRouter.ts): each has fallbacks and error rules
- * that the plain chat-model call below does not.
- * A provider id saved under settings.customProviders is a user-added endpoint: it resolves to its descriptor
- * and is built by protocol (factory.ts), with its own error texts that name the provider, the protocol and the URL.
- */
 export async function callProvider(provider: string, settings: LlmSettings, messages: ChatTurn[], systemPrompt: string, options: CompletionOptions = {}): Promise<string> {
   if (provider === 'ollama') return callOllama(settings, messages, systemPrompt, options);
   if (provider === 'agent_router') return callAgentRouter(settings, messages, systemPrompt, options);
@@ -135,7 +94,6 @@ export async function callProvider(provider: string, settings: LlmSettings, mess
   let call: ProviderCall;
   let chatProvider: ChatProvider;
   if (custom) {
-    // A custom endpoint has no curated defaults: an unusable URL or a missing model fails here, before any request.
     call = createCustomProviderCall(custom, settings, apiKey);
     chatProvider = custom.protocol;
   } else {
@@ -159,10 +117,7 @@ export async function callProvider(provider: string, settings: LlmSettings, mess
     const inner = custom
       ? describeCustomFailure(error, { ...context, providerLabel: custom.displayName || provider, protocol: custom.protocol })
       : describeFailure(chatProvider, error, context);
-    // A Pause, a Stop or the deadline is reported once, as [NETWORK_ABORTED] by generateCompletion, not as a failed request.
     if (!options.signal?.aborted) Logger.error(call.logTag, `[NETWORK] Failed request to ${call.logTarget}`, inner);
-    // The classification comes from the error the SDK threw (its status, its retry-after header), the text
-    // from the failure functions: the caller gets today's message plus the kind the retry wrapper needs.
     const failure = classifyProviderFailure(error);
     throw new ProviderError(custom
       ? wrapCustomFailure(inner, { ...context, providerLabel: custom.displayName || provider, protocol: custom.protocol })
@@ -170,7 +125,6 @@ export async function callProvider(provider: string, settings: LlmSettings, mess
   }
 }
 
-/** Main completion method dispatching to the selected provider. */
 export async function generateCompletion(
   settings: LlmSettings,
   messages: ChatTurn[],
@@ -192,23 +146,7 @@ export async function generateCompletion(
   }
 }
 
-// ============================================================================
-// Tool Calling Support
-// ============================================================================
 
-/**
- * The conversation in the shape Ollama's /api/chat accepts it.
- *
- * Ollama wants `tool_calls[].function.arguments` as an OBJECT and answers 400 for a string, with the
- * message "Value looks like object, but can't find closing '}' symbol" (verified against Ollama
- * 0.40.6; it is what killed a real multi-step run, on the second call, when the first call's tool
- * call came back in the history). The tool loop keeps arguments as a JSON string, which is OpenAI's
- * convention and what its own code parses, so the strings are turned back into objects here, at the
- * one place that speaks Ollama's format.
- *
- * A string that does not parse goes out as an empty object. That call was already rejected and the
- * model already told, so the shape matters less than the run going on.
- */
 function withObjectToolArguments(messages: any[]): any[] {
   return (messages || []).map((message) => {
     if (!Array.isArray(message?.tool_calls)) return message;
@@ -223,7 +161,6 @@ function withObjectToolArguments(messages: any[]): any[] {
   });
 }
 
-/** One tool call's arguments, from the loop's JSON string to the object Ollama expects. */
 function argumentsOf(raw: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(raw);
@@ -233,24 +170,12 @@ function argumentsOf(raw: string): Record<string, unknown> {
   }
 }
 
-/** The data: prefix of a base64 data URL. */
 const DATA_URL_PREFIX = /^data:[^;,]*;base64,/i;
 
-/** The base64 of a data URL, or the string itself when it has no prefix. */
 export function stripDataUrl(url: string): string {
   return String(url || '').replace(DATA_URL_PREFIX, '');
 }
 
-/**
- * One message in the shape Ollama's /api/chat accepts.
- *
- * Ollama has no content array: the text stays in `content`, and the pictures become a SIBLING
- * `images` array of bare base64 strings on the same `role:'user'` message. That shape only exists
- * for a user message, which is why the tool loop puts the picture in one.
- *
- * A message that is not a content array is returned untouched, so a plain text turn is exactly
- * what it was.
- */
 export function toOllamaMessage(message: any): any {
   if (!message || !Array.isArray(message.content)) return message;
   const texts: string[] = [];
@@ -266,22 +191,10 @@ export function toOllamaMessage(message: any): any {
   };
 }
 
-/**
- * The messages with every content array turned into Ollama's shape, and the tool arguments turned
- * into the objects Ollama expects. The one place both conversions happen.
- */
 export function toOllamaMessages(messages: any[]): any[] {
   return withObjectToolArguments(messages).map(withoutReasoningDetails).map(toOllamaMessage);
 }
 
-/**
- * Fail-fast check of one tool's `inputSchema` before it is sent to a provider as OpenAI `parameters`.
- * Providers reject a schema where a field that must be an array (`required`, `enum`, `allOf`,
- * `anyOf`, `oneOf`) or an object (`properties`, `items`) is `null` - answering with an opaque HTTP
- * 400 that kills the whole run before the model is ever asked. Catch it here instead, with a
- * message that names the tool and the offending field, so the run ends with a clear local error
- * and no network call is made.
- */
 export function assertToolSchema(tool: { name: string; inputSchema: any }): void {
   const { name, inputSchema: s } = tool;
   const at = (field: string) => `Tool "${name}": inputSchema.${field}`;
@@ -330,10 +243,7 @@ async function callOllamaWithTools(
     }
   })) || [];
 
-  // The context window of this model (llm/models.ts): the user's, the server's, the family table, then num_ctx.
   const numCtx = (await getEffectiveContextWindow(settings)).tokens;
-  // The generation cap of Settings (ollamaNumPredict), as the chat path sends it: not sent when
-  // it is missing or not above 0.
   const numPredict = Number(settings.ollamaNumPredict) > 0 ? Number(settings.ollamaNumPredict) : undefined;
 
   const payload = {
@@ -355,8 +265,6 @@ async function callOllamaWithTools(
   let sent: ToolReply['effortSent'] = think === undefined ? null : { dialect: effort!.support.dialect, level: effort!.level, source: effort!.support.source, fields: { think } };
   let response = await post(think === undefined ? payload : { ...payload, think });
   if (!response.ok && sent) {
-    // A model or an older server that refuses `think` ("does not support thinking") gets the round
-    // again without it, and never gets the field again.
     const text = await response.clone().text();
     if (refusedEffortField(response.status, text, { think })) {
       rememberRefused(settings);
@@ -366,10 +274,8 @@ async function callOllamaWithTools(
   }
 
   if (!response.ok) {
-    // The status travels with the error, so the loop can tell a passing server error from a refusal.
     const rawBody = await response.text();
     const error = Object.assign(new Error(rawBody || `Ollama API error (${response.status})`), { status: response.status, headers: response.headers, rawBody });
-    // The curated words of the chat path (errors.ts): a 404 is a model to pull, a 403 is OLLAMA_ORIGINS.
     throw new ProviderError(
       describeOllamaFailure(error, { url, model: String(settings.model || ''), rawBody }),
       { status: response.status, kind: classifyProviderFailure(error).kind, retryAfterMs: retryAfterOf(error) }
@@ -377,9 +283,6 @@ async function callOllamaWithTools(
   }
 
   const data = await response.json();
-  // A 200 that carries Ollama's error object (a runner that died mid-answer) fails the call,
-  // like it does on the chat path: the plain Error the documented contract names, not an empty
-  // success the loop would read as a model answer with no tool call.
   if (typeof data?.error === 'string' && data.error) throw new Error(data.error);
   const message = data.message || {};
   const reasoning = typeof message.thinking === 'string' && message.thinking ? message.thinking : undefined;
@@ -403,27 +306,19 @@ async function callOllamaWithTools(
   return { text: message.content || '', reasoning, effortSent: sent, ...(usage ? { usage } : {}) };
 }
 
-/** The one effort value among the fields sent (reasoning_effort, reasoning.effort, output_config.effort), or ''. */
 function sentValueOf(fields: Record<string, any>): string {
   return String(fields.reasoning_effort ?? fields.reasoning?.effort ?? fields.output_config?.effort ?? '');
 }
 
-/** A history message without OpenRouter's reasoning_details. */
 function withoutReasoningDetails(message: any): any {
   if (!message || !('reasoning_details' in message)) return message;
   const { reasoning_details: _dropped, ...rest } = message;
   return rest;
 }
 
-/** The reasoning fields of one OpenAI-shaped call, from the model's support and the level. */
 function openaiEffortPatch(providerId: string, effort: CallEffort): EffortPatch {
-  // The anthropic dialects speak the Messages wire (thinking, output_config), which the
-  // OpenAI-shaped /chat/completions body of the tool path must not carry. The chat path sends no
-  // anthropic effort field either (anthropicCall ignores the thinking config), so this is
-  // consistency, not a loss.
   if (effort.support.dialect === 'anthropic-budget' || effort.support.dialect === 'anthropic-adaptive') return NO_PATCH;
   const patch = effortPatch(effort.support.dialect, effort.level, effort.support.values);
-  // OpenAI's own reasoning models refuse a temperature and take max_completion_tokens.
   return providerId === 'openai' ? openaiReasoningBody(patch) : patch;
 }
 
@@ -440,9 +335,6 @@ async function callOpenAICompatibleWithTools(
   const baseUrl = toolBaseUrlOf(settings, providerId);
   const url = `${baseUrl}/chat/completions`;
 
-  // SEC-9 on the tool path: a custom endpoint over plain http that would carry a key is refused
-  // here too, by the same guard the completion path runs when it builds its call. Without it the
-  // tool loop would send the key in cleartext although the completion path refuses to.
   const custom = settings.customProviders?.[providerId];
   if (custom) assertSecureCustomTransport(custom, getApiKey(settings, providerId));
 
@@ -455,12 +347,9 @@ async function callOpenAICompatibleWithTools(
     }
   })) || [];
 
-  // OpenAI's own reasoning models (o-series, GPT-5) refuse a temperature and max_tokens whatever
-  // the effort, so they never get them, not even on Auto or after a refused effort.
   const openaiReasoner = providerId === 'openai' && registryDialect('openai', String(settings.model || '')) === 'openai';
   const payload: Record<string, unknown> = {
     model: settings.model,
-    // OpenRouter's reasoning_details go back to OpenRouter only; another server would refuse the field.
     messages: providerId === 'openrouter' ? withTypedToolCalls(messages) : withTypedToolCalls(messages).map(withoutReasoningDetails),
     tools: openaiTools,
     tool_choice: toolChoice === 'none' ? 'none' : 'auto',
@@ -469,7 +358,6 @@ async function callOpenAICompatibleWithTools(
 
   const apiKey = getApiKey(settings, providerId);
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  // A custom endpoint saved with keyMode 'none' takes no key, so no Authorization header at all.
   if (custom?.keyMode !== 'none') headers.Authorization = `Bearer ${apiKey}`;
   const post = (body: object) => fetch(url, {
     method: 'POST',
@@ -478,7 +366,6 @@ async function callOpenAICompatibleWithTools(
     signal
   });
 
-  // A custom endpoint never gets a reasoning field (the caller passes no effort for one).
   const effortSettings = { ...settings, provider: providerId };
   let current: CallEffort | null = custom ? null : effort;
   let response: Response;
@@ -491,9 +378,6 @@ async function callOpenAICompatibleWithTools(
     if (response.ok || !sent || attempt >= 2) break;
     const text = await response.clone().text();
     if (!refusedEffortField(response.status, text, fields, Boolean(patch!.minMaxTokens || patch!.maxTokensField))) break;
-    // The provider refused a reasoning value or field. A 400 that lists the accepted values
-    // ("expected one of ...") is learned and the round is sent again with one of them; any other
-    // refusal sends the round again with no reasoning field, and the model never gets one again.
     if (attempt === 0 && learnValuesFromError(effortSettings, current!.support.dialect, text, sentValueOf(fields))) {
       current = { support: effortSupportOf(effortSettings), level: current!.level };
       if (current.support.dialect !== 'none') continue;
@@ -503,11 +387,8 @@ async function callOpenAICompatibleWithTools(
   }
 
   if (!response.ok) {
-    // The status travels with the error, so the loop can tell a passing server error from a refusal.
     const rawBody = await response.text();
     const error = Object.assign(new Error(rawBody), { status: response.status, headers: response.headers, rawBody });
-    // The curated words of the chat path (errors.ts), per provider: the 401 authentication texts,
-    // the provider's name and URL. A custom endpoint names its display name and protocol.
     const context = { baseUrl, apiKey, rawBody };
     const customContext = { ...context, providerLabel: custom?.displayName || providerId, protocol: (custom?.protocol || 'openai') as 'openai' | 'anthropic' };
     const inner = custom
@@ -528,11 +409,8 @@ async function callOpenAICompatibleWithTools(
   const data = await response.json();
   const choice = data.choices?.[0];
   const message = choice?.message || {};
-  // NIM, Groq and DeepSeek put the thinking in reasoning_content or reasoning; OpenAI returns none.
   const thought = message.reasoning_content ?? message.reasoning;
   const reasoning = typeof thought === 'string' && thought ? thought : undefined;
-  // OpenRouter's reasoning_details must go back with the assistant turn in a tool loop (Claude and
-  // encrypted reasoning need it); the client keeps it on the turn it records.
   const reasoningDetails = Array.isArray(message.reasoning_details) && message.reasoning_details.length ? message.reasoning_details : undefined;
   const usage = usageOfOpenAI(data);
 
@@ -555,7 +433,6 @@ async function callOpenAICompatibleWithTools(
   return { text: message.content || '', reasoning, reasoningDetails, effortSent: sent, ...(usage ? { usage } : {}) };
 }
 
-/** Default /v1 bases of the built-in OpenAI-style providers. */
 const DEFAULT_TOOL_BASE_URLS: Record<string, string> = {
   openai: 'https://api.openai.com/v1',
   openrouter: 'https://openrouter.ai/api/v1',
@@ -565,11 +442,6 @@ const DEFAULT_TOOL_BASE_URLS: Record<string, string> = {
   anthropic: 'https://api.anthropic.com/v1'
 };
 
-/**
- * The /v1 base a tool call posts to. The base URL the user configured wins (top-level first, then
- * the provider's saved config), with the same normalization the completion path applies; the
- * built-in default is the last resort.
- */
 export function toolBaseUrlOf(settings: LlmSettings, provider: string): string {
   const custom = settings.customProviders?.[provider];
   if (custom) return normalizeCustomOpenaiBase(custom.baseUrl);
@@ -579,11 +451,6 @@ export function toolBaseUrlOf(settings: LlmSettings, provider: string): string {
   return DEFAULT_TOOL_BASE_URLS[provider] || DEFAULT_TOOL_BASE_URLS.openai;
 }
 
-/**
- * The history with every replayed tool call in OpenAI's full shape: `type: 'function'` and the
- * arguments as a JSON string. OpenAI answers 400 ("Missing required parameter tool_calls[0].type")
- * without the type, from the second round on.
- */
 export function withTypedToolCalls(messages: any[]): any[] {
   return (messages || []).map((message) => {
     if (!Array.isArray(message?.tool_calls)) return message;
@@ -601,13 +468,6 @@ export function withTypedToolCalls(messages: any[]): any[] {
   });
 }
 
-/**
- * The tool loop's history as plain chat turns, for a provider without native tool calls.
- *
- * The chat path only knows user and assistant text, so: system messages become the system prompt,
- * an assistant tool call is said in words, a tool result becomes a user turn that names the tool,
- * and a picture is replaced by a line of text (this path sends no images).
- */
 export function toPromptTurns(messages: any[]): { systemPrompt: string; turns: ChatTurn[] } {
   const system: string[] = [];
   const turns: ChatTurn[] = [];
@@ -658,14 +518,12 @@ async function callWithPromptEngineering(
 
   const toolCall = parseToolCallFromText(text);
   if (toolCall) {
-    // The loop keeps arguments as a JSON string (OpenAI's convention), like every other path.
     return { tool_calls: [{ id: `call_${Date.now()}`, function: { name: toolCall.name, arguments: JSON.stringify(toolCall.arguments ?? {}) } }], ...(usage ? { usage } : {}) };
   }
 
   return { text, ...(usage ? { usage } : {}) };
 }
 
-/** The first fenced json tool call in a reply, or null. A call with no arguments is still a call. */
 export function parseToolCallFromText(text: string): { name: string; arguments: Record<string, unknown> } | null {
   const jsonMatch = String(text || '').match(/```json\s*(\{[\s\S]*?\})\s*```/);
   if (jsonMatch) {
