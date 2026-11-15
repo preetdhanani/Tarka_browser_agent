@@ -1,14 +1,8 @@
-/**
- * The context meter of the composer: a small ring that fills with how much of the model's context
- * window the current chat uses, and the card it opens (the bar, the numbers and Compact).
- *
- * Pure: the functions take the runner's context state (AgentRunner.contextState, sent with every
- * STATE_UPDATE) and return markup, so the tests read exactly what the panel draws. sidepanel.js
- * puts the markup in place and wires the clicks.
- */
+
+
 import { formatTokens } from '../src/shared/tokens.ts';
 
-/** Where the window comes from, in the card's words. */
+
 export const WINDOW_SOURCE_TEXT = {
   user: 'set by you',
   provider: 'from the provider',
@@ -16,18 +10,18 @@ export const WINDOW_SOURCE_TEXT = {
   default: 'default'
 };
 
-/** The line of the card that says what the meter counts. */
+
 export const CHAIN_NOTE = 'Earlier answers of this chat are sent with each new request.';
 
-/** From this share of the window on the ring is amber, and from HIGH_AT red. */
+
 export const WARN_AT = 70;
 export const HIGH_AT = 90;
 
-/** The radius and the length of the ring's arc (a 16 px ring drawn in a 16-unit box). */
+
 const RING_R = 6;
 const RING_LENGTH = 2 * Math.PI * RING_R;
 
-/** The share of the window that is used, 0 to 100. */
+
 export function percentOf(used, window) {
   const u = Number(used) || 0;
   const w = Number(window) || 0;
@@ -35,27 +29,21 @@ export function percentOf(used, window) {
   return Math.min(100, (u / w) * 100);
 }
 
-/** The share as the panel writes it: "0%", "<1%", "12%". */
+
 export function percentText(pct) {
   if (!(pct > 0)) return '0%';
   if (pct < 1) return '<1%';
   return `${Math.round(pct)}%`;
 }
 
-/** The colour step of a share: ok, warn (amber, from 70%) or high (red, from 90%). */
+
 export function levelOf(pct) {
   if (pct >= HIGH_AT) return 'high';
   if (pct >= WARN_AT) return 'warn';
   return 'ok';
 }
 
-/**
- * What the ring and the card show, from the runner's context state.
- *
- * @param {object|null} context  getState().context, or null (an older worker)
- * @param {{busy?: boolean, model?: string, pending?: boolean}} options
- *   busy: a task is running or paused; pending: this panel sent COMPACT_CHAT and waits for the answer
- */
+
 export function meterView(context, { busy = false, model = '', pending = false } = {}) {
   const c = context || {};
   const windowTokens = Number(c.window) > 0 ? Number(c.window) : 262144;
@@ -88,7 +76,7 @@ export function meterView(context, { busy = false, model = '', pending = false }
   };
 }
 
-/** The ring: a track and an arc that fills clockwise from the top, coloured by its level. */
+
 export function ringSvg(view) {
   const filled = view.pct > 0 ? Math.max(view.pct, 4) : 0;
   const arc = (RING_LENGTH * filled) / 100;
@@ -99,12 +87,12 @@ export function ringSvg(view) {
     + '</svg>';
 }
 
-/** Text for HTML. */
+
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 }
 
-/** The card the ring opens: the model and its window, the bar of this chat, the note, Compact, and the way to Settings. */
+
 export function contextCardHtml(view) {
   const width = view.pct > 0 ? Math.max(view.pct, 1.5) : 0;
   const summarized = view.summarizedTurns > 0
@@ -131,10 +119,7 @@ export function contextCardHtml(view) {
     </div>`;
 }
 
-/**
- * The line under the Settings field: the window a run would use and where it comes from, and what
- * the field takes. `window` is GET_CONTEXT_WINDOW's answer ({ tokens, source }), or null.
- */
+
 export function contextWindowHint(window, provider) {
   const now = window && Number(window.tokens) > 0
     ? `Now ${formatTokens(window.tokens)} (${WINDOW_SOURCE_TEXT[window.source] || WINDOW_SOURCE_TEXT.default}). `

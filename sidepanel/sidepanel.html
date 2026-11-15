@@ -8,7 +8,7 @@
 </head>
 <body>
   <div class="app-container">
-    <!-- Header -->
+
     <header class="app-header">
       <div class="brand">
         <div class="logo-icon" title="Tarka AI Agent">
@@ -36,13 +36,13 @@
       </div>
     </header>
 
-    <!-- Shown when the background worker is from an older build than this page (see checkWorkerBuild) -->
+
     <div class="update-banner" id="updateBanner" role="status" hidden>
       <span class="update-banner-text">Tarka was updated. Reload it to use the new version.</span>
       <button class="update-banner-btn" id="btnReloadExtension" type="button" title="Reloads the extension. A running task stops.">Reload</button>
     </div>
 
-    <!-- Navigation Tabs -->
+
     <nav class="nav-tabs">
       <button class="nav-btn active" data-tab="chat">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -58,7 +58,7 @@
       </button>
     </nav>
 
-    <!-- SESSION HISTORY DRAWER -->
+
     <div class="history-drawer" id="historyDrawer" style="display: none;">
       <div class="history-drawer-header">
         <span>Saved sessions</span>
@@ -69,10 +69,10 @@
       <div class="history-sessions-list" id="historySessionsList"></div>
     </div>
 
-    <!-- Tab Contents -->
+
     <main class="tab-content">
 
-      <!-- TAB 1: AGENT CHAT & TIMELINE -->
+
       <section id="tab-chat" class="tab-panel active">
 
 
@@ -101,21 +101,21 @@
           </div>
         </div>
 
-        <!-- Shown when the reader scrolled up and new rows arrived below: back to the newest row, and following again. -->
+
         <div class="jump-latest-anchor">
           <button type="button" class="jump-latest" id="btnJumpLatest" title="Jump to latest" aria-label="Jump to latest" hidden>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="6 13 12 19 18 13"/></svg>
           </button>
         </div>
 
-        <!-- LIVE PROCESSING STATUS BANNER -->
+
         <div class="processing-banner" id="processingBanner" style="display: none;">
           <div class="spinner-ring"></div>
           <div class="processing-text-wrapper">
             <div class="processing-phase-row">
               <span class="processing-phase" id="processingPhaseText">Agent is processing...</span>
               <span class="processing-effort-chip" id="processingEffortBadge" style="display: none;"></span>
-              <!-- The provider and model this run uses (featere/custom-endpoint A6.3) -->
+
               <span class="processing-effort-chip processing-model-chip" id="processingModelChip" style="display: none;"></span>
             </div>
             <div class="progress-bar-track">
@@ -146,7 +146,7 @@
               </button>
 
               <div class="composer-meta">
-                <!-- Context meter: how much of the model's context window this chat uses. Opens #contextMenu. -->
+
                 <button type="button" class="composer-ring" id="btnContext" aria-haspopup="dialog" aria-expanded="false" aria-controls="contextMenu" aria-label="Context: 0% of 256K used" title="Context: 0% of 256K used"><span class="composer-ring-slot" id="contextRing"></span></button>
                 <button type="button" class="composer-meta-btn" id="btnEffort" aria-haspopup="menu" aria-expanded="false" title="How hard the model thinks">Medium</button>
                 <span class="composer-sep">·</span>
@@ -158,7 +158,7 @@
               </button>
             </div>
 
-            <!-- Approval mode menu (same two choices as the reference) -->
+
             <div class="menu" id="approvalMenu" role="menu" hidden>
               <button type="button" class="menu-item" data-approval="manual" role="menuitemradio" aria-checked="false">
                 <span class="menu-icon">
@@ -176,8 +176,8 @@
               </button>
             </div>
 
-            <!-- Effort menu: how hard the model thinks before each step (never the number of steps).
-                 Only the levels the chosen model supports are shown; the note says why. -->
+
+
             <div class="menu" id="effortMenu" role="menu" hidden>
               <button type="button" class="menu-item" data-effort="auto" role="menuitemradio" aria-checked="false"><span class="menu-label">Auto</span><span class="menu-check" aria-hidden="true"></span></button>
               <button type="button" class="menu-item" data-effort="off" role="menuitemradio" aria-checked="false"><span class="menu-label">Off</span><span class="menu-check" aria-hidden="true"></span></button>
@@ -188,10 +188,10 @@
               <div class="menu-note" id="effortMenuNote"></div>
             </div>
 
-            <!-- Context card: the bar of this chat, the window and where it comes from, and Compact (sidepanel/contextMeter.js). -->
+
             <div class="menu ctx-menu" id="contextMenu" role="dialog" aria-label="Context of this chat" hidden></div>
 
-            <!-- Model menu: every model of the chosen provider, scrollable, plus a hand-typed id -->
+
             <div class="menu menu-scroll" id="modelMenu" role="menu" hidden>
               <div class="menu-search">
                 <input type="text" id="modelMenuSearch" class="menu-search-input" placeholder="Search models..." autocomplete="off" spellcheck="false" />
@@ -208,11 +208,11 @@
         </div>
       </section>
 
-      <!-- TAB 2: SETTINGS -->
+
       <section id="tab-settings" class="tab-panel">
         <div class="settings-form">
 
-          <!-- Provider Select -->
+
           <div class="form-group">
             <label class="form-label" for="providerSelect">LLM Provider</label>
             <select id="providerSelect" class="form-select">
@@ -224,23 +224,23 @@
               <option value="openai">OpenAI Official</option>
               <option value="anthropic">Anthropic (Claude)</option>
               <option value="nvidia">NVIDIA NIM (build.nvidia.com)</option>
-              <!-- User-added providers are appended above the trigger option by customProvider.js. -->
+
             </select>
           </div>
 
-          <!-- Edit and Delete of the selected user-added provider (hidden for built-ins) -->
+
           <div class="form-group" id="customProviderActions" style="display:none;">
             <button type="button" class="btn btn-secondary btn-xs" id="btnEditCustomProvider">Edit provider</button>
             <button type="button" class="btn btn-danger btn-xs" id="btnDeleteCustomProvider">Delete provider</button>
           </div>
 
-          <!-- Base URL -->
+
           <div class="form-group" id="baseUrlGroup">
             <label class="form-label" for="baseUrlInput">Base API URL</label>
             <input type="text" id="baseUrlInput" class="form-input" placeholder="https://openrouter.ai/api/v1">
           </div>
 
-          <!-- API Key -->
+
           <div class="form-group">
             <label class="form-label" for="apiKeyInput">API Key (Required for OpenRouter / NVIDIA / Gemini / OpenAI / Claude)</label>
             <div class="input-with-toggle">
@@ -252,7 +252,7 @@
           </div>
 
 
-          <!-- DYNAMIC MODEL SEARCHABLE COMBOBOX -->
+
           <div class="form-group">
             <div class="label-row">
               <label class="form-label">Available Models (Dynamic API Fetch)</label>
@@ -262,7 +262,7 @@
               </button>
             </div>
 
-            <!-- Custom Searchable Dropdown Component -->
+
             <div class="custom-combobox" id="modelCombobox">
               <button type="button" class="combobox-trigger" id="modelComboboxTrigger" aria-haspopup="listbox" aria-expanded="false">
                 <span id="modelSelectedLabel">Select a model...</span>
@@ -277,20 +277,20 @@
               </div>
             </div>
 
-            <!-- Hidden backing select element for state consistency -->
+
             <select id="modelSelect" class="form-select" style="display: none;"></select>
             <input type="text" id="modelCustomInput" class="form-input" style="display: none; margin-top: 6px;" placeholder="Or type custom model name...">
             <span class="subtext-hint" id="modelFetchStatus">Click model box to search and select</span>
           </div>
 
-          <!-- The context window of the chosen model: what the composer's ring measures against. -->
+
           <div class="form-group" id="contextWindowGroup">
             <label class="form-label" for="contextWindowInput">Context window (tokens)</label>
             <input type="text" id="contextWindowInput" class="form-input" placeholder="From the provider, or 256K" autocomplete="off" spellcheck="false" inputmode="text">
             <span class="subtext-hint" id="contextWindowHint">Takes 200000, 200K or 1M. Empty uses the provider's number. For Ollama it is also num_ctx.</span>
           </div>
 
-          <!-- Advanced Tuning -->
+
           <div class="form-row">
             <div class="form-group half">
               <label class="form-label" for="maxStepsInput">Step limit (hard cap)</label>
@@ -302,27 +302,27 @@
             </div>
           </div>
 
-          <!-- Model Overrides removed: the agent always plans and reflects with the same model it uses for everything else. -->
 
-          <!-- Ollama-only: local models have no vendor-side output cap, so this is the only
-               ceiling on a single generation. Always shown rather than hidden per-provider,
-               matching how the API Key label above names its providers instead of hiding. -->
+
+
+
+
           <div class="form-group" id="ollamaNumPredictGroup">
             <label class="form-label" for="ollamaNumPredictInput">Ollama Max Output Tokens (num_predict)</label>
             <input type="number" id="ollamaNumPredictInput" class="form-input" value="8192" min="1" step="256">
             <span class="subtext-hint">Ollama only. Raise this if replies get cut off mid-answer (check Logs for OLLAMA_TRUNCATED).</span>
           </div>
 
-          <!-- The failed-step error message tells the user to "raise llmTimeoutMs in settings" -
-               this is that setting. A slow provider or a large local model can genuinely need
-               longer than the 120s default before the agent gives up and retries. -->
+
+
+
           <div class="form-group" id="llmTimeoutGroup">
             <label class="form-label" for="llmTimeoutInput">LLM Timeout (ms)</label>
             <input type="number" id="llmTimeoutInput" class="form-input" value="120000" min="5000" step="5000">
             <span class="subtext-hint">How long to wait for a single reply before retrying. Raise this if you see "did not respond within Ns" errors on a slow provider or local model.</span>
           </div>
 
-          <!-- Default Effort Level: the model's reasoning level, sent in each provider's own field. -->
+
           <div class="form-group" id="effortDefaultGroup">
             <label class="form-label" for="effortDefaultSelect">Default Effort</label>
             <select id="effortDefaultSelect" class="form-select">
@@ -345,9 +345,9 @@
             <span class="subtext-hint">The first step and the step after a failed action always get the chosen effort.</span>
           </div>
 
-          <!-- Element badges stay off: the agent navigates by reading page text and structure, not by visual markers. -->
 
-          <!-- Research outside the tab: web_search and fetch_url run from the background and never touch the tab. -->
+
+
           <div class="settings-section" id="researchSection">
             <div class="settings-section-head">
               <span class="settings-section-title">Research</span>
@@ -378,7 +378,7 @@
         </div>
       </section>
 
-      <!-- TAB 3: DOM LOGS & DEBUG CONSOLE -->
+
       <section id="tab-logs" class="tab-panel">
         <div class="logs-container">
           <div class="logs-header">
@@ -409,7 +409,7 @@
 
     </main>
 
-    <!-- CUSTOM PROVIDER DIALOG (Add/Edit of a user-added endpoint) -->
+
     <div class="cp-overlay" id="cpOverlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="cpTitle">
       <div class="cp-dialog" id="cpDialog">
         <div class="cp-heading">
@@ -500,7 +500,7 @@
       </div>
     </div>
 
-    <!-- TOAST NOTIFICATIONS -->
+
     <div class="toast-container" id="toastContainer"></div>
   </div>
 

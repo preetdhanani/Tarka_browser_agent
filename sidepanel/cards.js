@@ -1,8 +1,4 @@
-/**
- * sidepanel/cards.js
- * Specialized Card Renderers for HITL approval: the action confirmation card
- * (confirm_action). Designed with Studio Mono tokens and clean HTML generation.
- */
+
 
 export function escapeHtml(str) {
   if (str == null) return '';
@@ -14,7 +10,7 @@ export function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
-/** The host name of a URL, or '' when it does not parse. */
+
 function hostOf(url) {
   try {
     return new URL(url).hostname;
@@ -23,16 +19,13 @@ function hostOf(url) {
   }
 }
 
-/** One labelled line of the card, or '' when there is no value. */
+
 function confirmRow(label, value) {
   if (!value) return '';
   return `<div class="confirm-row"><span class="confirm-row-label">${escapeHtml(label)}</span><code class="confirm-row-value">${escapeHtml(value)}</code></div>`;
 }
 
-/**
- * The action's own data, so the user sees what they approve: the typed text, the code of a script (escaped, monospace,
- * scrolling inside its box) and the steps of a batch. `detail` comes from the risk gate (agent/risk.ts ConfirmDetail).
- */
+
 function renderConfirmDetail(detail) {
   if (!detail || typeof detail !== 'object') return '';
   const parts = [];
@@ -65,9 +58,7 @@ function renderConfirmDetail(detail) {
   return parts.join('');
 }
 
-/**
- * Render Action Confirmation Card (HITL interrupt: confirm_action)
- */
+
 export function renderActionConfirmationCard(confirm) {
   if (!confirm) return '';
 
@@ -77,9 +68,8 @@ export function renderActionConfirmationCard(confirm) {
   const elementLabel = confirm.elementLabel || (detail && detail.elementLabel) || '';
   const reason = confirm.reason || 'This action modifies external state or navigates away.';
   const pageHost = confirm.pageUrl ? hostOf(confirm.pageUrl) : '';
-  // The engine remembers a card's targetOrigin for the rest of the run (CONTRACT-REMEMBER), so
-  // every card that carries one offers the checkbox: ticking it skips the later cards for this
-  // origin. Without an origin there is nothing to remember, so the checkbox never shows.
+
+
   const targetOrigin = confirm.targetOrigin || '';
   const targetDomain = targetOrigin ? hostOf(targetOrigin) : '';
 
