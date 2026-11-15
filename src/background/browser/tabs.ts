@@ -1,26 +1,15 @@
-/**
- * tabs.ts: Pure helper module for tab operations, status checks, and URL restrictions.
- */
 
-/**
- * Return chrome.runtime.lastError.message if set, or null.
- * Catches context-invalidated reads in test / non-extension contexts.
- */
 export function lastRuntimeError(): string | null {
   try {
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.lastError) {
       return chrome.runtime.lastError.message ?? 'Unknown chrome error';
     }
   } catch (_) {
-    // context invalidated
   }
   return null;
 }
 
-/**
- * Explain why a URL cannot be automated, or return null if it can be.
- * Chrome blocks extensions from scripting internal pages, other extensions, and the Web Store.
- */
+// Chrome blocks extensions from scripting internal pages, extension pages and the Web Store.
 export function describeRestrictedUrl(url: string | null | undefined): string | null {
   if (!url) {
     return 'That tab has not finished loading a page yet. Wait for it to load, then start the task again.';
@@ -40,28 +29,17 @@ export function describeRestrictedUrl(url: string | null | undefined): string | 
   return null;
 }
 
-/**
- * Can this tab be automated by Tarka?
- * Delegates to describeRestrictedUrl as the single source of truth.
- */
 export function isValidWebTab(tab: { url?: string | null } | null | undefined): boolean {
   if (!tab || !tab.url) return false;
   return describeRestrictedUrl(tab.url) === null;
 }
 
-/**
- * Is this tab a disposable throwaway page that can be navigated in place?
- */
 export function isDisposableTab(tab: { url?: string | null; pendingUrl?: string | null } | null | undefined): boolean {
   const url = tab && (tab.url || tab.pendingUrl);
   if (!url) return false;
   return url === 'about:blank' || /^(chrome|edge|brave):\/\/(newtab|new-tab-page)\/?$/i.test(url);
 }
 
-/**
- * Retrieve a chrome tab safely, supporting both callback and promise forms.
- * Never throws.
- */
 export function getTab(
   tabId: number,
   callback?: (tab: chrome.tabs.Tab | null) => void
@@ -93,9 +71,6 @@ export function getTab(
   return promise;
 }
 
-/**
- * The URL a tab is on right now, or fallback when the browser cannot say.
- */
 export async function liveTabUrl(tabId: number, fallback = ''): Promise<string> {
   try {
     if (!tabId || typeof chrome === 'undefined' || !chrome.tabs?.get) return fallback;

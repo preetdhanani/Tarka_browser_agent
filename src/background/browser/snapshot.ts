@@ -1,6 +1,3 @@
-// src/background/browser/snapshot.ts
-// Body of BrowserPort.snapshot: tab validation, scope wall, restricted URL gate,
-// content script injection fallback, and error handling.
 
 import { describeRestrictedUrl, lastRuntimeError } from './tabs.ts';
 import { TOP_FRAME } from './frames.ts';
@@ -37,7 +34,6 @@ export interface SnapshotResult {
   [key: string]: any;
 }
 
-/** A snapshot that failed, with the message the model and the panel see. */
 export class SnapshotError extends Error {
   constructor(message: string) {
     super(message);
@@ -45,21 +41,15 @@ export class SnapshotError extends Error {
   }
 }
 
-/**
- * Reads the page DOM snapshot with scope verification, restricted URL gating,
- * and automatic injection retry.
- */
 export async function takeSnapshot(
   tabId: number,
   opts: SnapshotOptions = {},
   deps: SnapshotDeps
 ): Promise<SnapshotResult> {
-  // 1. Missing tabId check
   if (!tabId || typeof tabId !== 'number') {
     throw new SnapshotError('No target tab was selected for this task.');
   }
 
-  // 2. Tab existence check via chrome.tabs.get
   let tab: chrome.tabs.Tab | null = null;
   if (typeof chrome !== 'undefined' && chrome.tabs?.get) {
     try {
@@ -86,7 +76,6 @@ export async function takeSnapshot(
     );
   }
 
-  // 3. Hard access wall: tab must be within this session's Tarka group
   const inScope = await deps.isTabInScope(tabId);
   if (!inScope) {
     throw new SnapshotError(
@@ -94,13 +83,11 @@ export async function takeSnapshot(
   );
   }
 
-  // 4. Restricted URL gate
   const restriction = describeRestrictedUrl(tab.url || '');
   if (restriction) {
     throw new SnapshotError(restriction);
   }
 
-  // 5. Clear badges if explicitly requested false
   if (opts.showBadges === false && deps.clearBadges) {
     await deps.clearBadges(tabId).catch(() => {});
   }
@@ -120,7 +107,6 @@ export async function takeSnapshot(
           action: 'GET_DOM_SNAPSHOT',
           payload: {
             maxElements: opts.maxElements ?? 120,
-            // Element badges are off: numbers are drawn on the page only when a caller asks for them.
             showBadges: opts.showBadges === true,
           },
         },
@@ -141,7 +127,6 @@ export async function takeSnapshot(
     });
   };
 
-  // 6. First attempt to capture snapshot
   try {
     const resp = await sendSnapshotMessage(tabId);
     const data = resp?.data ?? resp;
@@ -155,7 +140,6 @@ export async function takeSnapshot(
     if (primaryErr instanceof SnapshotError) {
       throw primaryErr;
     }
-    // 7. Fallback injection attempt
     Logger.debug('Browser', `[INJECT] Content script not active on tab [${tabId}] (${tab.url}). Injecting script dependencies...`);
 
     try {

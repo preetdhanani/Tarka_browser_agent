@@ -1,6 +1,3 @@
-// src/background/browser/execute.ts
-// Runs one page action of an MCP tool on a tab through the input dispatcher, then settles and
-// reports what the action changed.
 
 import { describeRestrictedUrl } from './tabs.ts';
 import { checkWebUrl } from '../research/urlPolicy.ts';
@@ -15,39 +12,21 @@ export interface ExecuteActionDeps {
   dispatchAction?: (tabId: number, action: any, opts: any) => Promise<any>;
   tabInfo?: (tabId: number) => Promise<{ url: string; title: string; windowId: number; groupId: number; status: string } | null>;
   waitForTabComplete?: (tabId: number, ms: number, signal?: AbortSignal) => Promise<void>;
-  /**
-   * Resolves true when the tab starts loading a document within `ms`, false when it does not.
-   * Defaults to chrome.tabs.onUpdated (a url-only event is not a load start; see W2-B3).
-   */
   watchLoadStart?: (tabId: number, ms: number, signal?: AbortSignal) => Promise<boolean>;
   waitDomQuiet?: (tabId: number, quietMs: number, maxMs: number) => Promise<void>;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   actionDelayMs?: number;
-  /** Reads the effect probe again after the action settled. Defaults to the content script's probe. */
   readProbe?: (tabId: number) => Promise<EffectDetail | null>;
-  /** The tab-scope check (SEC-7). Defaults to the runtime's isTabInScope. Absent: no scope gate. */
   isTabInScope?: (tabId: number) => Promise<boolean>;
 }
 
-/**
- * How long after a click, a coordinate click or a submitting type a page load must start to count
- * as one the action caused. A single-page app never loads, so waiting for "complete" there only
- * ever timed out: the settle now waits for a load only when one started.
- */
 export const LOAD_START_WINDOW_MS = 500;
 
-/** How long an action waits for a load that did start to complete. */
 export const LOAD_COMPLETE_MAX_MS = 4000;
 
-/** The longest wait for the DOM to go quiet after an action: a page with a ticker is never quiet. */
 export const SETTLE_QUIET_MAX_MS = 800;
 
-/**
- * Whether the tab starts loading a document within `ms`, read from chrome.tabs.onUpdated. Only a
- * `status: 'loading'` event counts (W2-B3): a url-only event is an SPA pushState, not a document
- * load, and counting it burned the whole complete timeout on a page that never loads. False when
- * there is no tabs API to watch.
- */
+// Chrome emits URL-only updates for SPA history changes without a document load event.
 export function watchLoadStartWithChrome(tabId: number, ms: number, signal?: AbortSignal): Promise<boolean> {
   if (typeof chrome === 'undefined' || !chrome.tabs?.onUpdated) return Promise.resolve(false);
   return new Promise<boolean>((resolve) => {
@@ -69,17 +48,12 @@ export function watchLoadStartWithChrome(tabId: number, ms: number, signal?: Abo
   });
 }
 
-/** The actions whose result carries an observation: the probe is read again after they settled. */
 const OBSERVED_VERBS = new Set(['click', 'click_at', 'type', 'press_key', 'scroll']);
 
-/** The refusal for a tab that is gone (the same wording the snapshot path answers with). */
 export function tabGoneText(tabId: number): string {
   return `The target tab [${tabId}] no longer exists (it was probably closed). Open the page you want automated and start the task again.`;
 }
 
-/**
- * Dispatches an action onto a tab with safety gates and proper execution routing.
- */
 export async function executeAction(
   tabId: number,
   action: any,
@@ -88,7 +62,6 @@ export async function executeAction(
   const signal = deps.signal ?? deps.runRuntime?.control.stepSignal();
   const verb = action?.action;
 
-  // 1. Abort signal check
   if (signal?.aborted) {
     return {
       success: false,
@@ -98,17 +71,9 @@ export async function executeAction(
     };
   }
 
-  // 1b. SEC-7: the tab itself is checked before anything is dispatched - a restricted page
-  // (chrome://, a file:, the Web Store) is never automated, and a tab outside this run's scope
-  // (the sandbox group) is not this run's to touch. The screenshot and snapshot paths have held
-  // this gate all along; the action path holds it here now, for every verb. The check runs when a
-  // tab reader exists (the tool path always has one); with none, the tab's URL is unknowable and
-  // the dispatch is not gated on it.
   const readTab = deps.tabInfo ?? (deps.runRuntime ? deps.runRuntime.browser.tabInfo : null);
   if (readTab) {
     const tabInfo = await readTab(tabId).catch(() => null);
-    // W2-B6: a gone tab and a not-yet-loaded tab are different problems. A null tab read is a
-    // closed tab: answering "wait for it to load" would have the model wait forever.
     if (!tabInfo) {
       return { success: false, error: tabGoneText(tabId), via: 'background', effect: 'none' };
     }
@@ -127,7 +92,6 @@ export async function executeAction(
     }
   }
 
-  // 2. Restricted gates on the navigate target URL
   if (verb === 'navigate' && action?.url) {
     const restriction = describeRestrictedUrl(action.url);
     if (restriction) {
@@ -139,7 +103,6 @@ export async function executeAction(
       };
     }
 
-    // The same URL rule as fetch_url (research/urlPolicy.ts): parsed, http(s) only, a host, no credentials.
     const checked = checkWebUrl(action.url);
     if (!checked.ok) {
       return {
@@ -151,10 +114,6 @@ export async function executeAction(
     }
   }
 
-  // 3. wait: clamped to 1..5 s and run in the background, where the step
-  // signal can interrupt it. The content-side wait took any amount unchecked
-  // (a cloud reply of amount:600 parked the run for 10 minutes inside one
-  // action) and had no abort wiring (BUG-36).
   if (verb === 'wait') {
     const rawWait = Number((action as any).amount ?? (action as any).seconds ?? 1);
     const waitSec = Number.isFinite(rawWait) ? Math.min(5, Math.max(1, rawWait)) : 1;
@@ -173,7 +132,6 @@ export async function executeAction(
     return { success: true, message: `Waited ${waitSec}s`, via: 'background', effect: 'none' };
   }
 
-  // Helper for reading tab URL before/after
   const getTabUrl = async (tId: number): Promise<string> => {
     if (deps.tabInfo) {
       const info = await deps.tabInfo(tId).catch(() => null);
@@ -202,8 +160,6 @@ export async function executeAction(
     }
   };
 
-  // A load the action started: the tab is loading or on another URL already, or it starts within
-  // LOAD_START_WINDOW_MS. Only then is a "complete" worth waiting for.
   const loadStarted = async (tId: number, urlBefore: string): Promise<boolean> => {
     const info = deps.tabInfo
       ? await deps.tabInfo(tId).catch(() => null)
@@ -226,7 +182,6 @@ export async function executeAction(
     }
   };
 
-  // 4. Page actions dispatched via inputDispatcher / dispatchAction
   try {
     const urlBefore = await getTabUrl(tabId);
     const isNav = verb === 'navigate' || verb === 'go_back' || verb === 'go_forward';
@@ -251,19 +206,13 @@ export async function executeAction(
             : undefined,
         });
 
-    // A synthetic result carries the effect probe result from fallbackToSynthetic; without one
-    // it must not default to dom_changed, or a synthetic action that changed nothing would be
-    // reported as "page updated" and verify would never fire the no-visible-change failure.
     const viaSynthetic = res.via === 'synthetic';
     let effect =
       (res.effect as ExecResult['effect']) ||
       (res.success && !viaSynthetic ? 'dom_changed' : 'none');
-    // A lookup never changes the page, whatever the effect probe counted.
     if (verb === 'find_element' || verb === 'read_page') effect = 'none';
     const isClick = verb === 'click' || verb === 'click_at';
     const isTypeSubmit = verb === 'type' && (res.submitted || Boolean(action?.submit));
-    // W2-B4: a press_key that navigated (its effect probe reported url_changed) gets the same
-    // load wait a submitting type gets, so the model never reads a half-loaded page.
     const isPressNav = verb === 'press_key' && effect === 'url_changed';
 
     let urlAfter = '';
@@ -279,14 +228,10 @@ export async function executeAction(
       }
     }
 
-    // Full post-action settle
     if (res.success && (isNav || isClick || isTypeSubmit || verb === 'scroll' || verb === 'press_key')) {
       await waitQuiet(tabId, 300, SETTLE_QUIET_MAX_MS);
     }
 
-    // The facts of the action, read once more after the settle, so the observation describes the
-    // page the model will act on next. A page that does not answer keeps the reading taken right
-    // after the input; with an injected dispatcher (a test) only an injected reader is asked.
     let effectDetail: EffectDetail | undefined = res.effectDetail;
     if (res.success && OBSERVED_VERBS.has(verb)) {
       const reader = deps.readProbe ?? (deps.dispatchAction ? null : (tId: number) => inputDispatcher.readProbe(tId));
@@ -294,7 +239,6 @@ export async function executeAction(
       if (settled) effectDetail = settled;
     }
 
-    // Action delay if configured
     const delay = deps.actionDelayMs ?? 0;
     if (res.success && delay > 0) {
       await doSleep(delay);
@@ -303,14 +247,10 @@ export async function executeAction(
     let oneShot: OneShot | undefined = undefined;
     if (verb === 'read_page' && res.success) {
       const pageText = res.result?.pageText ?? res.pageText ?? res.message ?? '';
-      // The part note ("12000 chars, part 2 of 4, ...") and the stop hint go in the label the model
-      // reads, not only in the raw message, or the model never learns which part it has.
       const note = typeof res.result?.note === 'string' && res.result.note ? res.result.note : undefined;
       oneShot = { label: note ? `Page Text (${note})` : 'Page Text', text: pageText, step: action.step ?? 0, ...(note ? { note } : {}) };
     }
 
-    // find_element: a lookup never changes the page. The matcher's order is the answer: no extra
-    // model call reorders it (that call went out without the run's effort and model settings).
     const findMessage = res.message;
     if (verb === 'find_element' && res.success) {
       oneShot = { label: 'Element Matches', text: findMessage ?? '', step: action.step ?? 0 };
@@ -329,9 +269,6 @@ export async function executeAction(
       urlAfter: urlAfter || res.urlAfter || undefined,
       syntheticReason: (res as any).syntheticReason,
       oneShot,
-      // W2-B5: the refusal facts of the dispatcher travel with the exec result, so a caller can
-      // tell a security refusal (never retried, never worked around) from an ordinary failure,
-      // and a stale or covered element from a broken one.
       ...(res.stale ? { stale: res.stale } : {}),
       ...(res.obscuredBy ? { obscuredBy: res.obscuredBy } : {}),
       ...(res.securityRefusal ? { securityRefusal: res.securityRefusal } : {}),

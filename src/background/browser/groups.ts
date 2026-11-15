@@ -1,5 +1,3 @@
-// src/background/browser/groups.ts
-// Tarka tab group management, sandboxing, and scope checks.
 import { lastRuntimeError } from './tabs.ts';
 import { Logger } from '../../shared/logger.ts';
 
@@ -34,6 +32,7 @@ export async function isTabInScope(ctx: GroupContext, tabId: number): Promise<bo
   if (!tab) return false;
 
   const windowKey = tab.windowId !== undefined ? tab.windowId : (ctx.windowId ?? 'default');
+  // Chrome tab groups cannot span windows.
   const ownGroupForThatWindow = ctx.groupIds.get(windowKey);
   if (ownGroupForThatWindow === undefined || ownGroupForThatWindow === null) {
     return false;
@@ -69,7 +68,6 @@ export async function ensureTarkaGroup(
     let recordedGroupId: number | null | undefined = ctx.groupIds.get(windowId);
     if (recordedGroupId === undefined) recordedGroupId = null;
 
-    // 1. Check if our recorded group for THIS window is still valid and active in Chrome
     let activeGroupValid = false;
     if (recordedGroupId && recordedGroupId !== TAB_GROUP_ID_NONE) {
       if (chrome.tabGroups && chrome.tabGroups.get) {
@@ -92,7 +90,6 @@ export async function ensureTarkaGroup(
       ctx.groupIds.delete(windowId);
     }
 
-    // 2. If valid Tarka group exists and tab is not yet in it -> join tab into existing group
     if (activeGroupValid && recordedGroupId) {
       if (tab.groupId !== recordedGroupId) {
         const rejoinErr = await new Promise<string | null>((resolve) => {
@@ -101,10 +98,6 @@ export async function ensureTarkaGroup(
           });
         });
         if (rejoinErr) {
-          // The group died between the validity check and the rejoin (or the
-          // join was refused): fall through to the create branch instead of
-          // logging success while the tab stays ungrouped and the map holds a
-          // stale id - the next snapshot then died with out_of_scope (BUG-44).
           Logger.warn('Browser', `[TAB_SANDBOX] Rejoining tab [${tabId}] to group ${recordedGroupId} failed: ${rejoinErr}. Creating a fresh group.`);
           recordedGroupId = null;
           ctx.groupIds.delete(windowId);
@@ -118,7 +111,6 @@ export async function ensureTarkaGroup(
       }
     }
 
-    // 3. Check if target tab is already in a titled Tarka group
     if (tab.groupId && tab.groupId !== TAB_GROUP_ID_NONE && chrome.tabGroups && chrome.tabGroups.get) {
       const currentGrp = await new Promise<chrome.tabGroups.TabGroup | null>((resolve) => {
         chrome.tabGroups.get(tab.groupId, (g) => {
@@ -133,7 +125,6 @@ export async function ensureTarkaGroup(
       }
     }
 
-    // 4. Create fresh 'Tarka' tab group, in the tab's OWN window.
     const createProperties = tab.windowId !== undefined ? { windowId: tab.windowId } : undefined;
     const newGroupId = await new Promise<number | null>((resolve) => {
       chrome.tabs.group({ tabIds: tabId, ...(createProperties ? { createProperties } : {}) }, (gid) => {

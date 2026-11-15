@@ -1,6 +1,3 @@
-/**
- * redact.ts: Sanitization and redaction of sensitive credentials and PII.
- */
 
 export const SENSITIVE_KEYS: readonly string[] = [
   'password',
@@ -14,12 +11,6 @@ export const SENSITIVE_KEYS: readonly string[] = [
   'cvv'
 ];
 
-/**
- * Deeply clone an object or array, redacting any properties whose keys match sensitive terms.
- * Every string leaf (and a top-level string) also gets value-level redaction, so a Bearer
- * token, a JWT or a `password=...` pair under an innocent key name does not leak.
- * Never mutates input.
- */
 export function redactObject<T>(obj: T, sensitiveKeys: readonly string[] = SENSITIVE_KEYS): T {
   if (typeof obj === 'string') return redactString(obj, sensitiveKeys) as unknown as T;
   if (!obj || typeof obj !== 'object') return obj;
@@ -39,21 +30,11 @@ export function redactObject<T>(obj: T, sensitiveKeys: readonly string[] = SENSI
   return copy as T;
 }
 
-/**
- * Value-level redaction of free text: quoted JSON fields, key=value / key: value pairs
- * (form bodies, cookie strings, header lines), Bearer tokens and bare JWTs.
- */
 function redactString(input: string, sensitiveKeys: readonly string[]): string {
   let str = input;
   for (const key of sensitiveKeys) {
-    // Double-quoted JSON value ("key":"value") - catches single fields embedded in text.
     const regex = new RegExp(`("${key}"\\s*:\\s*")([^"]+)(")`, 'gi');
     str = str.replace(regex, '$1[REDACTED]$3');
-    // Non-JSON string forms (BUG-22): form bodies (`password=hunter2` with
-    // &/;/newline separators), cookie strings and single-quoted values. The
-    // key matches with optional -/_ separators (api_key, csrftoken), the
-    // value runs to the next separator or quote, so neighbouring pairs
-    // survive.
     const flexible = key.split('').join('[-_]?');
     const plain = new RegExp(
       `((?:${flexible})\\s*["']?\\s*[=:]\\s*["']?)([^&;\\r\\n"']+)`,
@@ -61,8 +42,6 @@ function redactString(input: string, sensitiveKeys: readonly string[]): string {
     );
     str = str.replace(plain, '$1[REDACTED]');
   }
-  // Bearer / JWT tokens in header text (e.g. "Bearer eyJ..."), plus bare
-  // JWTs (base64url JSON header always starts with eyJ).
   str = str.replace(
     /(bearer\s+)[A-Za-z0-9\-_+=/.]{8,}/gi,
     '$1[REDACTED]',
@@ -74,11 +53,6 @@ function redactString(input: string, sensitiveKeys: readonly string[]): string {
   return str;
 }
 
-/**
- * Redact sensitive data from JSON strings, regex-matched key-value strings, or object structures.
- * A string that parses as JSON is redacted by key name AND by value on every string leaf.
- * Falsy values are returned as-is.
- */
 export function redactSensitiveData<T>(data: T, sensitiveKeys: readonly string[] = SENSITIVE_KEYS): T {
   if (!data) return data;
 
@@ -99,7 +73,6 @@ export function redactSensitiveData<T>(data: T, sensitiveKeys: readonly string[]
   return data;
 }
 
-/** Query or fragment parameter names that carry a credential even though no SENSITIVE_KEYS term matches. */
 const SENSITIVE_URL_PARAMS: ReadonlySet<string> = new Set([
   'key', 'auth', 'sig', 'signature', 'session', 'sessionid', 'sid', 'code', 'otp', 'pin', 'jwt', 'credential', 'credentials'
 ]);
@@ -114,11 +87,6 @@ function isSensitiveUrlParam(name: string, sensitiveKeys: readonly string[]): bo
   return SENSITIVE_URL_PARAMS.has(norm) || norm.endsWith('apikey') || sensitiveKeys.some((s) => norm.includes(s));
 }
 
-/**
- * Redact the values of sensitive query and fragment parameters in a URL
- * (?access_token=..., #id_token=..., &api_key=...). The path and every other
- * parameter stay as they are, so the line still says which endpoint was hit.
- */
 export function redactUrl(url: string, sensitiveKeys: readonly string[] = SENSITIVE_KEYS): string {
   if (!url) return url;
   const firstSep = url.search(/[?#]/);
