@@ -213,7 +213,7 @@ export function registryDialect(provider: string, model: string, baseUrl = ''): 
   }
 }
 
-export function registryValues(provider: string, dialect: EffortDialect, model: string): string[] | undefined {
+function registryValues(dialect: EffortDialect, model: string): string[] | undefined {
   const m = model.toLowerCase();
   switch (dialect) {
     case 'openai':
@@ -273,10 +273,10 @@ export function effortSupportOf(settings: LlmSettings): EffortSupport {
   if (found?.reasoning) {
     const dialect = found.dialect || listed || defaultDialectOf(provider);
     if (dialect !== 'none') {
-      return supportOf(dialect, 'endpoint', NOTE_REASONS, found.values?.length ? found.values : registryValues(provider, dialect, model), model);
+      return supportOf(dialect, 'endpoint', NOTE_REASONS, found.values?.length ? found.values : registryValues(dialect, model), model);
     }
   }
-  if (listed) return supportOf(listed, 'registry', NOTE_REASONS, registryValues(provider, listed, model), model);
+  if (listed) return supportOf(listed, 'registry', NOTE_REASONS, registryValues(listed, model), model);
   return supportOf('none', 'none', 'This model has no reasoning setting that Tarka knows.', undefined, model);
 }
 
