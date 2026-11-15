@@ -1,30 +1,15 @@
-/**
- * The sentence a person reads for one step of the agent: what it is doing and why.
- *
- * The log view shows it above the step's details ("Clicking [12] "In den Warenkorb" - to add the
- * laptop to the cart"), so a reader follows the run without opening any JSON. Built only from the
- * tool, its arguments, the model's own reason and the label of the element it targets.
- */
 
-/** A value cut to a readable length for one sentence. */
 function short(value: unknown, max = 80): string {
   const text = String(value ?? '').replace(/\s+/g, ' ').trim();
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-/** True when both values are real numbers, so a point on a screenshot can be named. */
 function isPoint(x: unknown, y: unknown): boolean {
   const real = (v: unknown) => v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v));
   return real(x) && real(y);
 }
 
-/**
- * @param tool    the tool the model called
- * @param args    its arguments
- * @param label   the element line the target id stands for, when known ("[12] button \"Buy\"")
- */
 export function describeStep(tool: string, args: Record<string, any> = {}, label = ''): string {
-  // "[12] button[button] \"Buy\"" reads as: button "Buy" (the id is said already, the type twice).
   const target = label ? short(label.replace(/^\s*\[\d+\]\s*/, '').replace(/^([a-z0-9-]+)\[[^\]]*\]/i, '$1'), 60) : '';
   const element = (id: unknown) => `element [${id}]${target ? ` ${target}` : ''}`;
   let what: string;

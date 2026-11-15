@@ -1,8 +1,3 @@
-/**
- * Pure text helpers shared by the content script (page reads) and the service worker (fetch_url):
- * whitespace normalising, collapsing repeated runs, and the stateless paging of a long text.
- * No DOM and no chrome APIs, so both sides (and the tests) can import it.
- */
 import { splitIntoParts } from './clip.ts';
 
 export const REPEAT_MIN_RUN = 4;
@@ -13,10 +8,6 @@ export const HAS_LETTER = /\p{L}/u;
 export const PRICE_LIKE = /[€$£¥₹]\s?\d|\d\s?(?:[€$£¥₹]|EUR\b|USD\b|GBP\b|CHF\b|CAD\b|AUD\b|Euro\b)/i;
 export const DELIVERY_LIKE = /\b(?:shipping|shipment\w*|deliver\w*|arriv\w*|versand\w*|liefer\w*|werktag\w*|business days?|working days?|porto)\b/i;
 
-/**
- * One pass: finds runs of REPEAT_MIN_RUN or more identical units and replaces them with
- * concise summaries or collapses.
- */
 export function collapseRepeatedRunsOnce(text: string): string {
   const matchLead = text.match(/^\s*/);
   const lead = matchLead ? matchLead[0] : '';
@@ -99,9 +90,6 @@ export function collapseRepeatedRunsOnce(text: string): string {
   return out.join('');
 }
 
-/**
- * Runs of repeated units become summaries, collapsing cycles across multiple passes.
- */
 export function collapseRepeatedRuns(text: string): string {
   let current = text;
   for (let pass = 0; pass < REPEAT_MAX_PASSES; pass++) {
@@ -112,14 +100,6 @@ export function collapseRepeatedRuns(text: string): string {
   return current;
 }
 
-/**
- * The visible text with its whitespace normalised: one space inside a line, no blank lines, nothing at the ends.
- * Table cells are kept apart as " | ", and an empty slot between two tabs is a real empty cell
- * that stays, so the columns after it keep their headers ("a |  | b" is three cells, not two
- * values under the wrong headers). One leading tab is dropped first: the research read
- * (htmlText.ts) marks where a cell starts, so its row text begins with a tab that separates
- * nothing; a further leading tab is an empty first cell and stays.
- */
 export function normalizePageText(text: string): string {
   return text
     .split(/\r?\n|\r/)
@@ -131,18 +111,10 @@ export function normalizePageText(text: string): string {
     .join('\n');
 }
 
-/** The size of one part of a paged read_page: the whole page text is read in parts of at most this many characters. */
 export const PAGE_TEXT_PART = 3000;
 
-/** One part of a paged read: its text, the note that says where it is, and how many parts there are. */
 export interface PageTextPart { text: string; note: string; last: boolean; count: number; number: number; start: number; end: number }
 
-/**
- * Part `number` (1-based) of the text split into PAGE_TEXT_PART parts at line boundaries. Stateless: the same
- * number always gives the same part of the same text. The note always states the position and the size
- * ("part 2 of 4, chars 3001-6000 of 11234"), and either how to read the next part or that this is the end.
- * A number past the last part is clamped by the caller's check (see partCount); here it is clamped to the end.
- */
 export function pageTextPart(text: string, number: number, nextTool = 'read_page'): PageTextPart {
   const parts = splitIntoParts(text, PAGE_TEXT_PART);
   const i = Math.min(Math.max(0, Math.floor(number) - 1), parts.length - 1);
@@ -153,7 +125,6 @@ export function pageTextPart(text: string, number: number, nextTool = 'read_page
   return { text: text.slice(start, end), note: `part ${i + 1} of ${parts.length}, ${chars}, ${next}`, last, count: parts.length, number: i + 1, start, end };
 }
 
-/** How many parts a paged read of this text has. */
 export function partCount(text: string): number {
   return splitIntoParts(text, PAGE_TEXT_PART).length;
 }
