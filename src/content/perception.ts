@@ -1,7 +1,3 @@
-/**
- * Tarka Perception and Element Representation
- * Computes ARIA roles, field kinds, form kinds, and produces byte-compatible element summaries.
- */
 
 import { MASKED_FIELD_KINDS } from '../shared/maskedFields.ts';
 
@@ -16,7 +12,6 @@ export interface ElementLocator {
     name: string;
     'data-testid': string;
   };
-  /** True for an element inside a shadow root: its id and name are local to that root, so they are never looked up in the document. */
   inShadow?: boolean;
 }
 
@@ -40,23 +35,12 @@ export interface ElementInfoRecord {
   formKind?: string;
   fieldKind?: string;
   hrefDomain?: string;
-  /**
-   * For the risk gate only, never shown to the model: the visible text plus the accessible name, set only when the
-   * name adds something the label lacks (an input submit with only a value, an icon-only button named by alt,
-   * aria-labelledby or title). The model-facing label keeps its short source order.
-   */
   gateLabel?: string;
-  /** Set (true) only when clicking the element submits the form it is in. */
   submitControl?: boolean;
-  /** Set only when the form sends to another host than the page (form action, or the control's formaction). */
   formActionHost?: string;
-  /** Set only when the form (or the control's formmethod) says method="get" explicitly. */
   formMethod?: 'get';
 }
 
-/**
- * Best-effort implicit ARIA role for elements without an explicit role attribute.
- */
 export function computeRole(el: Element, tagName: string, type: string): string {
   const explicit = el.getAttribute('role');
   if (explicit) return explicit;
@@ -82,9 +66,6 @@ export function computeRole(el: Element, tagName: string, type: string): string 
   return tagRoleMap[tagName] || tagName;
 }
 
-/**
- * Determine field kind (password, cc, otp, email, address, search, text).
- */
 export function computeFieldKind(el: Element, tagName: string, type: string): string | undefined {
   if (tagName !== 'input' && tagName !== 'textarea') return undefined;
   const lowerType = (type || '').toLowerCase();
@@ -94,19 +75,10 @@ export function computeFieldKind(el: Element, tagName: string, type: string): st
   const combined = `${name} ${id} ${autocomplete}`;
 
   if (lowerType === 'password' || combined.includes('password') || combined.includes('passwort')) return 'password';
-  // A code or token the user receives by email is still a one-time secret: the code signal
-  // decides before the email kind does.
   if (/(?:e-?mail|mail)[-_ ]?(?:code|otp|token)/i.test(combined)) return 'otp';
   if (lowerType === 'email' || combined.includes('email') || combined.includes('e-mail')) return 'email';
   if (/card|cc-number|cvv|cvc|cardnumber|kreditkarte/i.test(combined) || (lowerType === 'tel' && combined.includes('cc'))) return 'cc';
-  // A "code" or "token" name is masked only when the field can hold a secret the user must type
-  // in: a one-time code, a verification code, an API or session token. Names that contain "code"
-  // for other reasons (postal code, promo code, country code) stay fillable, so an ordinary
-  // address or checkout form is not refused wholesale. An unknown "code" field stays masked.
-  // otp, 2fa and mfa match as substrings on purpose: camelCase names like otpCode carry no
-  // separator, and they are unambiguous enough to mask on sight.
   if (/(?:postal|zip|post|area|country|currency|sort|qr|bar|promo|coupon|voucher|discount)[-_ ]?code/i.test(combined)) {
-    // Falls through: the address and text kinds below decide.
   } else if (
     /otp|2fa|mfa/i.test(combined) ||
     /(?:^|[^a-z0-9])tan(?:[^a-z0-9]|$)/i.test(combined) ||
@@ -121,9 +93,6 @@ export function computeFieldKind(el: Element, tagName: string, type: string): st
   return 'text';
 }
 
-/**
- * Determine form kind (search, login, checkout, other).
- */
 export function computeFormKind(el: Element): string | undefined {
   const form = typeof el.closest === 'function' ? el.closest('form') : null;
   if (!form) return undefined;
@@ -142,18 +111,9 @@ export function computeFormKind(el: Element): string | undefined {
 
 const clean = (v: unknown): string => (typeof v === 'string' ? v.trim().replace(/\s+/g, ' ') : '');
 
-/**
- * The field kinds whose value must never be read as text and never shown as pixels. Defined once,
- * in shared/maskedFields.ts, so the element list, the effect probe, the screenshot mask and the
- * background's security gate all decide from the same set.
- */
 export { MASKED_FIELD_KINDS } from '../shared/maskedFields.ts';
 
 
-/**
- * Whether clicking the element submits its form: a <button> without a type or with type submit, or an input of type
- * submit or image. Outside a form nothing is submitted.
- */
 export function isSubmitControl(el: Element, tagName: string, type: string): boolean {
   if (typeof el.closest !== 'function' || !el.closest('form')) return false;
   const t = (type || '').toLowerCase();
@@ -161,10 +121,6 @@ export function isSubmitControl(el: Element, tagName: string, type: string): boo
   return tagName === 'input' && (t === 'submit' || t === 'image');
 }
 
-/**
- * Where and how the element's form sends, for the risk gate: formActionHost only when the action (or the control's
- * formaction) is an http(s) URL on another host than the page, formMethod only when "get" is written explicitly.
- */
 export function computeFormTarget(el: Element, pageUrl?: string): { formActionHost?: string; formMethod?: 'get' } {
   const form = typeof el.closest === 'function' ? el.closest('form') : null;
   if (!form) return {};
@@ -178,7 +134,6 @@ export function computeFormTarget(el: Element, pageUrl?: string): { formActionHo
         out.formActionHost = url.hostname.toLowerCase();
       }
     } catch {
-      // An action that is no URL sends nowhere else.
     }
   }
   const method = (clean(el.getAttribute('formmethod')) || clean(form.getAttribute('method'))).toLowerCase();
@@ -186,10 +141,6 @@ export function computeFormTarget(el: Element, pageUrl?: string): { formActionHo
   return out;
 }
 
-/**
- * The accessible name of a control, roughly as a screen reader reads it: aria-labelledby, aria-label, the value of an
- * input button, image alt (its own or, with no text, of its images), and title only when nothing else names it.
- */
 export function computeAccessibleName(el: Element, tagName: string, type: string, text: string): string {
   const labelledBy = clean(el.getAttribute('aria-labelledby'));
   if (labelledBy) {
@@ -217,10 +168,6 @@ export function computeAccessibleName(el: Element, tagName: string, type: string
   return clean(el.getAttribute('title'));
 }
 
-/**
- * The label the risk gate reads: the visible text and the accessible name, each once. Undefined when that says no
- * more than the model-facing label, so ordinary elements carry no extra field.
- */
 export function computeGateLabel(el: Element, tagName: string, type: string, text: string, label: string): string | undefined {
   const parts: string[] = [];
   for (const part of [text, computeAccessibleName(el, tagName, type, text)]) {
@@ -231,9 +178,6 @@ export function computeGateLabel(el: Element, tagName: string, type: string, tex
   return gate && gate !== label ? gate : undefined;
 }
 
-/**
- * The risk facts of one element: what elementInfo holds for it.
- */
 export function computeElementInfo(el: Element, labelText: string, text: string, win?: Window | null): ElementInfoRecord {
   const tagName = el.tagName.toLowerCase();
   const type = el.getAttribute('type') || '';
@@ -252,11 +196,6 @@ export function computeElementInfo(el: Element, labelText: string, text: string,
   return info;
 }
 
-/**
- * The element that has focus, which is what press_key acts on, as risk facts. Null when nothing (or only the page
- * itself) has focus. Follows focus into open shadow roots. A focused frame reports role "iframe" (its document cannot be
- * read from here) and a focus that cannot be read reports role "unknown"; the risk gate treats both as unknown.
- */
 export function getFocusedElementInfo(
   doc: Document | null | undefined = typeof document !== 'undefined' ? document : null,
   win: Window | null | undefined = typeof window !== 'undefined' ? window : null
@@ -274,14 +213,10 @@ export function getFocusedElementInfo(
     }
     return computeElementInfo(active as Element, label, text, win);
   } catch {
-    // Something has focus but it cannot be read: say so, the risk gate treats it as unknown.
     return { role: 'unknown', label: 'element' };
   }
 }
 
-/**
- * Extract destination domain for links.
- */
 export function computeHrefDomain(
   el: Element,
   tagName: string,
@@ -296,18 +231,12 @@ export function computeHrefDomain(
       return url.hostname.toLowerCase();
     }
   } catch {
-    // URL parse failed
   }
   return undefined;
 }
 
-/** Longest link path shown in an element line; a longer one is cut, the start tells pages apart. */
 export const HREF_PATH_LIMIT = 80;
 
-/**
- * The path and query of a link to another page of the same site, or undefined: a link to the page
- * itself (an anchor) has nothing to tell.
- */
 export function computeHrefPath(href: string, currentHref: string): string | undefined {
   try {
     if (!href) return undefined;
@@ -321,9 +250,6 @@ export function computeHrefPath(href: string, currentHref: string): string | und
   }
 }
 
-/**
- * Produce concise element string representation with stable locator descriptors.
- */
 export function getElementSummary(
   el: Element,
   id: number,
@@ -347,8 +273,6 @@ export function getElementSummary(
 
   const fieldKind = computeFieldKind(el, tagName, type);
   const val = (el as HTMLInputElement).value;
-  // A masked field (password, card, one-time code) ships no value preview in any form: the line
-  // may say that the field is there and that it is the user's to fill, never what is in it.
   const valuePreview = (!fieldKind || !MASKED_FIELD_KINDS.has(fieldKind))
     && (tagName === 'input' || tagName === 'textarea')
     && typeof val === 'string' && val
@@ -381,7 +305,6 @@ export function getElementSummary(
   if (hrefDomain && currentHost && hrefDomain !== currentHost) {
     extraAttrs += ` domain="${hrefDomain}"`;
   } else if (hrefDomain) {
-    // A link on this site says which page it opens: five "Configure now" links are only told apart by their path.
     const path = computeHrefPath((el as HTMLAnchorElement).href || el.getAttribute('href') || '', win && win.location ? win.location.href : 'https://localhost');
     if (path) extraAttrs += ` href="${path}"`;
   }

@@ -1,21 +1,3 @@
-/**
- * Tarka frame agent: the content script of every embedded frame (manifest `all_frames`).
- *
- * The top frame's content script cannot see into an iframe from another origin, and innerText never
- * enters any iframe, so a lesson or a document that lives in one was invisible to the model. The
- * frame agent runs in the frame itself and answers the background for its own document only, with
- * the same rules the top page uses (pageText.ts, screenshotPrivacy.ts, scrollActions.ts):
- *
- *   FRAME_TEXT        the frame's visible text, or nothing for a frame too small to be content
- *   FRAME_MASK        cover this document's password, card and OTP fields, and every iframe in it
- *                     whose own agent did not confirm (payload.shownFramePaths); answers its path
- *   FRAME_MASK_CHECK  after the capture: the covers still hold, and the frame is still at that path
- *   FRAME_UNMASK      take the covers down
- *   FRAME_SCROLL      one scroll action (scroll_target, scroll_measure, scroll_fallback)
- *
- * It answers only FRAME_* actions, so it can never answer a message meant for the top frame. It
- * does nothing in the top frame, which has the full content script.
- */
 
 import { extractFullPageTextFromDocument, readRootOf } from './pageText.ts';
 import { collectLinks } from './pageLinks.ts';
@@ -24,13 +6,10 @@ import { runScrollAction } from './scrollActions.ts';
 import { framePathKeyOf, framePathOf, pathKey, shownFrames } from './frameIds.ts';
 import type { ScrollBox } from './scrollMeasure.ts';
 
-/** A frame smaller than this (CSS pixels) is a tracker, an ad slot or hidden: its text is not page content. */
 export const FRAME_MIN_WIDTH = 200;
 export const FRAME_MIN_HEIGHT = 100;
-/** The most text one frame adds to the page text. */
 export const FRAME_TEXT_CAP = 60000;
 
-/** The answer to one FRAME_* message for this document, or null when the action is not a frame action. */
 export async function answerFrameMessage(request: any, doc: Document, win: Window): Promise<any | null> {
   const action = request && request.action;
   const host = (() => {
@@ -57,14 +36,12 @@ export async function answerFrameMessage(request: any, doc: Document, win: Windo
       return { success: true, origin, text: String(text || '').slice(0, FRAME_TEXT_CAP), links: collectLinks(readRootOf(doc), base) };
     }
     case 'FRAME_MASK': {
-      // The path is read now, not at discovery: the frame that drew the covers is the one confirmed.
       const path = framePathOf(win);
       if (!path || !path.length) return { success: false, error: 'the frame path could not be read' };
       maskSensitiveFields(doc, win, shownFrames(request.payload && request.payload.shownFramePaths));
       return { success: true, path: pathKey(path) };
     }
     case 'FRAME_MASK_CHECK': {
-      // A frame that moved (another frame took its index) would vouch for the wrong iframe.
       const path = framePathOf(win);
       const samePath = !!path && pathKey(path) === String(request.payload && request.payload.path);
       return { success: samePath && masksStillHold(doc) };
@@ -82,7 +59,6 @@ export async function answerFrameMessage(request: any, doc: Document, win: Windo
   return null;
 }
 
-/** Installs the agent in this frame. Does nothing in the top frame, or twice. */
 export function installFrameAgent(win: Window & typeof globalThis): void {
   const g = win as any;
   if (!g || g.top === g || g.__tarkaFrameAgent) return;

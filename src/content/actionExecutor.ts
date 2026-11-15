@@ -1,9 +1,3 @@
-/**
- * Tarka ActionExecutor Class
- * Handles element highlighting overlay, stable locator re-resolution,
- * and executes the content-side actions (click, type, scroll, read_page, find_element).
- * Preserves the instance method dispatch seam for all callers and tamper scripts.
- */
 
 import { renderBadges, removeBadges, type BadgeElementItem } from './badges.ts';
 import {
@@ -29,7 +23,6 @@ export class ActionExecutor implements ActionExecutionContext {
   cursorContainer: HTMLElement | null;
   cursorEl: HTMLElement | null;
   cursorFadeTimer: ReturnType<typeof setTimeout> | null;
-  /** The overlays a screenshot hid, and the visibility each had, so showAgentUi restores it. */
   hiddenUi = new Map<HTMLElement, string>();
   doc?: Document;
   win?: Window & typeof globalThis;
@@ -89,13 +82,6 @@ export class ActionExecutor implements ActionExecutionContext {
     highlightElement(el);
   }
 
-  /**
-   * Hides the extension's own overlays for a screenshot, without removing them.
-   *
-   * "Hide" must not mean "remove": removeBadges deletes the elements from the page, nothing
-   * brings them back. So the containers are made invisible, and the visibility they had is
-   * remembered here so it can be put back exactly.
-   */
   hideAgentUi(shownFramePaths: unknown = []): void {
     const doc = this.getDoc();
     if (!doc || !doc.getElementById) return;
@@ -106,22 +92,17 @@ export class ActionExecutor implements ActionExecutionContext {
       if (!this.hiddenUi.has(el)) this.hiddenUi.set(el, el.style.visibility);
       el.style.visibility = 'hidden';
     }
-    // The values the text path refuses to read must not leave as pixels.
-    // An embedded frame is shown only when its own agent confirmed its covers (shownFramePaths).
     maskSensitiveFields(doc, this.getWin(), shownFrames(shownFramePaths));
   }
 
-  /** After the capture: the covers drawn by hideAgentUi still hold, and nothing new needs one. */
   masksHold(): boolean {
     return masksStillHold(this.getDoc() as Document);
   }
 
-  /** The path key of the frame an iframe element shows, for a scroll that goes into it. */
   framePathOf(frame: HTMLIFrameElement): string | null {
     return framePathKeyOf(frame);
   }
 
-  /** Puts back what hideAgentUi hid, and removes the privacy covers. */
   showAgentUi(): void {
     for (const [el, visibility] of this.hiddenUi) {
       if (el && el.style) el.style.visibility = visibility;
@@ -130,7 +111,6 @@ export class ActionExecutor implements ActionExecutionContext {
     removeSensitiveMasks(this.getDoc());
   }
 
-  /** What is at a viewport point, for a click at coordinates read off a picture. */
   describePoint(x: number, y: number): PointDescription {
     return describePoint(this.getDoc(), x, y);
   }
@@ -139,7 +119,6 @@ export class ActionExecutor implements ActionExecutionContext {
     return snapPoint(this.getDoc(), x, y);
   }
 
-  /** The refusal a click on a sensitive field gets. */
   maskedFieldRefusal(kind: string): string {
     return maskedFieldRefusal(kind);
   }

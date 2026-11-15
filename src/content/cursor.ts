@@ -1,16 +1,9 @@
-/**
- * Tarka Cursor Overlay and Action Animations
- * Injects and manages visual cursor indicator, click ripple, and element highlight.
- */
 
 export interface CursorOverlayState {
   container: HTMLElement | null;
   pointer: HTMLElement | null;
 }
 
-/**
- * Ensure cursor overlay elements are injected into page
- */
 export function ensureCursorOverlay(
   existingContainer?: HTMLElement | null,
   existingPointer?: HTMLElement | null,
@@ -67,9 +60,6 @@ export function ensureCursorOverlay(
   return { container, pointer };
 }
 
-/**
- * Animate cursor to target (x, y) coordinates
- */
 export function animateCursor(
   x: number,
   y: number,
@@ -94,9 +84,6 @@ export function animateCursor(
   setTimer(newTimer);
 }
 
-/**
- * Trigger visual click pulse and ripple ring at (x, y) coordinates
- */
 export function showClickEffect(
   x: number,
   y: number,
@@ -158,17 +145,8 @@ export function showClickEffect(
   }, 450);
 }
 
-/**
- * The style an element had before the agent highlighted it, keyed by element.
- * Set only on the FIRST highlight: a second highlight of the same element must
- * not capture the orange ring as the "original" and restore it permanently
- * (BUG-29).
- */
 const highlightOriginals = new WeakMap<HTMLElement, { outline: string; outlineOffset: string; transition: string }>();
 
-/**
- * Temporary visual highlight ring around target element
- */
 export function highlightElement(el: HTMLElement | null): void {
   if (!el || !el.style) return;
   if (!highlightOriginals.has(el)) {

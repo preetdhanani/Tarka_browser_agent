@@ -1,44 +1,25 @@
-/**
- * Tarka scroll actions: scroll_target, scroll_measure, scroll_fallback and the plain scroll, for
- * one document. The top frame's executor (actions.ts) and the frame agent of every embedded frame
- * (frameAgent.ts) both run them, each on its own document with its own kept box.
- *
- * A page shell that does not scroll, with the content in an iframe (a lesson on a learning
- * platform), has nothing to move in the top document. scroll_target then names the iframe instead
- * (`frame`), and the background repeats scroll_target in that frame, whose agent picks the box.
- */
 
 import { pickScrollTarget, positionOf, scrollInstantly, settledPosition, stepOf, visibleRect, type ScrollBox, type ScrollPosition } from './scrollMeasure.ts';
 import { isAttached } from './refMap.ts';
 import { deepHit } from './screenshotPrivacy.ts';
 
-/** An iframe that is smaller than this share of the viewport is not scrolled in place of the page. */
 const FRAME_MIN_SHARE = 0.3;
 
-/** The embedded frame a scroll goes into, and where its viewport starts in this document's viewport. */
 export interface FrameRoute {
-  /** The frame's path from the top page (frameIds.ts), which the background maps to a frame id. */
   path: string;
   offset: { left: number; top: number };
-  /** The scroll point in the frame's own viewport, when the scroll was asked at a point. */
   point?: { x: number; y: number };
 }
 
 export interface ScrollEnv {
-  /** Resolves an element id of the element list; frames have no element list. */
   resolveElement?: (id: number | string) => Element | null;
-  /** The path key of the frame an iframe element shows (frameIds.ts), null when unknown. */
   framePathOf?: (frame: HTMLIFrameElement) => string | null;
-  /** Words for the box, when this document is not the top page. */
   label?: (box: ScrollBox, label: string) => string;
 }
 
-/** The box the last scroll_target picked, which scroll_measure and scroll_fallback read and move. */
 let scrollBox: ScrollBox = null;
 
 function liveScrollBox(doc: Document): ScrollBox {
-  // isAttached (refMap.ts) crosses shadow roots: a panel inside a web component is not
-  // document.contains()'d, but it is still on the page and still the box to measure and move.
   return scrollBox && isAttached(scrollBox, doc) ? scrollBox : null;
 }
 
@@ -46,7 +27,6 @@ function positionPayload(position: ScrollPosition) {
   return { top: position.top, max: position.max, height: position.height, atTop: position.atTop, atBottom: position.atBottom };
 }
 
-/** Where an iframe's document starts, in this viewport: past its border and padding. */
 function contentOffset(frame: HTMLIFrameElement, win: Window): { left: number; top: number } {
   const r = frame.getBoundingClientRect();
   let padLeft = 0;
@@ -63,13 +43,6 @@ function isFrame(el: Element | null | undefined): el is HTMLIFrameElement {
   return !!el && (el.tagName || '').toLowerCase() === 'iframe';
 }
 
-/**
- * The embedded frame a scroll should go into, or null to scroll this document:
- *   - a point on an iframe: that frame, at the same point in its own viewport;
- *   - no element and no point, and the box this document would move cannot move that way: the
- *     largest visible iframe, when it covers at least FRAME_MIN_SHARE of the viewport.
- * An element id is never routed: element ids belong to the top document.
- */
 export function frameToScroll(
   doc: Document,
   win: Window,
@@ -110,7 +83,6 @@ export function frameToScroll(
   return path ? { path, offset: contentOffset(best, win) } : null;
 }
 
-/** One scroll action on this document. Unknown actions return null. */
 export async function runScrollAction(payload: any, doc: Document | null | undefined, win: Window | null | undefined, env: ScrollEnv = {}): Promise<any> {
   const { action, element_id, direction } = payload || {};
   if (!['scroll', 'scroll_target', 'scroll_measure', 'scroll_fallback'].includes(action)) return null;
@@ -118,8 +90,6 @@ export async function runScrollAction(payload: any, doc: Document | null | undef
   const words = (box: ScrollBox, label: string) => (env.label ? env.label(box, label) : label);
   switch (action) {
     case 'scroll': {
-      // Only reached when the background could not drive the trusted wheel (see InputDispatcher.handleScroll):
-      // the picked box is moved at once and measured, so the reply is what really happened.
       const picked = pickScrollTarget(doc, win, {});
       const before = positionOf(picked.box, doc, win);
       const sign = direction === 'up' ? -1 : 1;
@@ -128,8 +98,6 @@ export async function runScrollAction(payload: any, doc: Document | null | undef
       return { success: true, result: { moved: after.top - before.top, label: words(picked.box, picked.label), ...positionPayload(after) } };
     }
     case 'scroll_target': {
-      // The box a scroll moves and where the wheel goes: an element's box, the box under a point,
-      // or the largest visible scrolling box. It is kept for scroll_measure and scroll_fallback.
       let element: Element | null = null;
       if (element_id !== undefined && element_id !== null) {
         element = env.resolveElement ? env.resolveElement(element_id) : null;
@@ -137,8 +105,6 @@ export async function runScrollAction(payload: any, doc: Document | null | undef
       }
       const hasPoint = Number.isFinite(Number(payload.x)) && Number.isFinite(Number(payload.y)) && payload.x !== null && payload.y !== null && payload.x !== undefined && payload.y !== undefined;
       const point = hasPoint ? { x: Number(payload.x), y: Number(payload.y) } : null;
-      // The deep hit-test (screenshotPrivacy.ts): elementFromPoint stops at a shadow host, and the
-      // box a point scroll moves is the panel INSIDE the host, never the host itself.
       const hit = point ? deepHit(doc, point.x, point.y) : null;
       const picked = pickScrollTarget(doc, win, { element, point, hit });
       scrollBox = picked.box;
@@ -147,7 +113,6 @@ export async function runScrollAction(payload: any, doc: Document | null | undef
       return { success: true, result: { point: picked.point, label: words(picked.box, picked.label), step: stepOf(before), ...positionPayload(before), ...(frame ? { frame } : {}) } };
     }
     case 'scroll_measure': {
-      // The kept box's position once it stopped moving (a wheel scroll can animate).
       const box = liveScrollBox(doc);
       const settled = await settledPosition(() => positionOf(box, doc, win), {
         quietMs: Number(payload.quietMs) > 0 ? Number(payload.quietMs) : undefined,
@@ -156,7 +121,6 @@ export async function runScrollAction(payload: any, doc: Document | null | undef
       return { success: true, result: positionPayload(settled) };
     }
     case 'scroll_fallback': {
-      // The wheel did not move the kept box: move it at once by delta, and measure it.
       const box = liveScrollBox(doc);
       scrollInstantly(box, win, Number(payload.delta) || 0);
       const settled = await settledPosition(() => positionOf(box, doc, win), { quietMs: 80, maxMs: 600 });

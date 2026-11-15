@@ -1,7 +1,3 @@
-/**
- * Tarka Browser Actions Execution
- * Executes the content-side primitives of the page tools: click, type, scroll, navigate, read_page, find_element.
- */
 
 import { formatFindMessage } from './domCompressor.ts';
 import { normalizePageText, pageTextPart, readRootOf } from './pageText.ts';
@@ -21,30 +17,21 @@ export interface ActionExecutionContext {
   setFieldValue: (el: Element, text: unknown) => { success: boolean; error?: string };
   doClick: (elementId: number | string) => any;
   doType: (elementId: number | string, text: unknown, submit?: unknown) => any;
-  /** The path key of the frame an iframe element shows (frameIds.ts), for a scroll that goes into it. */
   framePathOf?: (frame: HTMLIFrameElement) => string | null;
 }
 
-/** The text of one embedded frame, read by its frame agent and passed in by the background. */
 export interface FrameText {
   origin: string;
   text: string;
-  /** The links of the frame, already absolute (pageLinks.ts). */
   links?: PageLink[];
 }
 
-/** The links the frames of a read sent with their text. */
 function frameLinks(frames: unknown): PageLink[] {
   if (!Array.isArray(frames)) return [];
   return frames.flatMap((f: any) => (Array.isArray(f?.links) ? f.links : []))
     .filter((l: any): l is PageLink => !!l && typeof l.url === 'string' && typeof l.label === 'string' && typeof l.context === 'string');
 }
 
-/**
- * The page text with the text of its embedded frames after it. innerText never enters an iframe,
- * so a lesson or a document inside one is only readable this way. Each frame gets a heading line
- * that names where its text comes from.
- */
 export function withFrameTexts(text: string, frames: unknown): string {
   const list = Array.isArray(frames) ? frames.filter((f): f is FrameText => !!f && typeof f.text === 'string' && f.text.trim() !== '' && typeof f.origin === 'string') : [];
   if (!list.length) return text;
@@ -54,14 +41,6 @@ export function withFrameTexts(text: string, frames: unknown): string {
 const SafeKeyboardEvent = typeof KeyboardEvent !== 'undefined' ? KeyboardEvent : (Event as any);
 const SafeInputEvent = typeof InputEvent !== 'undefined' ? InputEvent : (Event as any);
 
-/**
- * Short human-readable name for an element, for the action list in the side panel.
- *
- * The value is the last candidate, so an unlabeled field can still be named by what it holds -
- * but a masked field (a password, a card, a one-time code) never describes itself with its value:
- * the value slot becomes the redaction marker, the same rule describePointElement in
- * screenshotPrivacy.ts applies, so a filled field reads as holding something without saying what.
- */
 export function describeElement(el: Element | null): string {
   if (!el) return '';
   const pick = (v: any) => (typeof v === 'string' ? v.trim().replace(/\s+/g, ' ') : '');
@@ -84,10 +63,6 @@ export function describeElement(el: Element | null): string {
   return label.length > 48 ? label.slice(0, 47) + '\u2026' : label;
 }
 
-/**
- * Put `text` into whatever kind of field `el` actually is.
- * Bypasses React value tracking via native prototype setter.
- */
 export function setFieldValue(el: Element, text: unknown): { success: boolean; error?: string } {
   const tag = (el.tagName || '').toUpperCase();
   const str = text == null ? '' : String(text);
@@ -150,9 +125,6 @@ export function setFieldValue(el: Element, text: unknown): { success: boolean; e
   };
 }
 
-/**
- * Simulate realistic click on element with stable locator re-resolution
- */
 export function doClick(
   elementId: number | string,
   context: ActionExecutionContext,
@@ -236,9 +208,6 @@ export function doClick(
   };
 }
 
-/**
- * Simulate realistic typing into input field with stable locator re-resolution
- */
 export function doType(
   elementId: number | string,
   text: unknown,
@@ -302,21 +271,11 @@ export function doType(
   };
 }
 
-/**
- * Execute action requested by agent
- */
 
-/** The note a read gets when a code editor on the page draws only the lines near the view (CodeMirror 6). */
 export const EDITOR_HIDES_LINES_NOTE = '(editor may hide off-screen lines)';
 
-/** The line a read starts with when an editor in it hides lines: the note, and how to read the rest. */
 export const EDITOR_HIDES_LINES_NOTE_LINE = `Note: a code editor here draws only the lines near the view ${EDITOR_HIDES_LINES_NOTE}. Scroll it into view to read the rest.`;
 
-/**
- * The text a person reads in an element. A CodeMirror editor is read from its .cm-content, one
- * line per .cm-line, and `hidesLines` says whether it left lines out (CodeMirror 6 draws only the
- * lines near the view and stands a .cm-gap in for the rest).
- */
 export function readableText(el: Element): { text: string; hidesLines: boolean } {
   const editors: Element[] = [];
   const own = typeof el.closest === 'function' ? el.closest('.cm-content') : null;
@@ -359,8 +318,6 @@ export async function execute(
       if (win && win.history) win.history.forward();
       return { success: true, message: 'Going forward' };
     case 'read_page': {
-      // Stateless: the part is named in the request (1 when it is left out), so the same request
-      // always gives the same text and a model can never fall into re-reading the first part.
       const rawPart = actionPayload.part;
       const partNumber = rawPart === undefined || rawPart === null || rawPart === '' ? 1 : Number(rawPart);
       if (!Number.isInteger(partNumber) || partNumber < 1) {
@@ -380,8 +337,6 @@ export async function execute(
         what = `Text of element [${String(requestedId)}]`;
         links = collectLinks(el, base);
       } else {
-        // The whole page text (inner scroll panels included, nothing windowed to the scroll
-        // position), not the snapshot's capped one, so paging reaches every part of the page.
         const compressor = win && (win as any).domCompressor ? (win as any).domCompressor : null;
         const text = compressor && typeof compressor.extractFullPageText === 'function'
           ? compressor.extractFullPageText()
@@ -406,9 +361,6 @@ export async function execute(
       };
     }
     case 'find_element': {
-      // The lookup verb for elements past the listed window. The compressor scans ALL interactive
-      // candidates, scores them against the query, and hands the best ones ids in its own
-      // elementMap, so the ids the reply lists are the ids click and type accept.
       const query = typeof actionPayload.query === 'string' ? actionPayload.query.trim() : '';
       if (!query) {
         return { success: false, error: 'find_element needs a query: the plain words to look for, such as "next page".' };
@@ -421,9 +373,6 @@ export async function execute(
       return { success: true, message: formatFindMessage(found), result: found };
     }
     case 'wait': {
-      // The background clamps model waits to 1..5 s (BUG-36); this content-side
-      // fallback keeps the same band so nothing here can park a run either,
-      // and amount:0 waits the legacy 1 s.
       const waitSec = Math.min(5, Math.max(1, amount ?? seconds ?? 1));
       await new Promise((r) => setTimeout(r, waitSec * 1000));
       return { success: true, message: `Waited ${waitSec}s` };

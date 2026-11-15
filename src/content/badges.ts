@@ -1,17 +1,10 @@
-/**
- * Tarka Floating Visual Badges
- * Renders floating indexed numeric badges for elements visible on the page.
- */
 
-export const ACCENT_COLOR = '#a85f34'; // Studio Mono copper accent
+export const ACCENT_COLOR = '#a85f34';
 
 export interface BadgeElementItem {
   id: number;
 }
 
-/**
- * Render floating visual badges on the webpage for indexed elements
- */
 export function renderBadges(
   elements: BadgeElementItem[],
   doc: Document = typeof document !== 'undefined' ? document : (null as unknown as Document),
@@ -29,11 +22,8 @@ export function renderBadges(
   badgeContainer.style.width = '100%';
   badgeContainer.style.height = '100%';
   badgeContainer.style.pointerEvents = 'none';
-  badgeContainer.style.zIndex = '2147483647'; // Max z-index
+  badgeContainer.style.zIndex = '2147483647';
 
-  // documentElement, not body: the badges are placed in page coordinates inside this absolute
-  // container, and a positioned body (position: relative is a common reset) would become the
-  // container's containing block and shift every badge by the body's own offset.
   doc.documentElement.appendChild(badgeContainer);
 
   const compressor = win && (win as any).domCompressor ? (win as any).domCompressor : null;
@@ -70,9 +60,6 @@ export function renderBadges(
   return badgeContainer;
 }
 
-/**
- * Remove floating visual badges
- */
 export function removeBadges(
   badgeContainer?: HTMLElement | null,
   doc: Document = typeof document !== 'undefined' ? document : (null as unknown as Document)

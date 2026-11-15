@@ -1,7 +1,3 @@
-/**
- * Tarka Element Reference Map and Navigation State
- * Manages numeric element ID assignment, WeakRef dereferencing, and document freshness checks.
- */
 
 export type ElementEntry = Element | WeakRef<Element>;
 export type ElementMap = Map<number, ElementEntry>;
@@ -13,9 +9,6 @@ export interface ResolveElementResult {
   error?: string;
 }
 
-/**
- * Generates a random document ID using Crypto.getRandomValues with Math.random fallback.
- */
 export function generateDocId(cryptoObj: Crypto = typeof crypto !== 'undefined' ? crypto : (null as unknown as Crypto)): string {
   try {
     if (cryptoObj && typeof cryptoObj.getRandomValues === 'function') {
@@ -24,24 +17,16 @@ export function generateDocId(cryptoObj: Crypto = typeof crypto !== 'undefined' 
       return `${buf[0].toString(36)}-${buf[1].toString(36)}`;
     }
   } catch {
-    // Fallback on Math.random
   }
   return Math.random().toString(36).slice(2);
 }
 
-/**
- * Whether an element is still in the document. An element inside a shadow root is not
- * document.contains()'d, so isConnected (which crosses shadow roots) decides when the element has it.
- */
 export function isAttached(el: Element, doc?: Document | null): boolean {
   const connected = (el as Element & { isConnected?: boolean }).isConnected;
   if (typeof connected === 'boolean') return connected && (!doc || !el.ownerDocument || el.ownerDocument === doc);
   return !(doc && typeof doc.contains === 'function' && !doc.contains(el));
 }
 
-/**
- * Retrieve element by assigned ID from map, ensuring it is attached to the document.
- */
 export function getElementFromMap(
   map: ElementMap,
   id: number | string,
@@ -58,9 +43,6 @@ export function getElementFromMap(
   return el;
 }
 
-/**
- * Resolve element with docId validation and detailed stale diagnostics.
- */
 export function resolveElementWithStatus(
   map: ElementMap,
   id: number | string,
