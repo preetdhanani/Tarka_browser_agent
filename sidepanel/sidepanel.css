@@ -1,13 +1,13 @@
-/* Tarka AI Agent - SidePanel Theme: Studio Mono
-   Graphite neutrals, one muted copper accent. Light by default,
-   follows system dark mode; overridable via [data-theme]. */
+
+
+
 
 :root {
   --bg: #faf9f8;
   --surface: #f2f0ee;
   --card: #ffffff;
   --border: rgba(20, 18, 16, 0.10);
-  /* The edge of a box that sits on a card (the audit details, a table): 1.5:1 against the card, where the hairline above is 1.2:1. */
+
   --border-strong: rgba(20, 18, 16, 0.20);
   --text-main: #1c1a18;
   --text-muted: #6b665f;
@@ -19,12 +19,12 @@
   --success-soft: rgba(95, 122, 90, 0.11);
   --danger: #9c4a3f;
   --danger-soft: rgba(156, 74, 63, 0.11);
-  /* Ochre, apart from the copper accent and the brick danger. 4.6:1 on the card, so it can
-     colour a one-word label as well as an icon or a border. */
+
+
   --warning: #946f0c;
   --warning-soft: rgba(148, 111, 12, 0.12);
-  /* The blue of an informational hold (the navigate variant of the confirmation card). Same bar
-     as the ochre: it must read as a one-word label on the card. */
+
+
   --info: #0369a1;
   --info-soft: rgba(3, 105, 161, 0.12);
   --shadow-soft: 0 1px 2px rgba(30, 20, 10, 0.05);
@@ -108,7 +108,7 @@ a:hover { color: var(--text-main); }
   height: 100vh;
 }
 
-/* Header */
+
 .app-header {
   display: flex;
   align-items: center;
@@ -166,9 +166,9 @@ a:hover { color: var(--text-main); }
   font-family: var(--font-mono);
   color: var(--text-muted);
   letter-spacing: 0.02em;
-  /* Model ids are long and slash-separated ("anthropic/claude-3.5-sonnet"), so left to wrap
-     they take two or three lines and the header grows to match. One line, truncated, with
-     the full id on hover via the title attribute. */
+
+
+
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -269,7 +269,7 @@ a:hover { color: var(--text-main); }
   50% { opacity: 1; transform: scale(1.15); }
 }
 
-/* Tabs */
+
 .nav-tabs {
   display: flex;
   gap: 2px;
@@ -307,7 +307,7 @@ a:hover { color: var(--text-main); }
   border-bottom-color: var(--accent);
 }
 
-/* Tab Content */
+
 .tab-content {
   flex: 1;
   overflow: hidden;
@@ -324,7 +324,7 @@ a:hover { color: var(--text-main); }
   display: flex;
 }
 
-/* SESSION HISTORY DRAWER */
+
 .history-drawer {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -412,7 +412,7 @@ a:hover { color: var(--text-main); }
   color: var(--danger);
 }
 
-/* Timeline & Chat */
+
 .timeline-container {
   flex: 1;
   overflow-y: auto;
@@ -483,7 +483,7 @@ a:hover { color: var(--text-main); }
   border-color: var(--accent);
 }
 
-/* STALE WORKER BANNER: the panel is newer than the background worker */
+
 .update-banner {
   display: flex;
   align-items: center;
@@ -514,7 +514,7 @@ a:hover { color: var(--text-main); }
 
 .update-banner-btn:hover { border-color: var(--accent); }
 
-/* LIVE PROCESSING BANNER */
+
 .processing-banner {
   background: var(--surface);
   border-top: 1px solid var(--border);
@@ -535,7 +535,7 @@ a:hover { color: var(--text-main); }
   flex-shrink: 0;
 }
 
-/* A paused run does not spin: a ring that keeps turning next to "Paused" says the agent is still working. */
+
 .processing-banner.paused .spinner-ring {
   animation-play-state: paused;
 }
@@ -578,8 +578,8 @@ a:hover { color: var(--text-main); }
   vertical-align: middle;
 }
 
-/* The run's provider and model chip: a built-in's dropdown label can be long, so it clamps to
-   one line instead of pushing the phase text or the progress bar out of the banner. */
+
+
 .processing-model-chip {
   max-width: 200px;
   overflow: hidden;
@@ -626,7 +626,7 @@ a:hover { color: var(--text-main); }
   color: var(--accent);
 }
 
-/* "Chat compacted": its own item between turns. Later requests start from the summary it holds. */
+
 .chat-compacted {
   margin: 14px 0 6px;
 }
@@ -713,7 +713,7 @@ a:hover { color: var(--text-main); }
   overflow-wrap: anywhere;
 }
 
-/* Session Run Divider */
+
 .session-divider {
   display: flex;
   align-items: center;
@@ -766,10 +766,10 @@ a:hover { color: var(--text-main); }
   color: var(--danger);
 }
 
-/* The answer reads as the agent's reply, not as a message in a box: no background, no border, no
-   coloured edge. A quiet status line above it says how the run ended. Its icon (and, for every
-   ending that is not a success, its words) take the state's colour, so a failed or partial run is
-   never read as "Done". The class names stay: the harness and the tests find the answer by them. */
+
+
+
+
 .finish-card {
   margin-top: 10px;
   padding: 0 2px;
@@ -791,21 +791,21 @@ a:hover { color: var(--text-main); }
 
 .finish-title svg { flex: none; width: 14px; height: 14px; color: var(--success); }
 
-/* Resume on an Interrupted or Stopped card: the run goes on in the same chat. */
+
 .finish-actions {
   display: flex;
   gap: 8px;
   margin-top: 8px;
 }
 
-/* Some sources unchecked, or the run ended before it finished: amber icon and words. */
+
 .finish-card.partial .finish-title,
 .finish-card.partial .finish-title svg { color: var(--warning); }
 
-/* The model never called finish (unconfirmed), the audit found a claim no page backs
-   (unverified), a step failed (failed), or the model could not do the task (blocked): red icon
-   and words. These rules stay AFTER .partial: a partial answer that was also unconfirmed shows
-   the worse colour. */
+
+
+
+
 .finish-card.unconfirmed .finish-title,
 .finish-card.unconfirmed .finish-title svg,
 .finish-card.unverified .finish-title,
@@ -815,16 +815,16 @@ a:hover { color: var(--text-main); }
 .finish-card.blocked .finish-title,
 .finish-card.blocked .finish-title svg { color: var(--danger); }
 
-/* One-line explanation under the title of an audited card. */
+
 .finish-card.has-sub .finish-title { margin-bottom: 3px; }
 .finish-subs { margin-bottom: 8px; }
-/* A run that ended with nothing to show under its reason (a blocked site, no findings): no gap below. */
+
 .finish-subs:last-child { margin-bottom: 0; }
 .finish-sub {
   font-size: 11.5px;
   line-height: 1.45;
   color: var(--text-muted);
-  /* A host name in the subtitle of a partial answer can be long. */
+
   overflow-wrap: anywhere;
 }
 
@@ -837,7 +837,7 @@ a:hover { color: var(--text-main); }
   min-width: 0;
 }
 
-/* The run's numbers under the answer: model calls, steps, tokens in and out. */
+
 .finish-stats {
   margin-top: 8px;
   font-family: var(--font-mono);
@@ -847,7 +847,7 @@ a:hover { color: var(--text-main); }
   overflow-wrap: anywhere;
 }
 
-/* The files a run hands over with its answer: one chip per file, a click opens its preview. */
+
 .finish-files {
   display: flex;
   flex-wrap: wrap;
@@ -873,12 +873,12 @@ a:hover { color: var(--text-main); }
 .file-chip .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .file-chip .file-size { flex: none; color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; }
 
-/* ---- Markdown blocks in the answer (formatMarkdownText in sidepanel.js) ----
-   Used only when the answer has a heading or a table; other answers stay pre-wrapped text.
-   Everything is sized for a panel about 340px wide. The block container turns pre-wrap off and
-   the paragraphs and list items turn it back on, so the author's line breaks inside them stay
-   and there is no stray blank line between blocks. Vertical space comes from margins, which
-   collapse: 8px between blocks, 12px above a heading, 4px under it. */
+
+
+
+
+
+
 .md-doc { white-space: normal; min-width: 0; max-width: 100%; }
 .md-doc > * { margin: 0 0 8px; }
 .md-doc > :last-child { margin-bottom: 0; }
@@ -894,7 +894,7 @@ a:hover { color: var(--text-main); }
 .md-doc > .md-h + .md-h { margin-top: 6px; }
 .md-h1 { font-size: 14px; }
 .md-h2 { font-size: 13px; }
-/* The two section levels get a hairline, so "Prices found" and a "shop-a.test" under it read as two levels. */
+
 .md-h1,
 .md-h2 {
   padding-bottom: 3px;
@@ -906,7 +906,7 @@ a:hover { color: var(--text-main); }
 
 .md-p { white-space: pre-wrap; }
 
-/* A list item hangs: the bullet has its own column, so a wrapped line lines up under the text. */
+
 .md-list { list-style: none; }
 .md-li { display: flex; gap: 6px; }
 .md-li + .md-li { margin-top: 1px; }
@@ -927,7 +927,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 .md-d2 { margin-left: 2.2em; }
 .md-d3 { margin-left: 3.3em; }
 
-/* A table scrolls inside its own box, so a wide one never widens the card or the page. */
+
 .md-table-wrap {
   max-width: 100%;
   overflow-x: auto;
@@ -946,9 +946,9 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   line-height: 1.45;
   text-align: left;
   font-variant-numeric: tabular-nums;
-  /* A word is not cut in half to squeeze a column ("Shippin" / "g"): a cell wraps at spaces, and a
-     word that is wider than the card makes the table scroll inside its box. The card text allows
-     a break anywhere; a table is the one place where that is wrong. */
+
+
+
   word-break: normal;
   overflow-wrap: break-word;
 }
@@ -971,8 +971,8 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 .md-table .md-al-c { text-align: center; }
 .md-table .md-al-r { text-align: right; }
 
-/* An inline `code` span of an answer: a command, a file name, a version. Tokens only, so it reads
-   in light and dark; it may wrap, so a long path never pushes the card wider than the panel. */
+
+
 .md-code {
   font-family: var(--font-mono);
   font-size: 0.92em;
@@ -985,7 +985,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   box-decoration-break: clone;
 }
 
-/* A link in an answer: http(s) only (richInline in sidepanel.js), opens in a new tab. */
+
 .md-link {
   color: var(--accent);
   text-decoration: underline;
@@ -995,8 +995,8 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 }
 .md-link:hover { text-decoration-color: var(--accent); }
 
-/* A fenced code block of an answer, and the body of the file preview: a box with the language and
-   a Copy button on top. A long block folds, with a fade and a button to show all of it. */
+
+
 .code-box {
   position: relative;
   box-sizing: border-box;
@@ -1052,8 +1052,8 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   overflow: auto;
   font: 400 11.5px/1.55 var(--font-mono);
   color: var(--text-main);
-  /* Lines keep their indentation; a long one scrolls sideways inside the box (the box itself never
-     gets wider than the panel). */
+
+
   white-space: pre;
   tab-size: 2;
 }
@@ -1077,9 +1077,9 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 .tok-num,
 .tok-lit { color: var(--warning); }
 
-/* The preview of a file of a finish card: a modal dialog over the panel. */
+
 .file-preview {
-  /* The page reset sets every margin to 0; a modal dialog centres itself with auto margins. */
+
   margin: auto;
   width: calc(100vw - 24px);
   max-width: 640px;
@@ -1125,9 +1125,9 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 .file-preview-body .code-box { border: none; background: transparent; }
 .file-preview-body .code-pre { padding: 0; }
 
-/* Input Panel */
-/* "Jump to latest": a round button that floats over the bottom of the timeline, above the
-   composer, while the reader is scrolled up and new rows came in below. */
+
+
+
 .jump-latest-anchor {
   position: relative;
   height: 0;
@@ -1169,7 +1169,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   gap: 8px;
 }
 
-/* Composer: one rounded card, textarea on top, controls underneath (the reference layout). */
+
 .composer {
   position: relative;
   background: var(--card);
@@ -1309,7 +1309,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   background: var(--surface);
 }
 
-/* Locked while a run is live, like the approval and effort buttons beside it. */
+
 .composer-model:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -1342,8 +1342,8 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   cursor: not-allowed;
 }
 
-/* The context meter: a 16 px ring before the effort, filled by the share of the model's window
-   this chat uses. Neutral while there is room, amber from 70%, red from 90%. */
+
+
 .composer-ring {
   width: 22px;
   height: 22px;
@@ -1384,7 +1384,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 .ctx-ring.ctx-warn .ctx-ring-arc { stroke: var(--warning); }
 .ctx-ring.ctx-high .ctx-ring-arc { stroke: var(--danger); }
 
-/* Dropdown menus of the composer (approval mode, effort) */
+
 .menu {
   position: absolute;
   bottom: calc(100% + 6px);
@@ -1426,7 +1426,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 
 .menu-item[hidden] { display: none; }
 
-/* One line under the effort levels: why this model has the levels it has. */
+
 .menu-note {
   padding: 6px 10px 4px;
   margin-top: 3px;
@@ -1460,7 +1460,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 
 .menu-check svg { width: 15px; height: 15px; }
 
-/* The context card the ring opens: the window, the bar of this chat, the note and Compact. */
+
 .ctx-menu {
   left: 50%;
   transform: translateX(-50%);
@@ -1621,7 +1621,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   outline-offset: 1px;
 }
 
-/* The model menu: a scrollable list over the composer, search on top, a hand-typed id below. */
+
 .menu-scroll {
   left: 50%;
   right: auto;
@@ -1685,7 +1685,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   min-width: 0;
 }
 
-/* Buttons */
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -1750,7 +1750,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   width: 100%;
 }
 
-/* Settings Form */
+
 .settings-form {
   padding: 16px 16px 140px 16px;
   overflow-y: auto;
@@ -1792,7 +1792,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   font-style: italic;
 }
 
-/* A titled group of settings (Research), set off from the fields above by a rule. */
+
 .settings-section {
   display: flex;
   flex-direction: column;
@@ -1819,7 +1819,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 }
 
 .form-input, .form-select {
-  /* A URL or a model id is read character by character: JetBrains Mono's ligatures drew "://" as ": /". */
+
   font-variant-ligatures: none;
   background: var(--card);
   border: 1px solid var(--border);
@@ -1836,7 +1836,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   border-color: var(--accent);
 }
 
-/* Logs Console & Telemetry */
+
 .logs-container {
   padding: 12px;
   display: flex;
@@ -1941,7 +1941,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 .log-level-WARN { color: var(--warning); }
 .log-level-ERROR { color: var(--danger); }
 
-/* The kind of an entry, as a small tag: what the reader scans for. */
+
 .log-kind {
   padding: 1px 6px;
   border-radius: 10px;
@@ -1990,7 +1990,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   overflow-wrap: anywhere;
 }
 
-/* The details of an entry as a JSON tree: objects and arrays open and close on their toggle. */
+
 .jt {
   font-family: var(--font-mono);
   font-size: 10.5px;
@@ -2063,7 +2063,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 }
 .jt-more:hover { color: var(--text-main); }
 
-/* Custom Searchable Combobox Component */
+
 .custom-combobox {
   position: relative;
   width: 100%;
@@ -2071,8 +2071,8 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 }
 
 .combobox-trigger {
-  /* A real button (Enter and Space open the picker): a button does not stretch like the div it
-     was, and it does not inherit the panel font, so both are set here. */
+
+
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2221,11 +2221,11 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 }
 
 
-/* ============================================================
-   Batched action groups
-   One turn = goal + a collapsible list of one-line action rows + the answer.
-   Deliberately low-contrast and tight: this is a trace, not the content.
-   ============================================================ */
+
+
+
+
+
 
 .turn {
   display: flex;
@@ -2268,8 +2268,8 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 
 .act-head-text { font-variant-numeric: tabular-nums; }
 
-/* The captured page, small, at the end of a collapsed group's head: the page as the agent last saw
-   it in that turn. An open group shows it in its body instead, so the thumbnail steps aside. */
+
+
 .act-head-thumb {
   flex: none;
   margin-left: auto;
@@ -2290,8 +2290,8 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 }
 
 
-/* An author `display` beats the UA stylesheet's [hidden] { display: none }, so without this
-   the collapse toggles the attribute and nothing visibly happens. */
+
+
 .act-body[hidden],
 .act-why[hidden] { display: none; }
 
@@ -2302,7 +2302,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   flex-direction: column;
 }
 
-/* --- individual action rows --- */
+
 .act-item { display: flex; flex-direction: column; }
 
 .act-row {
@@ -2329,15 +2329,15 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 .act-row.fault { color: var(--danger); }
 .act-row.bad .act-ico,
 .act-row.fault .act-ico { color: currentColor; }
-/* A row that can run to several lines keeps its icon on the FIRST line, not at the middle of the
-   block: the icon is 14px in a line of 1.45em, so it drops by half the difference. */
+
+
 .act-row.fault,
 .act-row.refused { align-items: start; }
 .act-row.fault .act-ico,
 .act-row.refused .act-ico { margin-top: calc((1.45em - 14px) / 2); }
 .act-row.fault .act-text { white-space: normal; }
 
-/* A finish the answer audit sent back: a warning, not a failed action (no red, no cross). */
+
 .act-row.refused { color: var(--warning); }
 .act-row.refused .act-ico { color: currentColor; }
 .act-row.refused .act-text { white-space: normal; }
@@ -2359,11 +2359,11 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 }
 @keyframes actPulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
 
-/* --- the picture a step took ---
-   The slot is a sibling of the action row, indented to the text column (the 16px icon column and
-   the 9px gap above it, plus the row's 4px inset) so it lines up with the words and not with the
-   icon. The box keeps the picture's own shape, which stops the timeline from jumping when the
-   bytes arrive, and never grows taller than 180px: a tall picture is shown whole, smaller. */
+
+
+
+
+
 .act-shot-slot {
   margin: 0 4px 8px 29px;
   max-width: calc(100% - 33px);
@@ -2380,11 +2380,11 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   max-height: 180px;
   object-fit: contain;
   object-position: top left;
-  /* The capture is a screenshot: its own pixels are the truth, so no smoothing tricks. */
+
   image-rendering: auto;
 }
-/* A picture whose bytes the session no longer has (a long run, or a reloaded session). It is a
-   state, not an error: the picture was taken, and the bytes are not kept. */
+
+
 .act-shot-gone {
   display: block;
   padding: 8px 10px;
@@ -2393,7 +2393,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   font-style: italic;
 }
 
-/* The captured page at the top of an opened, finished group: the turn's last picture, full width. */
+
 .act-captured {
   display: flex;
   flex-direction: column;
@@ -2414,7 +2414,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 .act-captured .act-shot-img { max-height: 220px; }
 .act-captured .act-shot-gone { padding: 0; }
 
-/* --- reasoning, revealed per row --- */
+
 .act-why {
   margin: 0 0 6px 25px;
   padding: 8px 10px;
@@ -2426,7 +2426,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   white-space: pre-wrap;
 }
 
-/* --- plan checklist, folded inside the running group --- */
+
 .act-plan {
   display: flex;
   flex-direction: column;
@@ -2435,9 +2435,9 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   margin-bottom: 4px;
   border-bottom: 1px dashed var(--border);
 }
-/* One grid with the action rows below it: the same 4px inset and the same 16px icon column and
-   9px gap, so the icons and the text start at the same x in both lists. The action rows are the
-   standard (they are the ones a reader scans); the plan rows follow them. */
+
+
+
 .act-plan-row {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr);
@@ -2448,9 +2448,9 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   line-height: 1.45;
   color: var(--text-muted);
 }
-/* The icons are 8 to 12px wide; an action icon is 13px wide and starts at the left of its column.
-   A 13px box centres each plan icon on that same axis, and is one text line high so that on a
-   step that wraps the icon stays on the first line. */
+
+
+
 .act-plan-row > span:first-child {
   display: inline-flex;
   align-items: center;
@@ -2459,7 +2459,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   height: 1.45em;
 }
 .act-plan-row.in_progress { color: var(--text-main); }
-/* Done is told by the check and the line through it, not by fading: a faded row is under 3:1. */
+
 .act-plan-row.completed span:last-child { text-decoration: line-through; }
 
 .act-phase {
@@ -2471,27 +2471,27 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 
 .act-row.answer { color: var(--text-main); }
 
-/* A plan step the harness skipped because its source was never read. Muted and NOT struck
-   through: a struck-through row means done, and this one is the opposite. */
+
+
 .act-plan-row.skipped { color: var(--text-muted); }
 .act-plan-row.skipped svg { color: var(--warning); }
 .plan-skip-note { color: var(--warning); }
 
-/* ============================================================
-   Answer audit block on the finish card
-   A native <details>: no script needed to open it, and the keyboard works for free.
-   ============================================================ */
+
+
+
+
 
 .audit { margin-bottom: 10px; }
-/* On a checked answer it is only a receipt: sit below the answer, behind a hairline. */
+
 .audit.verified {
   margin: 10px 0 0;
   padding-top: 8px;
   border-top: 1px solid var(--border);
 }
 
-/* The evidence of a structured answer. It is not a verdict, so it has no hairline above it:
-   the answer is the answer, and this is the material behind it. */
+
+
 .audit.answer-evidence {
   margin: 10px 0 0;
   padding-top: 8px;
@@ -2520,7 +2520,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 .audit-summary:hover { color: var(--text-main); }
 .audit-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* Above a doubtful answer the toggle is the point of the card, so it reads as a label. */
+
 .audit.attention .audit-summary { color: var(--text-main); font-weight: 600; }
 
 .audit-chev {
@@ -2537,7 +2537,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   margin-top: 6px;
   padding: 8px 10px;
   background: var(--surface);
-  /* A clear edge against the card in both themes: the fill alone is 1.1:1. */
+
   border: 1px solid var(--border-strong);
   border-radius: 6px;
   font-size: 11.5px;
@@ -2570,7 +2570,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   gap: 8px;
   color: var(--text-main);
 }
-/* Centre the dot on the first line of text: (line height - dot) / 2. */
+
 .audit-dot {
   width: 6px;
   height: 6px;
@@ -2616,8 +2616,8 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   outline-offset: 2px;
 }
 
-/* Nothing in the header may push the status pill past the edge. The brand column is the
-   flexible one; the controls keep their size. */
+
+
 .app-header .brand {
   min-width: 0;
 }
@@ -2630,8 +2630,8 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   flex-shrink: 0;
 }
 
-/* A Chrome side panel can be dragged down to roughly 320px. Below 340px the status word is
-   the first thing to go, leaving the dot and the two icon controls. */
+
+
 @media (max-width: 340px) {
   #statusPill .status-text {
     display: none;
@@ -2642,7 +2642,7 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   }
 }
 
-/* API Key Toggle */
+
 .input-with-toggle {
   position: relative;
   display: flex;
@@ -2670,7 +2670,7 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   color: var(--accent);
 }
 
-/* Toasts */
+
 .toast-container {
   position: fixed;
   bottom: 20px;
@@ -2704,11 +2704,11 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   to { transform: translateX(100%); opacity: 0; }
 }
 
-/* ==========================================================================
-   LangGraph HITL Cards & UI Overhaul (Phase P5d & P6)
-   ========================================================================== */
 
-/* Approval & Confirmation Cards */
+
+
+
+
 .approval-card {
   background: var(--card);
   border: 1px solid var(--border);
@@ -2838,7 +2838,7 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   font-size: 11.5px;
 }
 
-/* Action Confirmation Details */
+
 .action-summary-box {
   background: var(--surface);
   padding: 8px;
@@ -2878,7 +2878,7 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   margin-top: 4px;
 }
 
-/* Confirm card: what the user approves */
+
 .action-confirmation-card {
   min-width: 0;
 }
@@ -2933,7 +2933,7 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   white-space: pre;
   tab-size: 2;
 }
-/* Typed text is prose: it wraps instead of scrolling sideways. */
+
 .confirm-code.confirm-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -2958,7 +2958,7 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   font-size: 11px;
   overflow-wrap: anywhere;
 }
-/* End confirm card detail */
+
 .checkbox-label {
   display: flex;
   align-items: center;
@@ -2974,9 +2974,9 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   margin-top: 4px;
 }
 
-/* ==========================================================================
-   Custom provider dialog (featere/custom-endpoint: user-added endpoints)
-   ========================================================================== */
+
+
+
 
 .cp-overlay {
   position: fixed;
@@ -3004,7 +3004,7 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 
 .cp-heading { margin-bottom: 12px; }
 
-/* Each field of the dialog is its own group; without this a hint runs into the next label. */
+
 .cp-dialog > .form-group + .form-group,
 .cp-dialog > .form-group + .cp-test-row { margin-top: 14px; }
 
@@ -3058,7 +3058,7 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   color: var(--text-muted);
 }
 
-/* The URL gets a line of its own under its label, and breaks only when it cannot fit at all. */
+
 .cp-preview-line code {
   display: block;
   font-family: var(--font-mono, monospace);
@@ -3198,8 +3198,8 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   padding: 8px 10px;
 }
 
-/* The one fix the error names ("Add model", "Use http://..."), on its own line under the text.
-   Sized like .btn-xs, and drawn in the error's own red so it reads as part of the message. */
+
+
 .cp-error-action {
   display: block;
   margin-top: 7px;
@@ -3240,7 +3240,7 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   .cp-actions .btn { width: 100%; }
 }
 
-/* SEC-9: the explicit opt-in row for a key-bearing plain-http endpoint. */
+
 .cp-allow-http-row {
   display: flex;
   align-items: center;
