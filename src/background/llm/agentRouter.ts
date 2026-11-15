@@ -66,7 +66,6 @@ export async function callAgentRouter(
     stream: false
   };
 
-  let messagesSucceeded = false;
   let rawBody: string | undefined;
 
   try {

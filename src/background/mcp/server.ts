@@ -85,8 +85,6 @@ export function finishTableOf(table: unknown): { columns: string[]; rows: string
   return { columns: t.columns, rows: t.rows };
 }
 
-const CONFIRM_UNAVAILABLE_TEXT = 'Refused by security policy: this action needs your confirmation, but the confirmation card could not be shown. Ask the user to do this step manually.';
-
 export interface ElementSecurity {
   tag?: string;
   type?: string;

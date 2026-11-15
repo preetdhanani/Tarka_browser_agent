@@ -808,7 +808,6 @@ export class InputDispatcher {
     const topAnswer = target;
     for (let hops = 0; target?.success && target.result?.frame && hops < 8; hops++) {
       const route = target.result.frame;
-      const before = target;
       frameId = (await frameIdAtPath(tabId, String(route.path || ''), this.frames).catch(() => null)) ?? -1;
       offset.left += Number(route.offset?.left) || 0;
       offset.top += Number(route.offset?.top) || 0;
