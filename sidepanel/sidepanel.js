@@ -94,7 +94,7 @@ let portReconnectTimer = null;
 let hasConnectedBefore = false;
 // Out-of-order render guard. The live port and the GET_AGENT_STATE resync are two independent
 // async channels with no ordering guarantee, so a slow resync reply can arrive after a newer
-// live push and roll the UI backwards. stateVersion orders them — but it restarts near zero
+// live push and roll the UI backwards. stateVersion orders them - but it restarts near zero
 // whenever Chrome rebuilds the service worker, so it is only comparable within one boot.
 // bootId scopes the comparison; a new boot resets the watermark instead of silently discarding
 // every update from the fresh worker forever (which would freeze the panel permanently).
@@ -163,7 +163,7 @@ let lastTimelineHtml = '';
 
 
 /**
- * Inline icon set — thin-line SVGs matching the Studio Mono system.
+ * Inline icon set - thin-line SVGs matching the Studio Mono system.
  */
 const ICONS = {
   check: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>',
@@ -1026,7 +1026,7 @@ function initTabs() {
  *
  * Chrome terminates MV3 service workers aggressively, which kills this port. Without an
  * onDisconnect handler the panel keeps holding a dead port forever: the agent keeps running
- * and driving the browser, but every STATE_UPDATE and LOG_ENTRY it emits goes nowhere — the
+ * and driving the browser, but every STATE_UPDATE and LOG_ENTRY it emits goes nowhere - the
  * timeline freezes and the log pane stays empty. That is exactly the "everything goes blank"
  * failure. So: detect the drop, tell the user, and reconnect with backoff.
  */
@@ -1152,7 +1152,7 @@ function scheduleReconnect() {
 /**
  * Pull authoritative state after every (re)connect. This doubles as the wake-up call that
  * revives a sleeping service worker, and its response is the only confirmation that the
- * round trip actually works — which is why the backoff counter resets here rather than in
+ * round trip actually works - which is why the backoff counter resets here rather than in
  * connectPort(). chrome.runtime.connect() succeeds optimistically even against a dead
  * context, so resetting on connect alone would pin the backoff at its 300ms floor forever.
  */
@@ -1186,7 +1186,7 @@ function resyncAgentState() {
  *
  * Pause / Stop / New Session were previously fire-and-forget with no callback and no
  * lastError check. If the service worker was asleep or mid-restart the command evaporated
- * silently — the button appeared to work while the agent carried on driving the page. For
+ * silently - the button appeared to work while the agent carried on driving the page. For
  * Stop in particular that is a safety problem, not just a cosmetic one.
  */
 function sendControlMessage(action, done) {
@@ -1250,7 +1250,7 @@ function setConnectionBanner(isDisconnected) {
 /**
  * Push a log entry generated in the panel itself into the log pane. Failures on this side of
  * the boundary (a dead port, most importantly) cannot reach the background logger, so without
- * this they would leave no trace anywhere — the "logs were empty too" symptom.
+ * this they would leave no trace anywhere - the "logs were empty too" symptom.
  */
 function appendLocalLog(level, module, message) {
   try {
@@ -1279,7 +1279,7 @@ function reportClientError(source, err) {
       payload: { source, message, stack: (err && err.stack) || null }
     }, () => { void chrome.runtime.lastError; });
   } catch (_) {
-    // Extension context invalidated — the local log above is the only record, by design.
+    // Extension context invalidated - the local log above is the only record, by design.
   }
 }
 
@@ -1879,7 +1879,7 @@ async function startTaskInner(prompt) {
 
   sendBgMessage({ action: 'START_TASK', payload: { prompt, effort: currentEffort, autoApprove: approvalMode !== 'manual' } }, (res) => {
     // Without this check a failed wake-up leaves res undefined and the whole submission
-    // vanishes with no alert, no log and no UI change — the task simply never starts.
+    // vanishes with no alert, no log and no UI change - the task simply never starts.
     if (chrome.runtime.lastError) {
       const msg = chrome.runtime.lastError.message;
       appendLocalLog('ERROR', 'Sidepanel', `[TASK_SUBMIT_FAILED] Background worker did not accept the task (${msg}). Reconnecting and retrying is usually enough.`);
@@ -1893,7 +1893,7 @@ async function startTaskInner(prompt) {
       const emptyState = document.getElementById('emptyState');
       if (emptyState) emptyState.style.display = 'none';
       document.getElementById('controlBar').style.display = 'flex';
-      appendLocalLog('INFO', 'Sidepanel', `[TASK_ACCEPTED] Running against tab [${res.tabId}] — ${res.tabUrl || 'unknown URL'}`);
+      appendLocalLog('INFO', 'Sidepanel', `[TASK_ACCEPTED] Running against tab [${res.tabId}] \u2014 ${res.tabUrl || 'unknown URL'}`);
     } else {
       const msg = (res && res.error) || 'The background worker returned no response.';
       appendLocalLog('ERROR', 'Sidepanel', `[TASK_SUBMIT_FAILED] ${msg}`);
@@ -2743,7 +2743,7 @@ function describeAction(action, outcome) {
  * Should this turn's group be open? Explicit user choice always wins. Otherwise: open while
  * the turn is live so you can watch it, and open if it ended without producing an answer so
  * the reason is visible. A turn that finished successfully collapses, even if some individual
- * action failed along the way — recovering from a failed click is normal, not a bad outcome.
+ * action failed along the way - recovering from a failed click is normal, not a bad outcome.
  */
 function isTurnExpanded(turn, isLive, incomplete) {
   if (turnExpandOverride.has(turn.turn)) return turnExpandOverride.get(turn.turn);
@@ -3387,7 +3387,7 @@ function renderTurns(history, status, currentPhase, pendingApproval = null, pend
     const isLast = turn === finalTurn;
     const isLive = busy && isLast;
     const count = turn.entries.filter(e => e.kind === 'action').length;
-    // "Did not finish" means no answer was produced — not merely that one action failed.
+    // "Did not finish" means no answer was produced - not merely that one action failed.
     const incomplete = !isLive && !turn.answer && turn.entries.length > 0;
     const open = isTurnExpanded(turn, isLive, incomplete);
     // The page as the agent last saw it in this turn: the newest picture of its steps. A finished
