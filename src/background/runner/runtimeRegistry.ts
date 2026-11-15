@@ -1,7 +1,6 @@
 import type { Settings } from '../../shared/storage.ts';
 import type {
-  ControlSnapshot, Effect, EffectDetail, HistoryEntry, NodeName, PolicyMode, TrailEntry,
-  OneShot, PageSig, GateContext, GateDecision,
+  ControlSnapshot, Effect, EffectDetail, OneShot, GateContext, GateDecision,
 } from '../types.ts';
 
 export interface RunControl {
