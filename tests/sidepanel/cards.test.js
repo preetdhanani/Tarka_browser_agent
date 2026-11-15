@@ -8,6 +8,18 @@ import fs from 'node:fs';
 
 const CSS = fs.readFileSync(new URL('../../sidepanel/sidepanel.css', import.meta.url), 'utf8');
 
+function ruleEnd(selector) {
+  const start = CSS.indexOf(`${selector} {`);
+  const end = CSS.indexOf('}', CSS.indexOf('{', start));
+  return end < 0 ? -1 : end + 1;
+}
+
+function confirmationCardStyles() {
+  const start = CSS.indexOf('.action-confirmation-card {');
+  const end = ruleEnd('.confirm-code-note');
+  return start < 0 || end < start ? '' : CSS.slice(start, end);
+}
+
 test('cards: escapeHtml escapes dangerous characters', () => {
   assert.equal(escapeHtml('<script>alert("xss")</script>'), '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
   assert.equal(escapeHtml('foo & bar \'baz\''), 'foo &amp; bar &#39;baz&#39;');
@@ -136,15 +148,14 @@ test('cards: a batch card lists its steps, escaped', () => {
 });
 
 test('cards: the confirm detail styles use theme tokens only, and long code scrolls inside its box', () => {
-  const start = CSS.indexOf('/* Confirm card: what the user approves */');
-  const end = CSS.indexOf('/* End confirm card detail */');
-  assert.ok(start !== -1 && end > start, 'the confirm detail block exists');
-  const block = CSS.slice(start, end);
+  const block = confirmationCardStyles();
+  assert.ok(block, 'the confirm detail rules exist');
   assert.ok(!/#[0-9a-f]{3,8}\b|rgba?\(|hsl/i.test(block), 'no fixed colour: both themes get every colour');
   for (const variable of [...new Set([...block.matchAll(/var\((--[a-z-]+)\)/g)].map((m) => m[1]))].filter((n) => !n.startsWith('--font'))) {
     assert.ok(CSS.split(`${variable}:`).length - 1 >= 3, `${variable} is defined in all three theme blocks`);
   }
-  const code = block.slice(block.indexOf('.confirm-code {'), block.indexOf('}', block.indexOf('.confirm-code {')));
+  const codeStart = block.indexOf('.confirm-code {');
+  const code = block.slice(codeStart, block.indexOf('}', codeStart));
   assert.match(code, /overflow:\s*auto;/);
   assert.match(code, /max-height:/);
   assert.match(code, /white-space:\s*pre;/);
@@ -165,11 +176,8 @@ test('cards: the confirm detail styles use theme tokens only, and long code scro
 });
 
 test('cards: the confirmation card variants and tag badges use theme tokens, never literal colours', () => {
-  // The whole confirm-card family: the variant edges, the tag badges, the risk box, the details.
-  const start = CSS.indexOf('.action-confirmation-card {');
-  const end = CSS.indexOf('/* End confirm card detail */', start);
-  assert.ok(start !== -1 && end > start, 'the confirm card family block exists');
-  const block = CSS.slice(start, end);
+  const block = confirmationCardStyles();
+  assert.ok(block, 'the confirm card family rules exist');
   assert.ok(!/#[0-9a-f]{3,8}\b|rgba?\(|hsl/i.test(block), `no fixed colour anywhere in the family: ${block.match(/#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|hsl\([^)]*\)/gi)}`);
   // Every token the family uses is defined in all three theme blocks (light, system dark, forced dark).
   for (const variable of [...new Set([...block.matchAll(/var\((--[a-z-]+)\)/g)].map((m) => m[1]))].filter((n) => !n.startsWith('--font'))) {
