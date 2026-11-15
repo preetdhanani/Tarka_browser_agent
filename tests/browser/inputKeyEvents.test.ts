@@ -26,6 +26,7 @@ function setup(tag = 'input') {
     dom: {
       101: {
         RESOLVE_ELEMENT_POINT: () => ({ success: true, point: { x: 10, y: 10 }, tag, text: 'Search' }),
+        VERIFY_CLICK_POINT: () => ({ success: true, what: 'textbox "Search"', hitTag: 'input', withinTarget: true }),
         EFFECT_PROBE_BEGIN: () => ({ success: true }),
         EFFECT_PROBE_END: () => ({ success: true, effect: 'value_set' })
       }

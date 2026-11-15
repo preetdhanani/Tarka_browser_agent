@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Harbor Ledger - fixture</title>
+  <link rel="stylesheet" href="site.css">
+  <style>
+    /* Only this page's consent dialog. The rest of the look comes from site.css. */
+    .consent-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(20, 22, 26, 0.45);
+      z-index: 40;
+    }
+    .consent-dialog {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: min(420px, calc(100vw - 32px));
+      padding: 20px 24px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--bg);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+      z-index: 50;
+    }
+    .consent-dialog h2 { margin: 0 0 8px; font-size: 18px; }
+    .consent-dialog p { margin: 0 0 12px; color: var(--muted); }
+    .consent-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .consent-saved { color: var(--accent); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <!-- Fixture: a news article behind a cookie consent dialog, the obstacle the user saw the agent
+       fail on (the click landed next to the button). The dialog's own buttons set the consent
+       cookie with document.cookie, so the page itself proves which button was pressed: the
+       expectPage check of the web-cookie-accept task reads that cookie with page.cookies(), the
+       one thing a history row cannot prove. Nothing here talks to a network. -->
+  <header class="bar">
+    <span class="logo">The Harbor Ledger</span>
+    <nav>
+      <a href="#local">Local</a>
+      <a href="#harbour">Harbour</a>
+      <a href="#culture">Culture</a>
+    </nav>
+  </header>
+
+  <main>
+    <article>
+      <h1 id="headline">The Old Lighthouse Reopens After Two Years of Renovation</h1>
+      <p class="note">By the Harbour desk &middot; November 15, 2026</p>
+      <p>The lighthouse on the east mole opened its door to visitors again on Saturday, after two years of scaffolding.
+         The stair has new steps, the lamp room a glass floor, and the keeper's log from 1911 is on display in the base.</p>
+      <p>Tickets are sold at the door for six euros. The light itself is still switched on every evening at dusk.</p>
+      <p id="consent-result" class="consent-saved" hidden></p>
+    </article>
+  </main>
+
+  <div class="consent-backdrop" id="consent-backdrop"></div>
+  <section class="consent-dialog" role="dialog" aria-modal="true" aria-label="Cookie consent" id="cookie-banner">
+    <h2>Cookies</h2>
+    <p>We use cookies to keep the site working and to count visits. You choose which ones you allow.</p>
+    <div class="consent-actions">
+      <button type="button" id="reject-non-essential">Reject non-essential</button>
+      <button type="button" id="accept-all" class="primary">Accept all cookies</button>
+    </div>
+  </section>
+
+  <script>
+    // The button's own handler sets the cookie, exactly like a real consent banner does. The
+    // choice is written where the reader can see it too, so the page-end screenshot shows it.
+    function answerConsent(value, note) {
+      document.cookie = 'cookie_consent=' + value + '; path=/; max-age=31536000; SameSite=Lax';
+      document.getElementById('cookie-banner').hidden = true;
+      document.getElementById('consent-backdrop').hidden = true;
+      var line = document.getElementById('consent-result');
+      line.textContent = note;
+      line.hidden = false;
+    }
+    document.getElementById('accept-all').addEventListener('click', function () {
+      answerConsent('all', 'Preferences saved: all cookies allowed.');
+    });
+    document.getElementById('reject-non-essential').addEventListener('click', function () {
+      answerConsent('essential', 'Preferences saved: only the essential cookies.');
+    });
+  </script>
+</body>
+</html>

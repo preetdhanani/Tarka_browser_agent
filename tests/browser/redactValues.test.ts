@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { redactSensitiveData, redactObject, redactUrl } from '../../src/background/browser/redact.ts';
-import { formatNetworkLine, NetworkBuffers } from '../../src/background/browser/network.ts';
 
 const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sFlKxyz';
 
@@ -45,14 +44,4 @@ test('redactUrl redacts sensitive query and fragment params and keeps the rest',
   assert.equal(redactUrl('https://x.com/a?api-key=k1&sig=zz&code=c0de'), 'https://x.com/a?api-key=[REDACTED]&sig=[REDACTED]&code=[REDACTED]');
   assert.equal(redactUrl('https://x.com/search?q=laptop&keyword=card+game'), 'https://x.com/search?q=laptop&keyword=card+game');
   assert.equal(redactUrl('https://x.com/plain'), 'https://x.com/plain');
-});
-
-test('formatNetworkLine never prints a secret from the URL query', () => {
-  const line = formatNetworkLine({ method: 'GET', url: 'https://x.com/a?access_token=sk_live_abc123', status: 200 });
-  assert.doesNotMatch(line, /sk_live_abc123/);
-  assert.match(line, /access_token=\[REDACTED\]/);
-  const buffers = new NetworkBuffers();
-  buffers.record(7, { method: 'POST', url: 'https://x.com/login?token=t0ps3cret', status: 200, ok: true, respBody: { access: JWT } });
-  const text = buffers.read(7);
-  assert.doesNotMatch(text, /t0ps3cret|eyJhbGciOi/);
 });

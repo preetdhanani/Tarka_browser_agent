@@ -335,7 +335,6 @@ export class DOMCompressor {
         this.elementMap.set(id, el);
       }
 
-      el.setAttribute('data-agent-id', String(id));
       const info = this.getElementSummary(el, id);
       formattedElements.push(info);
     }

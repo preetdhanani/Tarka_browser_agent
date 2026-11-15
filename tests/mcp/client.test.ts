@@ -88,7 +88,6 @@ function makeRuntime(activeTabId: number | null = 101): RunRuntime {
     tabs: { activeTabId, ownerTabId: 101 },
     windowId: 1,
     tarkaGroupIds: new Map(),
-    attachedTabIds: new Set(),
     resumedAfterRestart: false,
     settings: async () => ({ provider: 'openrouter', model: 'test-model', maxSteps: 20, actionDelayMs: 1 } as any),
     llm: { complete: async () => ({ text: '', provider: 'p', model: 'm', meta: {} }) },
@@ -103,8 +102,6 @@ function makeRuntime(activeTabId: number | null = 101): RunRuntime {
       waitForTabComplete: async () => {},
       waitDomQuiet: async () => {}
     } as any,
-    journal: {} as any,
-    net: { marker: () => 'm', read: () => '' },
     emit: { enterNode: () => {}, setPhase: () => {} },
     clock
   } as RunRuntime;
@@ -124,7 +121,9 @@ function withClient(t: any, options: { replies: Array<Record<string, unknown>>; 
     storage: {
       local: {
         data: {
-          agent_settings: { provider: 'openrouter', model: 'test-model', maxSteps: 20, actionDelayMs: 1, ...(options.settings || {}) }
+          // The key the LLM layer's missing-key check reads before a request is dispatched
+          // (the fake fetch below never sees a real endpoint, but the check runs first).
+          agent_settings: { provider: 'openrouter', model: 'test-model', apiKey: 'test-key', maxSteps: 20, actionDelayMs: 1, ...(options.settings || {}) }
         }
       }
     },
@@ -551,7 +550,7 @@ test('a Pause between two tool calls still answers both, so Resume sends a valid
 
 test('the user\'s system instructions from Settings reach the model', async (t) => {
   const { client, requests } = withClient(t, { replies: [toolCall('finish', { outcome: 'done', answer: 'done' })] });
-  await (globalThis as any).chrome.storage.local.set({ agent_settings: { provider: 'openrouter', model: 'test-model', maxSteps: 20, actionDelayMs: 1, systemInstructions: 'Always answer in German.' } });
+  await (globalThis as any).chrome.storage.local.set({ agent_settings: { provider: 'openrouter', model: 'test-model', apiKey: 'test-key', maxSteps: 20, actionDelayMs: 1, systemInstructions: 'Always answer in German.' } });
   await client.startTask('What is here?');
   const system = (requests[0].body.messages as any[]).find((m) => m.role === 'system');
   assert.match(String(system.content), /Always answer in German\./);
@@ -577,7 +576,7 @@ test('at the step limit the model gets one round with only finish, and the run e
   const { client, rec, requests } = withClient(t, {
     replies: [toolCall('read_page', {}), toolCall('read_page', {}), toolCall('finish', { outcome: 'done', answer: 'what I found' })]
   });
-  await (globalThis as any).chrome.storage.local.set({ agent_settings: { provider: 'openrouter', model: 'test-model', maxSteps: 2, actionDelayMs: 1 } });
+  await (globalThis as any).chrome.storage.local.set({ agent_settings: { provider: 'openrouter', model: 'test-model', apiKey: 'test-key', maxSteps: 2, actionDelayMs: 1 } });
   await client.startTask('Read forever');
   assert.equal(requests.length, 3);
   const last = requests[2].body;
@@ -638,7 +637,7 @@ test('a refused request (a 400) is not retried', async (t) => {
 
 test('a model call that times out is tried once more, and a second timeout ends the run', async (t) => {
   const { client, rec, requests } = withClient(t, { replies: [] });
-  await (globalThis as any).chrome.storage.local.set({ agent_settings: { provider: 'openrouter', model: 'test-model', maxSteps: 20, actionDelayMs: 1, llmTimeoutMs: 20 } });
+  await (globalThis as any).chrome.storage.local.set({ agent_settings: { provider: 'openrouter', model: 'test-model', apiKey: 'test-key', maxSteps: 20, actionDelayMs: 1, llmTimeoutMs: 20 } });
   const realFetch = globalThis.fetch;
   let n = 0;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -806,6 +805,88 @@ test('at the step limit a finish without an outcome still ends the run, as parti
   const finish = rowsOfType(rec.history, 'finish')[0];
   assert.equal(finish.answer, 'what I found');
   assert.equal(finish.outcome, 'partial');
+});
+
+test('a finish without an answer is refused once, without a step, and the next finish ends the run', async (t) => {
+  const { FINISH_ANSWER_TEXT } = await import('../../src/background/mcp/client.ts');
+  const { client, rec, requests } = withClient(t, {
+    replies: [
+      toolCall('finish', { outcome: 'done' }),
+      toolCall('finish', { outcome: 'done', answer: '   ' }),
+      toolCall('finish', { outcome: 'done', answer: 'It costs 99 USD.' })
+    ]
+  });
+  await client.startTask('What does item 42 cost?');
+  assert.equal(requests.length, 3, 'the model was asked again twice');
+  const toolReplies = (requests[1].body.messages as any[]).filter((m) => m.role === 'tool');
+  assert.equal(bare(toolReplies.at(-1).content), FINISH_ANSWER_TEXT, 'the model is asked for the answer');
+  const finishes = rowsOfType(rec.history, 'finish');
+  assert.equal(finishes.length, 1, 'only the finish with an answer ended the run');
+  assert.equal(finishes[0].answer, 'It costs 99 USD.');
+  assert.equal(rowsOfType(rec.history, 'execution_result').length, 1, 'the refused finishes left no failed step rows');
+  assert.equal(rowsOfType(rec.history, 'agent_response').length, 1, 'and no action rows');
+});
+
+test('a finish with a malformed table is refused with the shape, and a valid table reaches the finish row', async (t) => {
+  const { client, rec, requests } = withClient(t, {
+    replies: [
+      toolCall('finish', { outcome: 'done', answer: 'here', table: { columns: 'Shop', rows: [['A']] } }),
+      toolCall('finish', { outcome: 'done', answer: 'here', table: { columns: ['Shop'], rows: [['A', 899]] } }),
+      toolCall('finish', { outcome: 'done', answer: 'A is cheapest.', table: { columns: ['Shop', 'Price'], rows: [['A', '899 EUR']] } })
+    ]
+  });
+  await client.startTask('Compare the shops');
+  assert.equal(requests.length, 3, 'the model was asked again twice');
+  const refusals = (requests[1].body.messages as any[]).filter((m) => m.role === 'tool').map((m) => String(m.content));
+  const refusal = refusals.at(-1) ?? '';
+  assert.match(refusal, /^Error: finish needs table as \{"columns"/, 'the refusal names the shape');
+  assert.match(refusal, /every cell is a string/, 'and why the last one was refused');
+  const finishes = rowsOfType(rec.history, 'finish');
+  assert.equal(finishes.length, 1, 'only the valid finish ended the run');
+  assert.deepEqual(finishes[0].table, { columns: ['Shop', 'Price'], rows: [['A', '899 EUR']] }, 'the valid table passes through to the row');
+  assert.equal(rowsOfType(rec.history, 'execution_result').length, 1, 'the refused finishes left no failed step rows');
+});
+
+test('at the step limit a finish with a malformed table still ends the run, with the table left out', async (t) => {
+  const { client, rec } = withClient(t, {
+    replies: [toolCall('read_page', {}), toolCall('finish', { outcome: 'done', answer: 'what I found', table: { columns: [], rows: [] } })],
+    settings: { maxSteps: 1 }
+  });
+  await client.startTask('Read forever');
+  const finish = rowsOfType(rec.history, 'finish')[0];
+  assert.match(finish.answer, /^what I found/, 'the run still ends with the answer');
+  assert.match(finish.answer, /The table was left out/, 'and says that the table is gone');
+  assert.equal(finish.table, undefined, 'the malformed table is not on the row');
+});
+
+test('the Observation-line rule names only the tools whose results carry one', async () => {
+  // navigate, go_back, wait and the reads have no Observation line: claiming "every action
+  // result" has one sent the model looking for a line that is not there.
+  const { systemPromptText } = await import('../../src/background/mcp/client.ts');
+  const prompt = systemPromptText({ instructions: '', tabId: 1, url: 'https://a.test/', title: 'A', autoApprovePlan: true, research: true, space: 'pixels' });
+  assert.match(prompt, /result of click, type, press_key and scroll ends with an "Observation:" line/);
+  assert.doesNotMatch(prompt, /Every action result ends with an "Observation:"/);
+});
+
+test('a stop that lands while the turn is being set up appends no user_goal row (W2-R5)', async (t) => {
+  // The stop goes through the runner's endRun, which closes the run with its stopped row while
+  // beginTurn is still waiting on the tab read. The turn row must not follow the closing row.
+  const { client, rec, runtime } = withClient(t, { replies: [toolCall('finish', { outcome: 'done', answer: 'done' })] });
+  const realTabInfo = (runtime.browser as any).tabInfo.bind(runtime.browser);
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  (runtime.browser as any).tabInfo = async (id: number) => {
+    const info = await realTabInfo(id);
+    await held;
+    return info;
+  };
+  const running = client.startTask('Read it');
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  client.stop();
+  release();
+  await running;
+  assert.equal(rowsOfType(rec.history, 'user_goal').length, 0, 'no user_goal row after the stop landed');
+  assert.equal(rowsOfType(rec.history, 'finish').length, 0, 'and the run stayed stopped');
 });
 
 test('a plain-text answer at the step limit ends the run as partial; a plain-text reply otherwise has no outcome', async (t) => {

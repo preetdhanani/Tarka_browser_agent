@@ -15,13 +15,12 @@ import { contextLengthOf } from '../../shared/tokens.ts';
 import type { CustomProvider } from '../../shared/storage.ts';
 import type { LlmSettings } from './types.ts';
 
-/** Wire-image headers AgentRouter expects on every request (Content-Type added by POST callers). */
+/** Wire-image headers AgentRouter expects on every request (Content-Type added by POST callers).
+ * The request identifies itself as Tarka: no other client's User-Agent is spoofed (SEC-8). */
 export function agentRouterHeaders(apiKey: string): Record<string, string> {
   return {
     'Authorization': `Bearer ${apiKey}`,
     'x-api-key': apiKey,
-    'User-Agent': 'claude-cli/2.1.158 (external, sdk-cli)',
-    'x-app': 'cli',
     'anthropic-version': '2023-06-01',
     'anthropic-beta': 'claude-code-20250219,interleaved-thinking-2025-05-14',
     'anthropic-dangerous-direct-browser-access': 'true'
@@ -265,9 +264,13 @@ export async function fetchAvailableModels(settings: LlmSettings, forceRefresh =
       if (res.ok) {
         const data: ModelListPayload = await res.json();
         await rememberContextWindows(provider, data.data);
-        // The old code trusted the payload here: an entry with neither id nor name would have been undefined.
-        models = ((data.data || data.models || []) as Array<string | { id?: string; name?: string }>)
-          .map(m => (typeof m === 'string' ? m : (m.id || m.name))).sort() as string[];
+        // The old code trusted the payload here: an entry with neither id nor name would have
+        // been undefined, and a null one threw and took the whole list down with it. Only the
+        // entries that name a model id are kept.
+        models = ((data.data || data.models || []) as unknown[])
+          .map(m => (typeof m === 'string' ? m : (m && typeof m === 'object' ? ((m as { id?: unknown; name?: unknown }).id || (m as { id?: unknown; name?: unknown }).name) : undefined)))
+          .filter((m): m is string => typeof m === 'string' && Boolean(m))
+          .sort();
       }
 
       if (models.length === 0) {

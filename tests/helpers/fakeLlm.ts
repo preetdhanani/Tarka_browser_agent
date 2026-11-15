@@ -15,7 +15,7 @@
  *     JSON.stringify({ action: 'click', element_id: 3 }),                 // step 1
  *     { text: '{"action":"finish","answer":"1.399 EUR"}', delayMs: 20 },  // step 2, a slow reply
  *   ]);
- *   const restore = fl.install(ApiClients);   // replaces ApiClients.generateCompletion
+ *   const restore = fl.install(someClient);    // replaces target.generateCompletion
  *   try { await engine.startTask('...', 101); } finally { restore(); }
  *   fl.calls.length;                          // 3
  *   fl.calls[1].messages.at(-1)?.content;     // what the model saw at step 1
@@ -28,7 +28,6 @@
  *                   text       the answer ('' is a valid, empty answer)
  *                   reasoning  the model's thinking. generateCompletion returns it as
  *                              `<think>...</think>` in front of the text (what the parsers strip);
- *                              the chat model puts it in additional_kwargs.reasoning_content
  *                   delayMs    the reply arrives this many milliseconds later (an abort ends the wait)
  *                   error      the call fails: a string becomes new Error(string), an Error is
  *                              thrown as it is. It excludes text and reasoning
@@ -38,11 +37,8 @@
  *
  * Three surfaces share one script and one call log:
  *   fl.generateCompletion(settings, messages, systemPrompt, { signal, json, schema }) -> string
- *     is what today's engine calls. fl.install(ApiClients) puts it in place and returns the
+ *     is what today's engine calls. fl.install(target) puts it in place and returns the
  *     function that puts back what was there.
- *   fl.chatModel() -> a LangChain BaseChatModel. invoke(messages, { signal }) returns an AIMessage.
- *     The system message becomes systemPrompt, and ChatOllama's `format` call option is recorded
- *     as the schema.
  *   fl.port({ queues }) -> an LlmPort (src/background/runner/runtimeRegistry.ts), the seam of the
  *     graph engine: complete({ node, mode, role, system, messages, schema, signal }) returns
  *     { text, provider, model, meta }. The call is recorded with via 'port' and the extra fields
@@ -81,37 +77,9 @@
 
 import type { LlmPort } from '../../src/background/runner/runtimeRegistry.ts';
 
-export class AIMessage {
-  readonly role = 'assistant';
-  readonly type = 'ai';
-  public additional_kwargs: Record<string, unknown> = {};
-  fields: { content: string; additional_kwargs?: Record<string, unknown> } | string;
-  constructor(fields: { content: string; additional_kwargs?: Record<string, unknown> } | string) {
-    this.fields = fields;
-    if (typeof fields !== 'string' && fields.additional_kwargs) {
-      this.additional_kwargs = fields.additional_kwargs;
-    }
-  }
-  get content(): string {
-    return typeof this.fields === 'string' ? this.fields : this.fields.content;
-  }
-  get text(): string {
-    return this.content;
-  }
-}
 
 export type BaseMessage = { type?: string; role?: string; content?: string; text?: string };
 
-export interface ChatResult {
-  generations: Array<{ text: string; message: AIMessage }>;
-}
-
-export interface BaseChatModelParams {}
-
-export class BaseChatModel<T = any> {
-  ParsedCallOptions!: T;
-  constructor(_params?: BaseChatModelParams) {}
-}
 
 // ---------------------------------------------------------------------------------------------
 // Types
@@ -135,24 +103,22 @@ export type ReplySpec = string | ReplyObject;
 export interface LlmCall {
   /** 0-based position among all calls of this fake, on any surface. */
   index: number;
-  via: 'generateCompletion' | 'chatModel' | 'port';
-  /** generateCompletion only: the settings object it was given (a copy). undefined for the chat model. */
+  via: 'generateCompletion' | 'port';
+  /** generateCompletion only: the settings object it was given (a copy). undefined on the port. */
   settings: unknown;
   /** Every message except the system one(s), as { role, content }. Roles are user, assistant or tool. */
   messages: LlmMessage[];
   /** The system prompt ('' when there is none). */
   systemPrompt: string;
-  /** options.schema of generateCompletion, or the `format` call option of the chat model. null when absent. */
+  /** options.schema of generateCompletion. null when absent. */
   schema: object | null;
-  /** options.json of generateCompletion (false for the chat model). */
+  /** options.json of generateCompletion. */
   json: boolean;
   /** The signal the caller passed, by reference (null when none). */
   signal: AbortSignal | null;
   outcome: 'pending' | 'text' | 'error' | 'aborted';
   /**
    * What the call returned, as generateCompletion returns it: the text, with the model's reasoning in
-   * front as <think>...</think> when the reply has any. The chat model records the same string, though
-   * its AIMessage holds the text alone (the reasoning is in additional_kwargs.reasoning_content).
    */
   reply: string | undefined;
   /** What the call threw. */
@@ -188,7 +154,7 @@ export interface PortOptions {
 export type ReplyEntry = ReplySpec | ((call: LlmCall) => ReplySpec | Promise<ReplySpec>);
 export type LlmScript = ReplyEntry[] | ((call: LlmCall) => ReplySpec | Promise<ReplySpec>);
 
-/** The options of ApiClients.generateCompletion. Other keys are allowed and ignored. */
+/** The options of generateCompletion. Other keys are allowed and ignored. */
 export interface CompletionOptions {
   signal?: AbortSignal | null;
   json?: boolean;
@@ -197,18 +163,11 @@ export interface CompletionOptions {
 }
 export type GenerateCompletion = (settings: unknown, messages: LlmMessage[], systemPrompt: string, options?: CompletionOptions) => Promise<string>;
 
-export interface FakeChatCallOptions {
-  /** ChatOllama's constrained-decoding schema. Recorded as call.schema. */
-  format?: object;
-  signal?: AbortSignal;
-}
 
 export interface FakeLlm {
-  /** The stand-in for ApiClients.generateCompletion. */
+  /** The stand-in for generateCompletion. */
   readonly generateCompletion: GenerateCompletion;
-  /** A LangChain chat model over the same script and call log. Each call returns a new one. */
-  chatModel(params?: BaseChatModelParams): BaseChatModel<FakeChatCallOptions>;
-  /** Put generateCompletion on target (ApiClients). Returns the function that puts back what was there. */
+  /** Put generateCompletion on a target object. Returns the function that puts back what was there. */
   install(target: { generateCompletion: unknown }): () => void;
   /** A stand-in for the graph's LlmPort over the same script and call log. See the header comment. */
   port(options?: PortOptions): LlmPort;
@@ -323,52 +282,10 @@ function preview(messages: LlmMessage[]): string {
   return JSON.stringify(last.length > 80 ? `${last.slice(0, 80)}...` : last);
 }
 
-// ---------------------------------------------------------------------------------------------
-// The chat model
-// ---------------------------------------------------------------------------------------------
-
 type CallInput = Pick<LlmCall, 'via' | 'settings' | 'messages' | 'systemPrompt' | 'schema' | 'json' | 'signal'> &
   Partial<Pick<LlmCall, 'node' | 'mode' | 'role' | 'system'>>;
 type Run = (input: CallInput) => Promise<Answer>;
 
-const ROLES: Record<string, string> = { human: 'user', ai: 'assistant', system: 'system', tool: 'tool' };
-
-function textOf(message: BaseMessage): string {
-  return typeof message.content === 'string' ? message.content : (message.text ?? '');
-}
-
-class FakeChatModel extends BaseChatModel<FakeChatCallOptions> {
-  #run: Run;
-
-  constructor(run: Run, params: BaseChatModelParams = {}) {
-    super(params);
-    this.#run = run;
-  }
-
-  _llmType(): string {
-    return 'fake-llm';
-  }
-
-  async _generate(messages: BaseMessage[], options: FakeChatCallOptions = {}): Promise<ChatResult> {
-    const system = messages.filter((m) => m.type === 'system');
-    const rest = messages.filter((m) => m.type !== 'system');
-    const answer = await this.#run({
-      via: 'chatModel',
-      settings: undefined,
-      messages: rest.map((m) => ({ role: (m.type && ROLES[m.type]) || m.type || 'user', content: textOf(m) })),
-      systemPrompt: system.map(textOf).join('\n'),
-      schema: options.format ?? null,
-      json: false,
-      signal: options.signal ?? null,
-    });
-    if (answer.error) throw answer.error;
-    const message = new AIMessage({
-      content: answer.text,
-      additional_kwargs: answer.reasoning === undefined ? {} : { reasoning_content: answer.reasoning },
-    });
-    return { generations: [{ text: answer.text, message }] };
-  }
-}
 
 // ---------------------------------------------------------------------------------------------
 // The fake
@@ -546,7 +463,6 @@ export function fakeLlm(script: LlmScript = []): FakeLlm {
 
   return {
     generateCompletion,
-    chatModel: (params) => new FakeChatModel(run, params),
     install: (target) => {
       const previous = target.generateCompletion;
       target.generateCompletion = generateCompletion;

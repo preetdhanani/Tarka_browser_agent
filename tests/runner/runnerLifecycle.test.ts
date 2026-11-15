@@ -6,6 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AgentRunner } from '../../src/background/runner/AgentRunner.ts';
 import { TarkaMCPClient } from '../../src/background/mcp/client.ts';
+import { finishEntry } from '../../src/background/mcp/historyEntries.ts';
 import { cdp } from '../../src/background/browser/cdp.ts';
 import { fakeChrome } from '../helpers/fakeChrome.ts';
 
@@ -76,13 +77,20 @@ test('a runner is not kept alive by a global map nothing reads', () => {
   }
 });
 
-test('network requests the content script records are kept for the tab', () => {
-  const restore = fakeChrome({ storage: true }).install();
-  try {
-    const runner = new AgentRunner(206, 'default');
-    runner.recordNetworkRequest(206, { url: 'https://a.test/api', method: 'GET', status: 200 } as any);
-    assert.equal(runner.networkBuffers.has(206), true);
-  } finally {
-    restore();
+test('getState carries no always-null legacy keys after a start and finish cycle', async (t) => {
+  const restore = fakeChrome({ storage: true, tabs: { list: [{ id: 207, url: 'https://a.test', title: 'A', windowId: 1 }] } }).install();
+  t.after(restore);
+  t.mock.method(cdp, 'detach', async () => {});
+  const runner = new AgentRunner(207, 'default');
+  runner.claimForTask();
+  t.mock.method(TarkaMCPClient.prototype, 'startTask', async function () {
+    runner.setRunStatus('running');
+  });
+  await runner.startTask('Read the page', 207);
+  assert.equal(runner.status, 'running', 'the cycle started');
+  runner.endRun('idle', finishEntry('Done.'));
+  const state = runner.getState();
+  for (const key of ['pendingQuestion', 'pendingChallengeHelp', 'pendingContinueBudget', 'budget', 'findings']) {
+    assert.equal(key in state, false, `the legacy key "${key}" stays deleted from getState()`);
   }
 });

@@ -12,6 +12,12 @@ function short(value: unknown, max = 80): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+/** True when both values are real numbers, so a point on a screenshot can be named. */
+function isPoint(x: unknown, y: unknown): boolean {
+  const real = (v: unknown) => v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v));
+  return real(x) && real(y);
+}
+
 /**
  * @param tool    the tool the model called
  * @param args    its arguments
@@ -27,7 +33,9 @@ export function describeStep(tool: string, args: Record<string, any> = {}, label
     case 'click':
       what = args.element_id !== undefined && args.element_id !== null
         ? `Clicking ${element(args.element_id)}`
-        : `Clicking at (${args.x}, ${args.y}) on the screenshot`;
+        : isPoint(args.x, args.y)
+          ? `Clicking at (${args.x}, ${args.y}) on the screenshot`
+          : 'Clicking at a point on the screenshot';
       break;
     case 'type': {
       const into = args.element_id !== undefined && args.element_id !== null ? element(args.element_id) : 'the focused element';
@@ -42,7 +50,7 @@ export function describeStep(tool: string, args: Record<string, any> = {}, label
       break;
     }
     case 'scroll':
-      what = `Scrolling ${args.direction || 'down'}${args.element_id !== undefined && args.element_id !== null ? ` the area of ${element(args.element_id)}` : args.x !== undefined && args.y !== undefined ? ` at (${args.x}, ${args.y}) on the screenshot` : ''}`;
+      what = `Scrolling ${args.direction || 'down'}${args.element_id !== undefined && args.element_id !== null ? ` the area of ${element(args.element_id)}` : isPoint(args.x, args.y) ? ` at (${args.x}, ${args.y}) on the screenshot` : ''}`;
       break;
     case 'read_page': {
       const part = Number.isInteger(args.part) && args.part > 1 ? ` (part ${args.part})` : '';

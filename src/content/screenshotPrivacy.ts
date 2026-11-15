@@ -17,13 +17,21 @@
  *      coordinate has to ask the page the same question.
  */
 
-import { computeFieldKind } from './perception.ts';
+import { computeFieldKind, computeFormTarget, isSubmitControl, MASKED_FIELD_KINDS } from './perception.ts';
 
 /** The id of the layer the masks are drawn in. */
 export const MASK_LAYER_ID = 'tarka-shot-mask';
 
-/** The field kinds the text path refuses to read, and the picture must not show. */
-const MASKED_FIELD_KINDS = new Set(['password', 'cc', 'otp']);
+/**
+ * How far a covered field may drift from the rect its cover was drawn at before the hold check
+ * fails, in CSS pixels. Sub-pixel rounding on high-density displays and a few pixels of scroll
+ * jitter between the mask and the capture must not throw a good picture away; more than this
+ * means a strip of the field is exposed, so the picture is thrown away.
+ */
+export const MASK_HOLD_TOLERANCE_PX = 4;
+
+/** The field kinds the text path refuses to read, and the picture must not show. Defined once, in perception.ts. */
+export { MASKED_FIELD_KINDS };
 
 /** The kinds, in the words a person reads, for the refusal message. */
 const FIELD_KIND_WORDS: Record<string, string> = {
@@ -42,7 +50,15 @@ export interface PointDescription {
   interactive: boolean;
   /** The field kind when the point is on a masked field, which refuses the click. */
   fieldKind?: string;
+  /** Whether the element submits its form, and where that form sends: the confirmation gate reads these. */
+  isSubmitControl?: boolean;
+  formTarget?: { formActionHost?: string; formMethod?: 'get' };
+  formHasMaskedField?: boolean;
 }
+
+/** The marker a masked field answers with instead of its content: only whether it holds anything.
+ * Must match REDACTED_MARKER in content/content.js and REDACTED_FIELD_MARKER in the server. */
+export const REDACTED_MARKER = '[REDACTED: populated]';
 
 /** A short description of an element: tag, id, class, and a little of its text. */
 export function describePointElement(el: Element | null): string {
@@ -57,10 +73,19 @@ export function describePointElement(el: Element | null): string {
     const cls = typeof el.className === 'string' ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 2).join('.') : '';
     if (cls) out += `.${cls}`;
   }
+  // A masked field (password, card, one-time code) never describes itself with its value: the
+  // value slot of the label chain becomes the redaction marker, so a filled field reads as
+  // holding something without saying what. A name (aria-label, placeholder) still names it.
+  const kind = computeFieldKind(el, tag, tag === 'input' ? (el as HTMLInputElement).type : '');
+  const masked = !!kind && MASKED_FIELD_KINDS.has(kind);
+  const rawValue = (el as HTMLInputElement).value;
+  const valueSlot = masked
+    ? (typeof rawValue === 'string' && rawValue ? REDACTED_MARKER : '')
+    : rawValue;
   const label = (
     el.getAttribute?.('aria-label')
     || (el as HTMLInputElement).innerText
-    || (el as HTMLInputElement).value
+    || valueSlot
     || el.getAttribute?.('placeholder')
     || el.textContent
     || ''
@@ -94,9 +119,10 @@ export function isInteractiveElement(el: Element | null): boolean {
 /**
  * The element a click at a viewport point lands on. elementFromPoint stops at a shadow host; the
  * click lands on what is inside it, so that is what is described and checked (a page built from
- * web components would otherwise be one host).
+ * web components would otherwise be one host). Exported because the scroll path needs the same
+ * deep answer: a point scroll into a web component must pick the panel inside the host.
  */
-function deepHit(doc: Doc, x: number, y: number): Element | null {
+export function deepHit(doc: Doc, x: number, y: number): Element | null {
   let hit = typeof doc.elementFromPoint === 'function' ? doc.elementFromPoint(x, y) : null;
   for (let depth = 0; hit?.shadowRoot && typeof hit.shadowRoot.elementFromPoint === 'function' && depth < 32; depth++) {
     const inner = hit.shadowRoot.elementFromPoint(x, y);
@@ -200,10 +226,31 @@ export function describePoint(doc: Doc, x: number, y: number): PointDescription 
   const type = tag === 'input' ? (hit as HTMLInputElement).type : '';
   const kind = computeFieldKind(hit, tag, type);
   const maskedKind = kind && MASKED_FIELD_KINDS.has(kind) ? kind : undefined;
+  // The form facts of the hit, for the confirmation gate: whether it submits its form, where that
+  // form sends, and whether the form holds a masked field.
+  const submits = isSubmitControl(hit, tag, type);
+  const formTarget = computeFormTarget(hit, doc.defaultView?.location?.href);
+  let formHasMaskedField = false;
+  const form = typeof hit.closest === 'function' ? hit.closest('form') : null;
+  if (form && typeof form.querySelectorAll === 'function') {
+    try {
+      for (const field of Array.from(form.querySelectorAll('input, textarea'))) {
+        const fieldTag = (field.tagName || '').toLowerCase();
+        const fieldType = fieldTag === 'input' ? (field as HTMLInputElement).type : '';
+        const fieldKind = computeFieldKind(field, fieldTag, fieldType);
+        if (fieldKind && MASKED_FIELD_KINDS.has(fieldKind)) { formHasMaskedField = true; break; }
+      }
+    } catch (_) {
+      formHasMaskedField = false;
+    }
+  }
   return {
     what,
     interactive: isInteractiveElement(hit),
-    ...(maskedKind ? { fieldKind: maskedKind } : {})
+    ...(maskedKind ? { fieldKind: maskedKind } : {}),
+    ...(submits ? { isSubmitControl: true } : {}),
+    ...(Object.keys(formTarget).length ? { formTarget } : {}),
+    ...(formHasMaskedField ? { formHasMaskedField: true } : {}),
   };
 }
 
@@ -312,9 +359,16 @@ function walkSensitive(doc: Doc, onField: (el: Element, rect: Rect, kind: string
 
 /**
  * What the last mask walk covered or let through in each document, so the check after the capture
- * can tell a field or frame that appeared since (it was in the picture uncovered).
+ * can tell a field or frame that appeared since (it was in the picture uncovered), a cover that
+ * was taken down or hidden since, or a field that moved out from under its cover.
  */
-const seenAtMask = new WeakMap<Doc, { fields: WeakSet<Element>; frames: WeakSet<Element>; layer: HTMLElement | null }>();
+const seenAtMask = new WeakMap<Doc, {
+  fields: WeakSet<Element>;
+  frames: WeakSet<Element>;
+  layer: HTMLElement | null;
+  /** The cover drawn for each field and unreadable frame, with the rect it was drawn at. */
+  covers: Array<{ el: Element; box: HTMLElement; rect: Rect }>;
+}>();
 
 /**
  * Draws the covers over the sensitive fields and the cross-origin iframes, and returns the layer
@@ -346,8 +400,8 @@ export function maskSensitiveFields(doc: Doc, win?: Window, shown: FrameShown = 
   const parent = doc.body || doc.documentElement;
   if (!parent) return null;
 
-  const cover = (rect: Rect, label: string) => {
-    if (rect.width <= 0 || rect.height <= 0) return;
+  const cover = (rect: Rect, label: string): HTMLElement | null => {
+    if (rect.width <= 0 || rect.height <= 0) return null;
     const box = doc.createElement('div');
     box.className = 'tarka-shot-mask';
     box.setAttribute('data-mask', label);
@@ -362,16 +416,23 @@ export function maskSensitiveFields(doc: Doc, win?: Window, shown: FrameShown = 
     box.style.borderRadius = '2px';
     box.style.boxShadow = 'inset 0 0 0 1px rgba(255,255,255,0.18)';
     layer.appendChild(box);
+    return box;
   };
 
-  const seen = { fields: new WeakSet<Element>(), frames: new WeakSet<Element>(), layer: null as HTMLElement | null };
+  const seen = {
+    fields: new WeakSet<Element>(),
+    frames: new WeakSet<Element>(),
+    layer: null as HTMLElement | null,
+    covers: [] as Array<{ el: Element; box: HTMLElement; rect: Rect }>
+  };
   // The mask over an unreadable frame that no agent vouched for is the whole rectangle, which means
   // the model cannot see anything inside it. That trade-off is stated in docs/screenshot.md.
   walkSensitive(
     doc,
     (el, rect, kind) => {
       seen.fields.add(el);
-      cover(rect, kind);
+      const box = cover(rect, kind);
+      if (box) seen.covers.push({ el, box, rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height } });
     },
     (frame, rect) => {
       seen.frames.add(frame);
@@ -381,7 +442,10 @@ export function maskSensitiveFields(doc: Doc, win?: Window, shown: FrameShown = 
       } catch (_) {
         vouched = false;
       }
-      if (!vouched) cover(rect, 'iframe');
+      if (!vouched) {
+        const box = cover(rect, 'iframe');
+        if (box) seen.covers.push({ el: frame, box, rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height } });
+      }
     }
   );
 
@@ -397,25 +461,53 @@ export function maskSensitiveFields(doc: Doc, win?: Window, shown: FrameShown = 
   return seen.layer;
 }
 
+/** Whether a rect still sits (within MASK_HOLD_TOLERANCE_PX) under the rect its cover was drawn at. */
+function sitsUnderCover(rect: Rect, cover: Rect): boolean {
+  const tol = MASK_HOLD_TOLERANCE_PX;
+  return rect.left >= cover.left - tol
+    && rect.top >= cover.top - tol
+    && rect.left + rect.width <= cover.left + cover.width + tol
+    && rect.top + rect.height <= cover.top + cover.height + tol;
+}
+
 /**
- * After the capture: do the covers drawn by the last maskSensitiveFields still hold? False when no
- * mask walk ran in this document, when the layer was taken out of the page, or when a sensitive
- * field or an unreadable iframe exists now that the walk did not see (it was in the picture with
- * no cover). A false throws the picture away.
+ * After the capture: do the covers drawn by the last maskSensitiveFields still hold? False when
+ * no mask walk ran in this document, when the layer was taken out of the page, when a cover was
+ * removed or hidden since (the page took it down), when a covered field or frame moved out from
+ * under its cover (the cover is position:fixed, so a scroll leaves it behind), or when a
+ * sensitive field or an unreadable iframe exists now that the walk did not see (it was in the
+ * picture with no cover). A false throws the picture away.
  */
 export function masksStillHold(doc: Doc): boolean {
   if (!doc) return false;
   const seen = seenAtMask.get(doc);
   if (!seen) return false;
   if (seen.layer && (seen.layer.isConnected === false || (typeof doc.contains === 'function' && !doc.contains(seen.layer)))) return false;
+  // Every recorded cover must still be in the page and visible: a cover that was removed or
+  // hidden since the mask leaves what it held in the picture.
+  for (const record of seen.covers) {
+    const box = record.box as HTMLElement & { isConnected?: boolean };
+    if (!box || box.isConnected === false || (typeof doc.contains === 'function' && !doc.contains(box))) return false;
+    const style = box.style || ({} as CSSStyleDeclaration);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  }
+  // And every covered field and frame must still sit under its cover. The walk re-reads each
+  // rect in the same page coordinates the mask recorded, so a scroll, a reflow or a resize that
+  // bared part of a field is caught here.
+  const coverOf = new Map<Element, { box: HTMLElement; rect: Rect }>();
+  for (const record of seen.covers) coverOf.set(record.el, record);
   let holds = true;
   walkSensitive(
     doc,
-    (el) => {
-      if (!seen.fields.has(el)) holds = false;
+    (el, rect) => {
+      if (!seen.fields.has(el)) { holds = false; return; }
+      const record = coverOf.get(el);
+      if (record && !sitsUnderCover(rect, record.rect)) holds = false;
     },
-    (frame) => {
-      if (!seen.frames.has(frame)) holds = false;
+    (frame, rect) => {
+      if (!seen.frames.has(frame)) { holds = false; return; }
+      const record = coverOf.get(frame);
+      if (record && !sitsUnderCover(rect, record.rect)) holds = false;
     }
   );
   return holds;

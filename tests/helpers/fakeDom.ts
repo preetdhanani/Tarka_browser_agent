@@ -561,6 +561,46 @@ function elementInfoOf(el: ElementSpec, s: SnapshotElement, pageUrl: string): Re
   };
 }
 
+/**
+ * The security facts of one element for the gate (SEC-2), from what a description can say:
+ * the masked kind, whether it submits its form, where that form sends (the host of `goes`, when
+ * it is another host than the page's), and whether the form holds a masked field.
+ */
+function securityFactsOfSpec(el: ElementSpec, doc: { page: { url?: string }; elements: ElementSpec[] }): Record<string, any> {
+  const tagName = el.tag.toLowerCase();
+  const facts: Record<string, any> = {
+    fieldKind: computeFieldKind(el),
+    isSubmitControl: Boolean(el.form && ((tagName === 'button' && ((el.type ?? '') === '' || (el.type ?? '') === 'submit')) || (tagName === 'input' && ((el.type ?? '') === 'submit' || (el.type ?? '') === 'image')))),
+    formTarget: {},
+    formHasMaskedField: false,
+    label: el.text ? `${tagName} "${el.text}"` : tagName,
+    text: el.text || '',
+  };
+  if (facts.isSubmitControl && el.goes) {
+    try {
+      const target = new URL(el.goes);
+      const here = new URL(doc.page.url || 'https://localhost/');
+      if ((target.protocol === 'http:' || target.protocol === 'https:') && target.hostname.toLowerCase() !== here.hostname.toLowerCase()) {
+        facts.formTarget = { formActionHost: target.hostname.toLowerCase() };
+      }
+    } catch {
+      // A goes that is no URL sends nowhere the fake can name.
+    }
+  }
+  if (el.form) {
+    // The fake's elements carry only the form's kind, so "the form holds a masked field" is
+    // modelled page-wide: any masked-kind element in a form of the same kind.
+    const kind = el.form;
+    facts.formHasMaskedField = (currentElementsOf(doc) as ElementSpec[]).some((other) => other.form === kind && computeFieldKind(other) !== undefined && ['password', 'cc', 'otp'].includes(String(computeFieldKind(other))));
+  }
+  return facts;
+}
+
+/** The elements of the page a doc currently serves (the listed window and the found ones). */
+function currentElementsOf(doc: { elements: ElementSpec[] }): ElementSpec[] {
+  return doc.elements;
+}
+
 /** The nth-of-type of every element among its same-tag siblings in document order, as cssPath needs it. */
 function nthOfElements(elements: ElementSpec[]): Map<ElementSpec, number> {
   const nthSeen = new Map<string, number>();
@@ -935,7 +975,33 @@ export function fakeDom(options: FakeDomOptions): FakeDom {
             success: true,
             point: { x: 100, y: 100 },
             tag: el.tag.toLowerCase(),
-            text: el.text || ''
+            text: el.text || '',
+            ...securityFactsOfSpec(el, doc),
+          };
+        },
+        ELEMENT_SECURITY: (message) => {
+          const payload = isObject(message) && isObject(message.payload) ? message.payload : {};
+          const doc = docOf(host, tabId);
+          const id = typeof payload.element_id === 'number' ? payload.element_id : undefined;
+          const el = id !== undefined && id >= 1 && id <= doc.listed.length ? doc.listed[id - 1] : undefined;
+          if (!el) {
+            return { success: false, error: `Element [${id}] not found.` };
+          }
+          return { success: true, tag: el.tag.toLowerCase(), ...securityFactsOfSpec(el, doc) };
+        },
+        VERIFY_CLICK_POINT: (message) => {
+          const payload = isObject(message) && isObject(message.payload) ? message.payload : {};
+          const doc = docOf(host, tabId);
+          const id = typeof payload.element_id === 'number' ? payload.element_id : undefined;
+          const el = id !== undefined && id >= 1 && id <= doc.listed.length ? doc.listed[id - 1] : undefined;
+          // The fake's point (100, 100) always hits the resolved element itself, so withinTarget
+          // is true unless the element is gone.
+          return {
+            success: true,
+            what: el ? `${el.tag.toLowerCase()}${el.text ? ` "${el.text}"` : ''}` : 'nothing',
+            hitTag: el ? el.tag.toLowerCase() : '',
+            ...(el ? securityFactsOfSpec(el, doc) : {}),
+            withinTarget: !!el,
           };
         },
         EFFECT_PROBE_BEGIN: () => ({ success: true }),

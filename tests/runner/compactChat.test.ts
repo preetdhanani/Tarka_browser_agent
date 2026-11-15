@@ -137,7 +137,7 @@ test('the meter: 0 when empty, the next request between runs, the last call duri
 
 test('the token counts of a task are kept in runStats and in the snapshot', async (t) => {
   const { runner } = await runnerWithTurns(t, 0);
-  runner.runStats = { level: 'medium', modelCalls: 0, stepsUsed: 0, tokensIn: 0, tokensOut: 0, sitesDone: 0, sitesPartial: 0, elapsedMs: 0 };
+  runner.runStats = { level: 'medium', modelCalls: 0, stepsUsed: 0, tokensIn: 0, tokensOut: 0 };
   runner.setRunStatus('running');
   runner.noteUsage({ promptTokens: 1000, outputTokens: 20, estimated: false });
   runner.noteUsage({ promptTokens: 1500, outputTokens: 30, estimated: true });

@@ -10,7 +10,7 @@
 // storage.session survives worker restarts but not a browser restart; Recent tasks (the panel's
 // storage.local list) is the long-term record. Its quota (10 MB) is shared by every tab, so one
 // thread is held to RUN_SNAPSHOT_MAX_CHARS.
-import type { StorageSessionArea } from './actionJournal.ts';
+import type { StorageSessionArea } from './runnerMeta.ts';
 import type { HistoryEntry, RunStats, RunStatus } from '../types.ts';
 import { Logger } from '../../shared/logger.ts';
 
@@ -20,7 +20,7 @@ export interface RunSnapshot {
   history: HistoryEntry[];
   planSteps: Array<{ text: string; status: string }>;
   stepCount: number;
-  pauseReason: 'user' | 'llm_failure' | 'worker_restart' | null;
+  pauseReason: 'user' | null;
   stateVersion: number;
   /** The tokens of the last model call of the task, for the context meter (absent in older snapshots). */
   lastCall?: { promptTokens: number; outputTokens: number; estimated: boolean } | null;
@@ -53,12 +53,14 @@ export const CLOSED_TEXT = 'The run was cut off when the browser or panel closed
 
 /**
  * What a turn's closing row keeps of its run, so the chat can go on from it later: the save_data
- * records (on any closing row), and for a turn that ended unfinished its plan and its last page.
+ * records (on any closing row), the run's counts (W2-R4, the panel's stats card), and for a turn
+ * that ended unfinished its plan and its last page.
  */
-export function withRunData(row: HistoryEntry, data: { records?: Array<Record<string, unknown>>; planSteps?: Array<{ text: string; status: string }>; pageUrl?: string }): HistoryEntry {
+export function withRunData(row: HistoryEntry, data: { records?: Array<Record<string, unknown>>; planSteps?: Array<{ text: string; status: string }>; pageUrl?: string; runStats?: RunStats | null }): HistoryEntry {
   if (row.type !== 'finish' && row.type !== 'partial_result') return row;
   const out: any = { ...row };
   if (data.records && data.records.length) out.records = data.records.slice();
+  if (data.runStats) out.runStats = { ...data.runStats };
   if (row.type === 'partial_result') {
     if (data.planSteps && data.planSteps.length) out.plan = data.planSteps.map((s) => ({ text: String(s.text), status: String(s.status) }));
     if (data.pageUrl) out.pageUrl = data.pageUrl;
@@ -136,7 +138,7 @@ export function fitSnapshot(snapshot: RunSnapshot, maxChars = RUN_SNAPSHOT_MAX_C
 export function restoredRun(snapshot: RunSnapshot): RunSnapshot {
   if (snapshot.status !== 'running' && snapshot.status !== 'paused') return snapshot;
   const finalRow = withRunData({ type: 'partial_result', answer: INTERRUPTED_TEXT, table: null, reason: 'interrupted' },
-    { records: snapshot.records, planSteps: snapshot.planSteps, pageUrl: snapshot.pageUrl });
+    { records: snapshot.records, planSteps: snapshot.planSteps, pageUrl: snapshot.pageUrl, runStats: snapshot.runStats });
   return {
     ...snapshot,
     status: 'stopped',

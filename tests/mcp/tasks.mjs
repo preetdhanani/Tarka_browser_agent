@@ -1,9 +1,9 @@
 /**
  * The smoke tasks: the real-model e2e tasks, where a real model (LISA by default) acts in a real
  * Chromium through the built extension. The open-web ones start on a neutral page and give only a
- * question, and the model picks and opens every real website itself. Four run on local fixture pages
- * (tests/fixtures/site/notebook.html and credentials.html) that only a real model can do justice; two
- * of them (web-chat-chain, web-resume-chat) have a second turn in the same chat.
+ * question, and the model picks and opens every real website itself. Five run on local fixture pages
+ * (tests/fixtures/site/notebook.html, credentials.html and cookie-banner.html) that only a real model
+ * can do justice; two of them (web-chat-chain, web-resume-chat) have a second turn in the same chat.
  * Every task has a `check` that reads the facts of the run (the final answer first) and says whether
  * the run was right, so a run that "finishes" with a wrong answer is not a pass.
  *
@@ -31,7 +31,8 @@
  *   restartWorker  true = after the run the harness stops the service worker, wakes a new one, and
  *               the real side panel must still show the finished run
  *   web         true = a real-model task: an open-web task (a neutral start page and only a question), or
- *               a local fixture task (web-notebook-fix, web-credentials-json, web-chat-chain, web-resume-chat). The default set of a run
+ *               a local fixture task (web-notebook-fix, web-credentials-json, web-chat-chain, web-resume-chat,
+ *               web-cookie-accept). The default set of a run
  *   heldOut     true = a held-out open-web task: run only with --held-out, never tuned against
  *   sealed      true = a sealed open-web task: run only with --sealed, which shows its verdict and numbers
  *               but never its trace (see the sealed tasks below)
@@ -168,6 +169,25 @@ export async function notebookPageProblems(page) {
   if (!(Number(state.runs) >= 1)) problems.push('cell 14 was never run with a trusted Shift+Enter');
   if (state.out !== 'ollama version 0.40.11') problems.push(`the output of cell 14 is ${JSON.stringify(state.out)}, expected "ollama version 0.40.11"`);
   return problems;
+}
+
+/** The consent cookie the Accept button of tests/fixtures/site/cookie-banner.html sets (document.cookie). */
+export const COOKIE_CONSENT_NAME = 'cookie_consent';
+
+/**
+ * What cookie-banner.html must show after a run that accepted the banner: the consent cookie the
+ * banner's own "Accept all" button set, with the value that says all. page.cookies() reads the
+ * cookies of the page the tab ended on, so the check is the page's own evidence and not a history
+ * row. The banner's other button would leave "essential" and is named in the problem.
+ *
+ * @param {import('puppeteer-core').Page} page  the puppeteer page of the task's tab, before it closes
+ */
+export async function cookieBannerPageProblems(page) {
+  const cookies = await page.cookies();
+  const consent = cookies.find((c) => c.name === COOKIE_CONSENT_NAME);
+  if (!consent) return ['the cookie banner was never accepted: the fixture page has no cookie_consent cookie'];
+  if (consent.value !== 'all') return [`the consent cookie holds ${JSON.stringify(consent.value)}, expected "all": the banner's "Accept all cookies" button was not the one pressed`];
+  return [];
 }
 
 /** The steps of a run that read or look at the page: a follow-up that answers from the chat makes none. */
@@ -406,19 +426,16 @@ export const TASKS = {
   },
   'web-cookie-accept': {
     // The cookie banner is the obstacle the user saw the agent fail on: the click landed next to
-    // the button. Stack Overflow's banner sets a consent cookie from its own button handler, so the
-    // page proves the click, whatever the history says.
-    page: WEB_START,
+    // the button. It runs on the local fixture (cookie-banner.html) since 2026-11-15: the
+    // stackoverflow.com version could never pass, because the site's bot wall refuses an automated
+    // browser and the agent must refuse bot checks by design. The fixture's own Accept button sets
+    // the consent cookie with document.cookie, so the page proves the click, whatever the history says.
+    page: 'cookie-banner.html',
     web: true,
-    prompt: 'Open stackoverflow.com, accept all cookies in its cookie banner, and tell me the title of the first question in the list on the page.',
+    prompt: 'This page put a cookie banner over its article. Accept all cookies to dismiss it, and tell me the headline of the article underneath.',
     timeoutMs: 6 * 60 * 1000,
-    expectPage: async (page) => {
-      const cookies = await page.cookies('https://stackoverflow.com/');
-      return cookies.some((c) => c.name === 'OptanonAlertBoxClosed')
-        ? []
-        : ['the cookie banner was never accepted: stackoverflow.com has no OptanonAlertBoxClosed cookie'];
-    },
-    check: (run) => (run.answer || '').length > 15
+    expectPage: cookieBannerPageProblems,
+    check: (run) => /lighthouse/i.test(run.answer || '')
   },
 
   // Held-out open-web tasks (`--held-out`). Nothing in the engine, the prompts or the tools is ever

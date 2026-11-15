@@ -103,11 +103,18 @@ test('agent_router lists <base>/v1/models with its own headers, and falls back o
   const sent = spyFetch(t, () => jsonResponse({ data: [{ id: 'claude-x' }, 'plain-name'] }));
   assert.deepEqual(await fetchAvailableModels({ provider: 'agent_router', apiKey: 'k' }, true), ['claude-x', 'plain-name'].sort());
   assert.equal(sent[0].url, 'https://agentrouter.org/v1/models');
-  assert.equal(sent[0].headers['x-app'], 'cli');
+  assert.equal(sent[0].headers['x-app'], undefined, 'no client impersonation (SEC-8)');
   assert.equal(sent[0].headers.authorization, 'Bearer k');
 
   spyFetch(t, () => new Response('nope', { status: 403 }));
   assert.deepEqual(await fetchAvailableModels({ provider: 'agent_router', apiKey: 'k' }, true), getFallbackModels('agent_router'));
+});
+
+test('agent_router: entries that are no string and name no id are dropped, not kept as undefined', async (t) => {
+  // The payload may mix shapes (a bare id, {id}, {name}); a number or an object with neither
+  // must not become an `undefined` entry in the picker and in the cache.
+  spyFetch(t, () => jsonResponse({ data: [{ id: 'claude-x' }, 42, null, { name: 'plain-name' }, {}, 'bare-id'] }));
+  assert.deepEqual(await fetchAvailableModels({ provider: 'agent_router', apiKey: 'k' }, true), ['bare-id', 'claude-x', 'plain-name']);
 });
 
 test('gemini lists the models that can generateContent, without the models/ prefix, and needs a key for a live list', async (t) => {

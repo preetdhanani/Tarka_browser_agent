@@ -29,6 +29,22 @@ export const CUSTOM_TRIGGER_VALUE = '__custom_provider__';
 /** The honest empty state of the model picker, word for word from the mock. */
 export const CUSTOM_EMPTY_MODELS_TEXT = 'No models will be shown in the selector. Unlisted IDs can still be sent directly.';
 
+/**
+ * The built-in provider ids and the label their dropdown option shows. The run chip and the
+ * toasts name a provider the way the picker does, so a raw id like "openai_compatible" is never
+ * shown to the user. Keep in step with the <option> list in sidepanel.html.
+ */
+const BUILTIN_PROVIDER_LABELS = {
+  openrouter: 'OpenRouter API',
+  agent_router: 'Agent Router API',
+  gemini: 'Google Gemini API',
+  ollama: 'Ollama (Local Host)',
+  openai_compatible: 'OpenAI-Compatible (Groq, vLLM, LM Studio, Llama API)',
+  openai: 'OpenAI Official',
+  anthropic: 'Anthropic (Claude)',
+  nvidia: 'NVIDIA NIM (build.nvidia.com)'
+};
+
 function escapeHtml(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
@@ -74,7 +90,7 @@ export function providerMeta(providerId, settings) {
   return {
     isCustom: false,
     exists: Boolean(builtin),
-    displayName: providerId,
+    displayName: BUILTIN_PROVIDER_LABELS[providerId] || providerId,
     baseUrl: cfg.baseUrl || (builtin ? builtin.baseUrl : ''),
     apiKey: cfg.apiKey || '',
     savedModel: cfg.model || '',
@@ -136,6 +152,20 @@ export function previewUrls(protocol, baseUrl) {
 }
 
 /** The inline note for a plain-HTTP base URL that is not a local or private address. */
+/** Whether this base URL is a plain-http, non-loopback address the security gate asks about (SEC-9). */
+export function isPlainHttpNeedingOptIn(baseUrl) {
+  let parsed;
+  try {
+    parsed = new URL(String(baseUrl || '').trim());
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:') return false;
+  const host = parsed.hostname;
+  const loopback = host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]' || host.endsWith('.localhost');
+  return !loopback;
+}
+
 export function describePrivateHttpHost(baseUrl) {
   let parsed;
   try {
@@ -224,6 +254,9 @@ export function initCustomProviderDialog(deps) {
     el('cpApiKeyInput').value = cfg.apiKey || '';
     el('cpModelAddInput').value = '';
     el('cpTimeoutInput').value = descriptor && descriptor.llmTimeoutMs ? String(descriptor.llmTimeoutMs) : '';
+    // SEC-9: the plain-http opt-in belongs to this server, so an edit shows the state it was
+    // saved with; un-ticking it and saving drops the opt-in again.
+    el('cpAllowHttpInput').checked = descriptor?.allowInsecureHttp === true;
     el('cpError').style.display = 'none';
     el('cpError').textContent = '';
     el('cpTestStatus').textContent = '';
@@ -272,6 +305,11 @@ export function initCustomProviderDialog(deps) {
     const httpNote = describePrivateHttpHost(base);
     el('cpHttpWarning').style.display = httpNote ? 'block' : 'none';
     el('cpHttpWarning').textContent = httpNote || '';
+    // SEC-9: the explicit opt-in for a key-bearing plain-http endpoint on a public host. The
+    // storage gate refuses the save without it.
+    const httpNeedsOptIn = isPlainHttpNeedingOptIn(base);
+    el('cpAllowHttpRow').style.display = httpNeedsOptIn ? 'flex' : 'none';
+    if (!httpNeedsOptIn) el('cpAllowHttpInput').checked = false;
 
     // The origin rule, shown where the user can still react to it: an edit that changes the
     // endpoint origin will clear the stored key on save.
@@ -467,7 +505,8 @@ export function initCustomProviderDialog(deps) {
       models: state.models,
       apiKey: el('cpApiKeyInput').value.trim(),
       keyMode: state.keyMode,
-      llmTimeoutMs: parseInt(el('cpTimeoutInput').value, 10) || undefined
+      llmTimeoutMs: parseInt(el('cpTimeoutInput').value, 10) || undefined,
+      allowInsecureHttp: el('cpAllowHttpInput').checked === true
     };
     const idError = validateProviderIdInput(input.id, state.mode === 'edit' ? ids().filter((x) => x !== state.providerId) : ids());
     if (idError && state.mode === 'add') {

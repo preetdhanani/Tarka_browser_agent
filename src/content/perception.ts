@@ -3,6 +3,8 @@
  * Computes ARIA roles, field kinds, form kinds, and produces byte-compatible element summaries.
  */
 
+import { MASKED_FIELD_KINDS } from '../shared/maskedFields.ts';
+
 export interface ElementLocator {
   index: number;
   tag: string;
@@ -92,11 +94,30 @@ export function computeFieldKind(el: Element, tagName: string, type: string): st
   const combined = `${name} ${id} ${autocomplete}`;
 
   if (lowerType === 'password' || combined.includes('password') || combined.includes('passwort')) return 'password';
+  // A code or token the user receives by email is still a one-time secret: the code signal
+  // decides before the email kind does.
+  if (/(?:e-?mail|mail)[-_ ]?(?:code|otp|token)/i.test(combined)) return 'otp';
   if (lowerType === 'email' || combined.includes('email') || combined.includes('e-mail')) return 'email';
   if (/card|cc-number|cvv|cvc|cardnumber|kreditkarte/i.test(combined) || (lowerType === 'tel' && combined.includes('cc'))) return 'cc';
-  if (/otp|2fa|one-time|verification|code|mfa|token/i.test(combined)) return 'otp';
+  // A "code" or "token" name is masked only when the field can hold a secret the user must type
+  // in: a one-time code, a verification code, an API or session token. Names that contain "code"
+  // for other reasons (postal code, promo code, country code) stay fillable, so an ordinary
+  // address or checkout form is not refused wholesale. An unknown "code" field stays masked.
+  // otp, 2fa and mfa match as substrings on purpose: camelCase names like otpCode carry no
+  // separator, and they are unambiguous enough to mask on sight.
+  if (/(?:postal|zip|post|area|country|currency|sort|qr|bar|promo|coupon|voucher|discount)[-_ ]?code/i.test(combined)) {
+    // Falls through: the address and text kinds below decide.
+  } else if (
+    /otp|2fa|mfa/i.test(combined) ||
+    /(?:^|[^a-z0-9])tan(?:[^a-z0-9]|$)/i.test(combined) ||
+    /one[-_ ]?time|verification|authenticator/i.test(combined) ||
+    /(?:verification|verify|confirm(?:ation)?|security|auth|login|signin|sms|mobile|phone|pass)[-_ ]?code/i.test(combined) ||
+    /(?:csrf|auth|access|session|bearer|refresh)[-_ ]?tokens?/i.test(combined) ||
+    /(?:^|[^a-z0-9])tokens?(?:[^a-z0-9]|$)/i.test(combined) ||
+    /(?:^|[^a-z0-9])code(?:[^a-z0-9]|$)/i.test(combined)
+  ) return 'otp';
   if (lowerType === 'search' || /search|suche|query/i.test(combined)) return 'search';
-  if (/address|street|city|zip|postcode|plz|strasse|ort/i.test(combined)) return 'address';
+  if (/address|street|city|zip|postal|postcode|plz|strasse|(?:^|[^a-z0-9])(?:wohn|geburts|arbeits)?orts?(?:[^a-z0-9]|$)/i.test(combined)) return 'address';
   return 'text';
 }
 
@@ -120,6 +141,14 @@ export function computeFormKind(el: Element): string | undefined {
 }
 
 const clean = (v: unknown): string => (typeof v === 'string' ? v.trim().replace(/\s+/g, ' ') : '');
+
+/**
+ * The field kinds whose value must never be read as text and never shown as pixels. Defined once,
+ * in shared/maskedFields.ts, so the element list, the effect probe, the screenshot mask and the
+ * background's security gate all decide from the same set.
+ */
+export { MASKED_FIELD_KINDS } from '../shared/maskedFields.ts';
+
 
 /**
  * Whether clicking the element submits its form: a <button> without a type or with type submit, or an input of type
@@ -316,13 +345,16 @@ export function getElementSummary(
   const expandedAttr = el.getAttribute('aria-expanded');
   const expanded = expandedAttr === null ? undefined : expandedAttr === 'true';
 
-  const isPasswordLike = tagName === 'input' && type === 'password';
+  const fieldKind = computeFieldKind(el, tagName, type);
   const val = (el as HTMLInputElement).value;
-  const valuePreview = (!isPasswordLike && (tagName === 'input' || tagName === 'textarea') && typeof val === 'string' && val)
+  // A masked field (password, card, one-time code) ships no value preview in any form: the line
+  // may say that the field is there and that it is the user's to fill, never what is in it.
+  const valuePreview = (!fieldKind || !MASKED_FIELD_KINDS.has(fieldKind))
+    && (tagName === 'input' || tagName === 'textarea')
+    && typeof val === 'string' && val
     ? val.slice(0, 40)
     : '';
 
-  const fieldKind = computeFieldKind(el, tagName, type);
   const hrefDomain = computeHrefDomain(el, tagName, win && win.location ? win.location.href : undefined);
   const isForbidden = fieldKind === 'password' || fieldKind === 'cc' || fieldKind === 'otp';
 

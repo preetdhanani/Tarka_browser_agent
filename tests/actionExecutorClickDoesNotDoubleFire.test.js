@@ -9,8 +9,7 @@
  * form submission) be the single source of the actual click.
  *
  * The executor is the TypeScript module (src/content/actionExecutor.ts, which builds the shipped
- * content/actionExecutor.js), run here against a minimal fake DOM. The MAIN-world net-recorder.js
- * is still an IIFE loaded with new Function in its own tests.
+ * content/actionExecutor.js), run here against a minimal fake DOM.
  */
 
 import test from 'node:test';

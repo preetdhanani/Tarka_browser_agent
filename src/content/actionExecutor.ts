@@ -10,12 +10,10 @@ import {
   ensureCursorOverlay,
   animateCursor,
   showClickEffect,
-  removeCursorOverlay,
   highlightElement
 } from './cursor.ts';
 import { maskSensitiveFields, masksStillHold, removeSensitiveMasks, describePoint, snapPoint, maskedFieldRefusal, type PointDescription, type PointSnap } from './screenshotPrivacy.ts';
 import { resolveElement, resolveElementDetailed } from './resolve.ts';
-import { waitForDomQuiet } from './domQuiet.ts';
 import { framePathKeyOf, shownFrames } from './frameIds.ts';
 import {
   describeElement,
@@ -87,17 +85,6 @@ export class ActionExecutor implements ActionExecutionContext {
     showClickEffect(x, y, this.cursorContainer, this.cursorEl, this.getDoc());
   }
 
-  removeCursorOverlay(): void {
-    removeCursorOverlay(this.cursorContainer, () => {
-      if (this.cursorFadeTimer) {
-        clearTimeout(this.cursorFadeTimer);
-        this.cursorFadeTimer = null;
-      }
-    });
-    this.cursorContainer = null;
-    this.cursorEl = null;
-  }
-
   highlightElement(el: HTMLElement | null): void {
     highlightElement(el);
   }
@@ -105,10 +92,9 @@ export class ActionExecutor implements ActionExecutionContext {
   /**
    * Hides the extension's own overlays for a screenshot, without removing them.
    *
-   * "Hide" must not mean "remove": removeBadges and removeCursorOverlay delete the elements from
-   * the page, nothing brings them back, and the cursor overlay's references are nulled with them.
-   * So the containers are made invisible, and the visibility they had is remembered here so it
-   * can be put back exactly.
+   * "Hide" must not mean "remove": removeBadges deletes the elements from the page, nothing
+   * brings them back. So the containers are made invisible, and the visibility they had is
+   * remembered here so it can be put back exactly.
    */
   hideAgentUi(shownFramePaths: unknown = []): void {
     const doc = this.getDoc();
@@ -180,10 +166,6 @@ export class ActionExecutor implements ActionExecutionContext {
 
   doType(elementId: number | string, text: unknown, submit: unknown = false): any {
     return doType(elementId, text, submit, this);
-  }
-
-  waitForDomQuiet(quietMs = 300, timeoutCeilingMs = 1500): Promise<void> {
-    return waitForDomQuiet(quietMs, timeoutCeilingMs, this.getDoc());
   }
 
   execute(actionPayload: any): Promise<any> {

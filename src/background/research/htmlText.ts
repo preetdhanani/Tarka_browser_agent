@@ -105,7 +105,9 @@ export function readHtml(html: string): HtmlRead {
       else if (htmlNs) {
         if (PREFORMATTED.has(tag)) pre--;
         if (BLOCKS.has(tag)) out.push(BLOCK_MARK);
-        else if (CELLS.has(tag)) out.push(CELL_MARK);
+        // The cell mark goes on enter only: a leave mark would wrap every cell in tabs and make an
+        // empty cell indistinguishable from the wrapping, so it would be dropped as an edge tab and
+        // the columns after it would shift.
       }
       continue;
     }

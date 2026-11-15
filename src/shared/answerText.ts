@@ -101,18 +101,21 @@ function unwrap(obj: Record<string, any>): Record<string, any> {
   return unwrap(only);
 }
 
-/** The first of the given fields that holds a non-empty string. */
+/** The first of the given fields that holds a non-empty string. Every evidence field takes the
+ * evidence cap, whichever of the four it is, and the list form of a field takes the same cap as
+ * its string form. */
 function firstString(obj: Record<string, any>, fields: readonly string[]): string {
   for (const field of fields) {
+    const max = (EVIDENCE_FIELDS as readonly string[]).includes(field) ? MAX_EVIDENCE_CHARS : MAX_ANSWER_CHARS;
     const value = obj[field];
     if (typeof value === 'string' && value.trim()) {
-      return cap(value.trim(), field === 'evidence' || field === 'details' ? MAX_EVIDENCE_CHARS : MAX_ANSWER_CHARS);
+      return cap(value.trim(), max);
     }
     // A field that holds a list of strings is read as its lines: a model that answers with
     // {"summary": ["a", "b"]} meant two sentences.
     if (Array.isArray(value) && value.length && value.every((v) => typeof v === 'string')) {
       const joined = value.map((v) => String(v).trim()).filter(Boolean).join('\n');
-      if (joined) return cap(joined, MAX_ANSWER_CHARS);
+      if (joined) return cap(joined, max);
     }
   }
   return '';

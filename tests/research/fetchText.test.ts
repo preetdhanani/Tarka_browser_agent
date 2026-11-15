@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FETCH_MAX_BYTES,
+  FetchFailure,
   fetchCapped,
   fetchUrl,
   fileNameOf,
@@ -14,12 +15,12 @@ import { stubFetch } from './stubFetch.ts';
 
 const SCRIPT = '#!/bin/sh\nset -eu\nARCHIVE="ollama-linux-amd64.tar.zst"\nif ! command -v zstd >/dev/null; then\n  echo "needs zstd"\nfi\n';
 
-test('fetchUrl sends no credentials, follows redirects, and reports the final address', async () => {
-  const fetch = stubFetch({ 'https://ollama.com/install.sh': { body: SCRIPT, type: 'text/x-sh', finalUrl: 'https://cdn.ollama.com/install.sh' } });
+test('fetchUrl sends no credentials and follows no redirects (the worker only calls checked addresses)', async () => {
+  const fetch = stubFetch({ 'https://ollama.com/install.sh': { body: SCRIPT, type: 'text/x-sh' } });
   const out = await fetchUrl({ url: 'https://ollama.com/install.sh' }, { fetchImpl: fetch.impl });
   assert.equal(fetch.requests[0].init.credentials, 'omit');
-  assert.equal(fetch.requests[0].init.redirect, 'follow');
-  assert.match(out.text, /^Fetched https:\/\/cdn\.ollama\.com\/install\.sh \(HTTP 200, text\/x-sh, \d+ B, redirected from https:\/\/ollama\.com\/install\.sh\)\./);
+  assert.equal(fetch.requests[0].init.redirect, 'manual', 'a redirect must never be followed by the worker fetch');
+  assert.match(out.text, /^Fetched https:\/\/ollama\.com\/install\.sh \(HTTP 200, text\/x-sh, \d+ B\)\./);
   assert.equal(out.label, 'install.sh');
 });
 
@@ -139,4 +140,44 @@ test('fetchCapped gives up after the timeout with an honest sentence, and a Stop
 test('fileNameOf is the last path segment, decoded', () => {
   assert.equal(fileNameOf('https://x.org/a/b%20c.sh?x=1'), 'b c.sh');
   assert.equal(fileNameOf('https://x.org/'), '');
+});
+
+test('a redirect is refused before anything is read, and its target is never contacted', async () => {
+  // The fetch API cannot show the intermediate hops of a followed chain, so fetch_url follows no
+  // redirect at all: the opaqueredirect answer is refused with the sentence that names the way
+  // out, and no second request exists to be re-wrapped as a generic failure.
+  const calls: string[] = [];
+  const fetchImpl = (async (input: string | URL) => {
+    calls.push(String(input));
+    const res = new Response(null, { status: 200 });
+    Object.defineProperty(res, 'type', { value: 'opaqueredirect' });
+    Object.defineProperty(res, 'status', { value: 0 });
+    return res;
+  }) as unknown as typeof fetch;
+  const error = await fetchCapped('https://public.test/page', { fetchImpl }).then(() => null, (e: Error) => e);
+  assert.ok(error instanceof FetchFailure, error?.constructor?.name);
+  assert.equal(
+    error!.message,
+    'https://public.test/page answered a redirect, and fetch_url does not follow redirects: the worker only calls addresses it has checked. Open the address in the tab with navigate, or find the direct address of the document and fetch that.'
+  );
+  assert.deepEqual(calls, ['https://public.test/page'], 'the redirect target was never contacted');
+});
+
+test('fetchUrl answers a redirecting address with the model-readable refusal', async () => {
+  const fetchImpl = (async () => {
+    const res = new Response(null, { status: 200 });
+    Object.defineProperty(res, 'type', { value: 'opaqueredirect' });
+    Object.defineProperty(res, 'status', { value: 0 });
+    return res;
+  }) as unknown as typeof fetch;
+  const out = await fetchUrl({ url: 'https://public.test/redirect' }, { fetchImpl });
+  assert.equal(out.isError, true);
+  assert.match(out.text, /does not follow redirects/);
+  assert.match(out.text, /navigate/);
+});
+
+test('the search backends still follow redirects (their address is the user setting, not the model choice)', async () => {
+  const fetch = stubFetch({ 'https://ollama.com/install.sh': { body: SCRIPT, type: 'text/x-sh' } });
+  await fetchCapped('https://ollama.com/install.sh', { fetchImpl: fetch.impl, redirects: 'follow' });
+  assert.equal(fetch.requests[0].init.redirect, 'follow', 'the explicit opt-in for the search backends');
 });

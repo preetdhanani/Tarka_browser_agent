@@ -71,3 +71,19 @@ test('every turn that is not the assistant\'s is sent as the user\'s', async (t)
   await generateCompletion(SETTINGS, [{ role: 'user', content: 'a' }, { role: 'system', content: 'b' }, { role: 'assistant', content: 'c' }], 'SYS');
   assert.deepEqual(sent[0].body.contents.map((content: { role: string }) => content.role), ['user', 'user', 'model']);
 });
+
+test('every text part of a streamed candidate is joined, not only the first', async (t) => {
+  // Gemini splits one answer across parts of a candidate (a part per function call or thought
+  // segment); reading only parts[0] dropped everything after the first part.
+  const chunk = {
+    candidates: [{
+      content: {
+        role: 'model',
+        parts: [{ text: 'first ' }, { text: 'second ' }, { inlineData: { mimeType: 'image/png' } }, { text: 'third' }]
+      }
+    }],
+    usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 3 }
+  };
+  spyFetch(t, () => new Response(`data: ${JSON.stringify(chunk)}\r\n\r\n`, { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+  assert.equal(await generateCompletion(SETTINGS, TURNS, 'SYS'), 'first second third');
+});

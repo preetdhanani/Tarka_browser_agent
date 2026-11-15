@@ -22,15 +22,13 @@
  * tabs (the ones a run opens for itself), so several tab ids may point at one session object.
  */
 
-// Must stay the first import: it sets zod's jitless flag before any module that bundles zod runs (see the file).
-import './boot/zodJitless.ts';
 import { isGeminiStreamCut } from './boot/rejections.ts';
 import { lastRuntimeError, isValidWebTab, isDisposableTab } from './browser/tabs.ts';
 import { AgentRunner } from './runner/AgentRunner.ts';
 import { partialResultEntry } from './mcp/historyEntries.ts';
 import { callProvider, fetchAvailableModels, getFallbackModels } from './llm/index.ts';
 import { resolveEffortSupport } from './llm/effort.ts';
-import { getEffectiveContextWindow } from './llm/models.ts';
+import { getEffectiveContextWindow, DEFAULT_CONTEXT_WINDOW } from './llm/models.ts';
 import { BUILTIN_PROVIDER_IDS } from '../shared/storage.ts';
 import { Logger } from '../shared/logger.ts';
 import { BUILD_STAMP } from '../shared/build.ts';
@@ -54,6 +52,33 @@ self.addEventListener('unhandledrejection', (event: Event) => {
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * The state a GET_AGENT_STATE without any session answers with (W2-R6): the idle panel, the same
+ * keys the runner's getState() carries, so the panel renders its start screen and not a broken
+ * one. No session is created for it.
+ */
+function defaultIdleState(): Record<string, unknown> {
+  return {
+    status: 'idle',
+    stepCount: 0,
+    task: '',
+    history: [],
+    planSteps: [],
+    currentPhase: '',
+    pauseReason: null,
+    pendingApproval: null,
+    pendingConfirm: null,
+    stateVersion: 0,
+    bootId: '',
+    tarkaGroupId: null,
+    effort: null,
+    effortProfile: null,
+    runStats: null,
+    chatId: null,
+    context: { used: 0, window: DEFAULT_CONTEXT_WINDOW, windowSource: 'default', estimated: false, summarizedTurns: 0, hasEarlierTurn: false, compacting: false }
+  };
 }
 
 export interface BackgroundSession {
@@ -210,18 +235,13 @@ async function returnRunToOwnerTab(session: BackgroundSession, closedTabId: numb
   Logger.info('Background', `[TAB_FALLBACK] The working tab [${closedTabId}] closed. The run continues on the owner tab [${ownerTabId}].`);
 }
 
-// Clean network request buffers when tab is closed & track Tarka tab group removal.
-// Both search every session rather than assuming a single global runner owns the tab/group -
-// with one runner per tab, ownership has to be looked up, not assumed.
+// Track Tarka tab group removal: the handler searches every session rather than assuming a
+// single global runner owns the group - with one runner per tab, ownership has to be looked
+// up, not assumed.
 if (typeof chrome !== 'undefined') {
   if (chrome.tabs && chrome.tabs.onRemoved) {
     chrome.tabs.onRemoved.addListener((tabId: number) => {
       void cdp.detach(tabId);
-      for (const session of sessions.values()) {
-        if (session.engine.networkBuffers.has(tabId)) {
-          session.engine.networkBuffers.delete(tabId);
-        }
-      }
       // A closed tab takes its session with it (see endSessionForClosedTab). Chrome fires this
       // for every tab of a closing window too, so a closed window needs no handler of its own.
       endSessionForClosedTab(tabId);
@@ -250,35 +270,6 @@ if (typeof chrome !== 'undefined') {
         }
       }
     });
-  }
-}
-
-// Initialize declarativeNetRequest rules for AgentRouter network-layer header spoofing
-if (typeof chrome !== 'undefined' && chrome.declarativeNetRequest) {
-  try {
-    chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: [8888],
-      addRules: [
-        {
-          id: 8888,
-          priority: 1,
-          action: {
-            type: 'modifyHeaders' as chrome.declarativeNetRequest.RuleActionType,
-            requestHeaders: [
-              { header: 'user-agent', operation: 'set' as chrome.declarativeNetRequest.HeaderOperation, value: 'claude-cli/2.1.158 (external, sdk-cli)' },
-              { header: 'x-app', operation: 'set' as chrome.declarativeNetRequest.HeaderOperation, value: 'cli' }
-            ]
-          },
-          condition: {
-            urlFilter: '*://agentrouter.org/*',
-            resourceTypes: ['xmlhttprequest' as chrome.declarativeNetRequest.ResourceType]
-          }
-        }
-      ]
-    });
-    Logger.debug('Background', '[DNR] Active declarativeNetRequest rule set for AgentRouter (agentrouter.org)');
-  } catch (err) {
-    Logger.warn('Background', '[DNR_WARN] Could not initialize declarativeNetRequest rules', err);
   }
 }
 
@@ -758,23 +749,6 @@ function routeMessage(
 ): boolean {
   const { action, payload } = request || {};
 
-  if (action === 'NET_REQUEST_RECORDED') {
-    // Content scripts always carry a real sender.tab, so the tab - and therefore the session it
-    // belongs to - is unambiguous here, the way it cannot be for a side-panel-originated
-    // message (a side-panel port reaches this worker with no sender.tab at all, which is why
-    // the panel has to resolve and send its own tabId).
-    let tabId = sender.tab?.id;
-    let session = tabId !== undefined ? sessions.get(tabId) : undefined;
-    if (tabId === undefined) {
-      // Fall back to whichever session has an active tab, for the rare sender with no tab info.
-      session = Array.from(sessions.values()).find((s) => s.engine.activeTabId);
-      tabId = session?.engine.activeTabId ?? undefined;
-    }
-    if (session && typeof tabId === 'number') session.engine.recordNetworkRequest(tabId, payload);
-    sendResponse({ success: true });
-    return true;
-  }
-
   if (action === 'CLIENT_ERROR') {
     Logger.error('ClientError', `[${payload?.source || 'unknown'}] ${payload?.message || 'Unspecified client error'}`, payload?.stack || null);
     sendResponse({ success: true });
@@ -863,11 +837,8 @@ function routeMessage(
     'PAUSE_TASK',
     'RESUME_TASK',
     'STOP_TASK',
-    'ANSWER_QUESTION',
     'APPROVE_PLAN',
     'CONFIRM_ACTION',
-    'RESOLVE_CHALLENGE',
-    'CONTINUE_BUDGET',
     'CLEAR_HISTORY',
     'GET_SCREENSHOT',
     'COMPACT_CHAT',
@@ -878,9 +849,25 @@ function routeMessage(
     // A panel whose tab id is unknown sends tabId: null (sidepanel.js) - that
     // must resolve like an ABSENT tab id (sender tab or the only session), not
     // create a session keyed by null (BUG-21).
-    const targetTabId: number = request.tabId != null
+    const targetTabId: number | null = request.tabId != null
       ? request.tabId
-      : (sender?.tab?.id !== undefined ? sender.tab.id : (sessions.size > 0 ? (sessions.keys().next().value ?? 0) : 0));
+      : (sender?.tab?.id !== undefined ? sender.tab.id : (sessions.size > 0 ? (sessions.keys().next().value ?? 0) : null));
+
+    if (targetTabId === null) {
+      // No tab id and no session to fall back to: there is nothing to act on (W2-R6). Creating a
+      // session keyed by tab 0 would answer later panel traffic meant for a real tab. GET_AGENT_STATE
+      // stays exempt: a first resync from a context without a tab gets the default idle state,
+      // and no session is created for it.
+      if (action === 'GET_AGENT_STATE') {
+        Logger.logsRestored().then(() => {
+          sendResponse({ ...defaultIdleState(), logs: Logger.getLogsHistory() });
+        });
+        return true;
+      }
+      Logger.warn('Background', `[TAB_ACTION] ${action} without a tab id and without any open session: refused.`);
+      sendResponse({ success: false, error: 'No Tarka session is open on any tab. Open the panel on a tab first.' });
+      return true;
+    }
 
     const session = getOrCreateSession(targetTabId);
     const runner = session.engine;
@@ -962,20 +949,13 @@ function routeMessage(
       return true;
     }
 
-    if (action === 'ANSWER_QUESTION') {
-      sendResponse(runner.answerQuestion(payload && payload.answer));
-      return true;
-    }
-
     const replyWhenDone = (work: Promise<unknown>): true => {
       work.then(() => sendResponse({ success: true }), (err) => sendResponse({ success: false, error: errorText(err) }));
       return true;
     };
 
     if (action === 'APPROVE_PLAN') return replyWhenDone(runner.approvePlan(payload));
-    if (action === 'CONFIRM_ACTION') return replyWhenDone(runner.confirmAction(payload?.decision, payload?.remember));
-    if (action === 'RESOLVE_CHALLENGE') return replyWhenDone(runner.resolveChallenge(payload?.action));
-    if (action === 'CONTINUE_BUDGET') return replyWhenDone(runner.continueBudget(payload?.action, payload?.additionalSteps));
+    if (action === 'CONFIRM_ACTION') return replyWhenDone(Promise.resolve(runner.confirmAction(payload?.decision, payload?.remember)));
 
     if (action === 'GET_SCREENSHOT') {
       // The picture's bytes stay in memory, in the session, and never in a history row. A

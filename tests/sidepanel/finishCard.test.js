@@ -346,6 +346,48 @@ test('the blocked status line is red too, icon and words', () => {
 });
 
 // ---------------------------------------------------------------------------------------------
+// The run's stats line (CONTRACT-STATE: runStats becomes real through W2-R4)
+// ---------------------------------------------------------------------------------------------
+
+test('a finish with runStats shows one compact line: model calls, steps, tokens in and out', () => {
+  const card = cardOf({
+    steps: [{ action: 'read_page', success: true }],
+    answer: 'The price is 1.399,00 EUR.',
+    outcome: 'done'
+  });
+  assert.doesNotMatch(card, /finish-stats/, 'no stats line when the run carried none');
+
+  const turns = buildTurns(historyOf({ steps: [{ action: 'read_page', success: true }], answer: 'The price is 1.399,00 EUR.', outcome: 'done' }));
+  turns[turns.length - 1].runStats = { level: 'medium', modelCalls: 12, stepsUsed: 8, tokensIn: 4321, tokensOut: 1234 };
+  const withStats = renderFinishCard(turns[turns.length - 1]);
+  assert.match(withStats, /class="finish-stats"/, 'the stats line is there');
+  assert.match(withStats, /12 model calls/);
+  assert.match(withStats, /8 steps/);
+  assert.match(withStats, /4\.3K tokens in/);
+  assert.match(withStats, /1\.2K tokens out/);
+  // One line, not one row per fact.
+  assert.equal(withStats.split('class="finish-stats"').length - 1, 1);
+});
+
+test('the partial card shows the run stats line too, and a partial stats object renders defensively', () => {
+  const rows = historyOf({ steps: [{ action: 'click', success: true }], answer: 'Task was stopped by user.' });
+  rows[rows.length - 1] = { type: 'partial_result', answer: 'Task was stopped by user.', reason: 'stopped', runStats: { modelCalls: 3, stepsUsed: 2 } };
+  const card = renderFinishCard(buildTurns(rows)[0]);
+  assert.match(card, /class="finish-stats"/);
+  assert.match(card, /3 model calls/);
+  assert.match(card, /2 steps/);
+  assert.doesNotMatch(card, /tokens/, 'no token words when the run counted none');
+
+  // Defensively: a stats object with nothing usable renders no line at all.
+  const rows2 = historyOf({ steps: [{ action: 'click', success: true }], answer: 'Done.' });
+  rows2[rows2.length - 1].runStats = { modelCalls: 0, stepsUsed: 0 };
+  assert.doesNotMatch(renderFinishCard(buildTurns(rows2)[0]), /finish-stats/);
+  const rows3 = historyOf({ steps: [{ action: 'click', success: true }], answer: 'Done.' });
+  rows3[rows3.length - 1].runStats = 'garbage';
+  assert.doesNotMatch(renderFinishCard(buildTurns(rows3)[0]), /finish-stats/);
+});
+
+// ---------------------------------------------------------------------------------------------
 // Inline `code` in the answer is rendered, and stays escaped
 // ---------------------------------------------------------------------------------------------
 

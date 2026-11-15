@@ -113,29 +113,6 @@ test('CDPManager: handles user cancel detach and activates userDetached', async 
   assert.equal(cdp.isUserDetached(101), true);
 });
 
-test('CDPManager: pause timer can be set and cleared', async () => {
-  const fc = fakeChrome({
-    debugger: {
-      commands: {
-        'Emulation.setFocusEmulationEnabled': {}
-      }
-    },
-    tabs: { list: [{ id: 101, url: 'https://example.com' }] },
-    scripting: {
-      executeScript: [{ result: 800 }]
-    }
-  });
-  (globalThis as any).chrome = fc.chrome;
-
-  const cdp = new CDPManager();
-  await cdp.attach(101);
-
-  cdp.startPauseTimer(101);
-  // Clear timer should clear without error
-  cdp.clearPauseTimer(101);
-  assert.equal(cdp.isAttached(101), true);
-});
-
 test('CDPManager: reconcileLeakedTargets detaches untracked attached tabs', async () => {
   const fc = fakeChrome({
     debugger: {

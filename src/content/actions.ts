@@ -7,6 +7,8 @@ import { formatFindMessage } from './domCompressor.ts';
 import { normalizePageText, pageTextPart, readRootOf } from './pageText.ts';
 import { runScrollAction } from './scrollActions.ts';
 import { collectLinks, linksBlock, type PageLink } from './pageLinks.ts';
+import { computeFieldKind, MASKED_FIELD_KINDS } from './perception.ts';
+import { REDACTED_MARKER } from './screenshotPrivacy.ts';
 
 export interface ActionExecutionContext {
   doc?: Document;
@@ -15,7 +17,6 @@ export interface ActionExecutionContext {
   highlightElement: (el: HTMLElement | null) => void;
   showClickEffect: (x: number, y: number) => void;
   animateCursor: (x: number, y: number) => void;
-  waitForDomQuiet: (quietMs?: number, ceilingMs?: number) => Promise<void>;
   describeElement: (el: Element | null) => string;
   setFieldValue: (el: Element, text: unknown) => { success: boolean; error?: string };
   doClick: (elementId: number | string) => any;
@@ -55,11 +56,21 @@ const SafeInputEvent = typeof InputEvent !== 'undefined' ? InputEvent : (Event a
 
 /**
  * Short human-readable name for an element, for the action list in the side panel.
+ *
+ * The value is the last candidate, so an unlabeled field can still be named by what it holds -
+ * but a masked field (a password, a card, a one-time code) never describes itself with its value:
+ * the value slot becomes the redaction marker, the same rule describePointElement in
+ * screenshotPrivacy.ts applies, so a filled field reads as holding something without saying what.
  */
 export function describeElement(el: Element | null): string {
   if (!el) return '';
   const pick = (v: any) => (typeof v === 'string' ? v.trim().replace(/\s+/g, ' ') : '');
   const anyEl = el as any;
+  const tag = (el.tagName || '').toLowerCase();
+  const kind = computeFieldKind(el, tag, tag === 'input' ? String((el as HTMLInputElement).type || '') : '');
+  const masked = !!kind && MASKED_FIELD_KINDS.has(kind);
+  const rawValue = typeof anyEl.value === 'string' ? anyEl.value : '';
+  const valueSlot = masked ? (rawValue ? REDACTED_MARKER : '') : pick(rawValue);
   const candidates = [
     pick(typeof el.getAttribute === 'function' ? el.getAttribute('aria-label') : null),
     pick(typeof el.getAttribute === 'function' ? el.getAttribute('alt') : null),
@@ -67,7 +78,7 @@ export function describeElement(el: Element | null): string {
     pick(typeof el.getAttribute === 'function' ? el.getAttribute('placeholder') : null),
     pick(anyEl.innerText || anyEl.textContent),
     pick(typeof el.getAttribute === 'function' ? el.getAttribute('name') : null),
-    pick(anyEl.value)
+    valueSlot
   ];
   const label = candidates.find((c) => c && c.length > 0) || '';
   return label.length > 48 ? label.slice(0, 47) + '\u2026' : label;

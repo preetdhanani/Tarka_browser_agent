@@ -16,17 +16,19 @@ import assert from 'node:assert/strict';
 
 import { install, settle } from './fakePanelDom.js';
 
-const { getEl, storage } = install({ models: ['test-model-1', 'test-model-2'] });
+const { getEl, storage, sent } = install({ models: ['test-model-1', 'test-model-2'] });
 
 const {
   loadSettings,
   autoSaveCurrentForm,
   initEventListeners,
+  initCombobox,
   pickComboboxModel,
   renderState
 } = await import('../../sidepanel/sidepanel.js');
 
 initEventListeners();
+initCombobox();
 
 const CUSTOM = '__custom__';
 
@@ -131,6 +133,28 @@ test('changing the default effort in Settings updates the composer', async () =>
   await settle();
   assert.equal(getEl('btnEffort').textContent, 'High');
   assert.equal(storage.data.agent_settings.effortDefault, 'high');
+});
+
+test('typing in the model search does not re-ask effort and context window for the same model', async () => {
+  await freshSettings('test-model-1');
+  // loadSettings asked once for the loaded model; from here only real model changes may ask again.
+  sent.length = 0;
+
+  // Filtering the Settings list keeps the selected model: no ask may fire per keystroke.
+  const search = getEl('modelSearchInside');
+  for (const q of ['t', 'te', 'tes', 'test', '']) {
+    search.value = q;
+    await search.dispatchEvent('input');
+  }
+  await settle();
+  assert.equal(sent.filter((m) => m.action === 'GET_EFFORT_SUPPORT').length, 0, 'no effort ask while searching');
+  assert.equal(sent.filter((m) => m.action === 'GET_CONTEXT_WINDOW').length, 0, 'no context-window ask while searching');
+
+  // The control: picking a different model asks for both, as before.
+  await pickComboboxModel('test-model-2');
+  await settle();
+  assert.equal(sent.filter((m) => m.action === 'GET_EFFORT_SUPPORT').length, 1, 'a model change still asks');
+  assert.equal(sent.filter((m) => m.action === 'GET_CONTEXT_WINDOW').length, 1, 'a model change still asks');
 });
 
 test('the run chip keeps the model the run started with, and the model button is locked', async () => {

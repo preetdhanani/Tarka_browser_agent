@@ -90,3 +90,10 @@ test('Logger.debug is plumbing: level DEBUG, kind system', () => {
   assert.equal(entry.level, 'DEBUG');
   assert.equal(entry.kind, 'system');
 });
+
+test('Logger - a timestamp carries the date (ISO), so a persisted entry is unambiguous', () => {
+  Logger.clearLogs();
+  Logger.info('T', 'timestamped entry');
+  const entry = Logger.getLogsHistory().at(-1)!;
+  assert.match(entry.timestamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, `${entry.timestamp} is an ISO stamp with a date`);
+});

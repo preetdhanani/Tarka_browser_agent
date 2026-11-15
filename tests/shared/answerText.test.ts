@@ -160,3 +160,22 @@ test('a very long answer is cut short with a mark', () => {
   assert.ok(result.text.length < 5000, 'the answer is shorter than it was');
   assert.match(result.text, /…$/, 'and the cut is marked');
 });
+
+test('every evidence field takes the evidence cap, reasoning and notes included', () => {
+  // reasoning and notes are supporting material like evidence and details: they get the evidence
+  // cap (2000), not the answer cap (4000).
+  const long = 'x'.repeat(2500);
+  const reasoning = extractReadableAnswer(JSON.stringify({ summary: 's', reasoning: long }));
+  assert.equal(reasoning.evidence.length, 2000, 'reasoning is cut at the evidence cap');
+  assert.match(reasoning.evidence, /…$/);
+  const notes = extractReadableAnswer(JSON.stringify({ summary: 's', notes: long }));
+  assert.equal(notes.evidence.length, 2000, 'notes is cut at the evidence cap too');
+});
+
+test('an evidence field that is a list of strings takes the evidence cap as well', () => {
+  const long = 'y'.repeat(2500);
+  const result = extractReadableAnswer(JSON.stringify({ summary: 's', evidence: [long] }));
+  assert.equal(result.evidence.length, 2000, 'the array branch uses the same rule as the string branch');
+  const answer = extractReadableAnswer(JSON.stringify({ summary: ['a'.repeat(5000)] }));
+  assert.equal(answer.text.length, 4000, 'a summary list keeps the answer cap');
+});

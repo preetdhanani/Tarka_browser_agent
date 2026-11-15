@@ -43,7 +43,6 @@ function makeRuntime(tabId: number | null, ownerTabId = 101): RunRuntime {
     tabs: { activeTabId: tabId, ownerTabId },
     windowId: 1,
     tarkaGroupIds: new Map(),
-    attachedTabIds: new Set(),
     resumedAfterRestart: false,
     settings: async () => ({} as any),
     llm: { complete: async () => ({ text: '', provider: 'p', model: 'm', meta: {} }) },
@@ -66,8 +65,6 @@ function makeRuntime(tabId: number | null, ownerTabId = 101): RunRuntime {
       waitForTabComplete: async () => {},
       waitDomQuiet: async () => {}
     } as any,
-    journal: {} as any,
-    net: { marker: () => 'm', read: () => '' },
     emit: { enterNode: () => {}, setPhase: () => {} },
     clock,
   } as RunRuntime;
@@ -353,15 +350,6 @@ test('finish returns the answer marked as the end of the task', async (t) => {
   assert.equal(textOf(result), 'TASK_COMPLETE: It costs 99 USD.');
 });
 
-test('listTools returns the tools of the extension', async (t) => {
-  const { server } = withPage(t);
-  const tools = await server.listTools();
-  const names = tools.map((tool: any) => tool.name);
-  assert.ok(names.includes('finish'));
-  assert.ok(names.includes('read_page'));
-  assert.ok(names.includes('click'));
-});
-
 test('a wait waits for the time the model asked for, and the clock is the one of the runtime', async (t) => {
   const { server, runtime } = withPage(t);
   const slept: number[] = [];
@@ -370,6 +358,44 @@ test('a wait waits for the time the model asked for, and the clock is the one of
   assert.equal(result.isError, undefined);
   assert.deepEqual(slept, [3000], 'three seconds is three thousand milliseconds');
   assert.match(textOf(result), /Waited 3s/);
+});
+
+test('a wait goes through the dispatcher, so its 1 to 5 s clamp applies to a huge amount', async (t) => {
+  // A cloud reply of amount 600 once parked a run for ten minutes inside one action (BUG-36).
+  const { server, runtime } = withPage(t);
+  const slept: number[] = [];
+  runtime.clock.sleep = async (ms: number) => { slept.push(ms); };
+  const result = await server.callTool('wait', { amount: 600 });
+  assert.equal(result.isError, undefined, result.text);
+  assert.deepEqual(slept, [5000], 'the dispatcher clamps the wait at 5 s');
+  assert.match(textOf(result), /Waited 5s/, 'the answer says what really waited');
+  assert.doesNotMatch(textOf(result), /600/, 'and never claims the clamped amount');
+});
+
+test('an aborted step signal ends the wait at once, as an error the model reads', async (t) => {
+  const { server, runtime } = withPage(t);
+  const controller = new AbortController();
+  runtime.control.stepSignal = () => controller.signal;
+  runtime.clock.sleep = (ms: number, sig?: AbortSignal) => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    sig?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('the wait was aborted')); }, { once: true });
+  });
+  const pending = server.callTool('wait', { amount: 5 });
+  setTimeout(() => controller.abort(), 5);
+  const result = await pending;
+  assert.equal(result.isError, true, 'an aborted wait is not a success');
+  assert.match(textOf(result), /aborted/i);
+});
+
+test('a wait without an amount waits one second, and never answers "Waited NaNs"', async (t) => {
+  const { server, runtime } = withPage(t);
+  const slept: number[] = [];
+  runtime.clock.sleep = async (ms: number) => { slept.push(ms); };
+  const result = await server.callTool('wait', {});
+  assert.equal(result.isError, undefined, result.text);
+  assert.deepEqual(slept, [1000], 'a missing amount waits the default one second');
+  assert.match(textOf(result), /Waited 1s/);
+  assert.doesNotMatch(textOf(result), /NaN/);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -632,6 +658,33 @@ test('a link click that does not change the page carries no page text, and says 
   assert.equal(result.isError, undefined, result.text);
   assert.doesNotMatch(result.text, /NOW ON/);
   assert.match(result.text, /^Clicked element \[1\]\nNote: the link did not open its page \(\/items\/42\)/);
+  assert.match(result.text, /may have opened in a new tab/, 'the note names the new-tab possibility too');
+});
+
+test('go_back and go_forward say when they did not move, and carry the landed page when they did', async (t) => {
+  const { server, runtime } = withPage(t);
+  realisticLoads(runtime);
+  // The first page of the fake has no earlier page: the tab stays where it is, and "Went back"
+  // would make the model believe it is on a page it never saw.
+  const stuckBack = await server.callTool('go_back', {});
+  assert.equal(stuckBack.isError, undefined, stuckBack.text);
+  assert.match(textOf(stuckBack), /^Did not move: there is no earlier page/);
+  assert.doesNotMatch(textOf(stuckBack), /Went back/);
+  // After a navigate, going back lands on the page it came from, and its text comes along.
+  await server.callTool('navigate', { url: DETAIL_URL });
+  const back = await server.callTool('go_back', {});
+  assert.equal(back.isError, undefined, back.text);
+  assert.match(textOf(back), /^Went back in history/);
+  assert.match(textOf(back), /NOW ON: Items/, 'the landed page text is in the result');
+  assert.match(textOf(back), /Item 42 available for 99 USD/);
+  const forward = await server.callTool('go_forward', {});
+  assert.equal(forward.isError, undefined, forward.text);
+  assert.match(textOf(forward), /^Went forward in history/);
+  assert.match(textOf(forward), /NOW ON: Item 42/);
+  const stuckForward = await server.callTool('go_forward', {});
+  assert.equal(stuckForward.isError, undefined, stuckForward.text);
+  assert.match(textOf(stuckForward), /^Did not move: there is no later page/);
+  assert.doesNotMatch(textOf(stuckForward), /Went forward/);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -697,6 +750,7 @@ function withProbe(t: any, detail: EffectDetail | null) {
     dom: {
       101: {
         RESOLVE_ELEMENT_POINT: () => ({ success: true, point: { x: 10, y: 10 }, tag: 'button', text: 'Run' }),
+        VERIFY_CLICK_POINT: () => ({ success: true, what: 'button "Run"', hitTag: 'button', withinTarget: true }),
         SHOW_CLICK_ANIMATION: () => ({ success: true }),
         EFFECT_PROBE_BEGIN: () => ({ success: true, baseline: { url: PAGE_URL, focus: detail?.focus ?? null } }),
         EFFECT_PROBE_END: () => ({ success: true, effect: 'dom_changed', ...(detail ? { detail } : {}) })

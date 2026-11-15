@@ -94,53 +94,6 @@ export function getTab(
 }
 
 /**
- * Wait for a browser tab's loading status to become 'complete'.
- */
-export async function waitForTabComplete(
-  tabId: number,
-  timeoutMs = 4000,
-  signal?: AbortSignal,
-  clock?: { sleep: (ms: number, signal?: AbortSignal) => Promise<void> }
-): Promise<void> {
-  if (signal?.aborted) return;
-  if (typeof chrome === 'undefined' || !chrome.tabs?.onUpdated) return;
-
-  await new Promise<void>((resolve) => {
-    let resolved = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const cleanup = () => {
-      if (!resolved) {
-        resolved = true;
-        if (timer !== null) clearTimeout(timer);
-        if (typeof chrome !== 'undefined' && chrome.tabs?.onUpdated) {
-          chrome.tabs.onUpdated.removeListener(listener);
-        }
-        signal?.removeEventListener('abort', onAbort);
-        resolve();
-      }
-    };
-
-    const onAbort = () => cleanup();
-    signal?.addEventListener('abort', onAbort);
-
-    if (clock?.sleep) {
-      clock.sleep(timeoutMs, signal).then(cleanup).catch(cleanup);
-    } else {
-      timer = setTimeout(cleanup, timeoutMs);
-    }
-
-    const listener = (tid: number, changeInfo: { status?: string }) => {
-      if (tid === tabId && changeInfo.status === 'complete' && !resolved) {
-        cleanup();
-      }
-    };
-
-    chrome.tabs.onUpdated.addListener(listener);
-  });
-}
-
-/**
  * The URL a tab is on right now, or fallback when the browser cannot say.
  */
 export async function liveTabUrl(tabId: number, fallback = ''): Promise<string> {

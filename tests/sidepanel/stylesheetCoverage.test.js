@@ -44,7 +44,16 @@ const DEAD_CLASSES = [
   // Found dead along the way: the old timeline card, the old plan card, and the old toggles.
   'timeline-header', 'step-badge', 'thought-text', 'chat-header-bar', 'toggle-label',
   'plan-sites-container', 'site-goal-text', 'estimate-item', 'plan-level-picker',
-  'plan-overbudget-banner', 'plan-fallback-banner'
+  'plan-overbudget-banner', 'plan-fallback-banner',
+  // The ask_user prompt card, the challenge and budget holds, and the provenance findings
+  // table: their renderers are gone (the runner no longer produces any of them), so the
+  // finish table is a real table now (CONTRACT-TABLE).
+  'ask-user-prompt', 'ask-user-question', 'ask-user-input-row', 'ask-user-input',
+  'challenge-help-card', 'continue-budget-card', 'budget-desc',
+  'provenance-findings-container', 'findings-table-header', 'table-title', 'findings-count-badge',
+  'findings-table-scroll', 'provenance-table', 'findings-table-row', 'site-link',
+  'quality-badge', 'quality-verified', 'quality-single', 'quality-unverified',
+  'finding-provenance-box', 'snippet-quote', 'provenance-meta'
 ];
 
 test('no rule styles a class that nothing renders', () => {

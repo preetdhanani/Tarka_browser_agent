@@ -23,11 +23,13 @@ import assert from 'node:assert/strict';
 
 import {
   MASK_LAYER_ID,
+  MASK_HOLD_TOLERANCE_PX,
   describePoint,
   describePointElement,
   isInteractiveElement,
   maskSensitiveFields,
   maskedFieldRefusal,
+  masksStillHold,
   removeSensitiveMasks
 } from '../../src/content/screenshotPrivacy.ts';
 
@@ -52,6 +54,7 @@ interface FakeEl {
   closest(selector: string): FakeEl | null;
   readonly childElementCount: number;
   ownerDocument: any;
+  isConnected: boolean;
 }
 
 /** The mask layer comes back typed as an HTMLElement; in these tests it is the fake node. */
@@ -70,6 +73,7 @@ function el(tag: string, opts: Partial<FakeEl> = {}): FakeEl {
     children: [],
     attrs: { ...(opts.attrs ?? {}) },
     rect: opts.rect ?? { left: 10, top: 20, width: 200, height: 30 },
+    isConnected: true,
     getAttribute(name: string) {
       if (name === 'id') return this.id || null;
       if (name === 'class') return this.className || null;
@@ -288,4 +292,110 @@ test('a point on a web-component page names the element inside the shadow root, 
   assert.match(point.what, /button#search/);
   assert.doesNotMatch(point.what, /font-face/);
   assert.equal(point.interactive, true);
+});
+
+// -------------------------------------------------------------------------------------------
+// W2-C3: the hold check must catch a cover that went away or a field that moved out from
+// under it. At mask time each cover's box and rect are recorded; the check after the capture
+// fails when a cover was removed or hidden, or when the field's rect no longer sits under its
+// cover. The tolerance is MASK_HOLD_TOLERANCE_PX (4 px): sub-pixel rounding on high-density
+// displays and a few pixels of scroll jitter between the mask and the capture must not throw
+// a good picture away, while more than that means a strip of the field is exposed.
+// -------------------------------------------------------------------------------------------
+
+test('W2-C3: an untouched page still passes the hold check', () => {
+  const password = el('input', { type: 'password', value: 'hunter2', rect: { left: 40, top: 100, width: 240, height: 32 } });
+  const doc = fakeDoc({ fields: [password] });
+  maskSensitiveFields(doc);
+  assert.equal(masksStillHold(doc), true, 'nothing moved, nothing was taken down');
+});
+
+test('W2-C3: taking a cover down fails the check, even when the layer stays up', () => {
+  const password = el('input', { type: 'password', rect: { left: 40, top: 100, width: 240, height: 32 } });
+  const doc = fakeDoc({ fields: [password] });
+  const layer = maskSensitiveFields(doc) as unknown as FakeEl;
+  const cover = layer.children[0];
+  cover.isConnected = false; // the page removed the cover element
+  assert.equal(masksStillHold(doc), false, 'a removed cover means an uncovered field');
+});
+
+test('W2-C3: hiding a cover fails the check', () => {
+  const password = el('input', { type: 'password', rect: { left: 40, top: 100, width: 240, height: 32 } });
+  const doc = fakeDoc({ fields: [password] });
+  const layer = maskSensitiveFields(doc) as unknown as FakeEl;
+  layer.children[0].style.display = 'none';
+  assert.equal(masksStillHold(doc), false, 'display:none hides the cover');
+  layer.children[0].style.display = '';
+  layer.children[0].style.visibility = 'hidden';
+  assert.equal(masksStillHold(doc), false, 'visibility:hidden hides the cover too');
+});
+
+test('W2-C3: a field scrolled out from under its cover fails the check', () => {
+  const password = el('input', { type: 'password', rect: { left: 40, top: 100, width: 240, height: 32 } });
+  const doc = fakeDoc({ fields: [password] });
+  maskSensitiveFields(doc);
+  // The cover is position:fixed, so a page scroll moves the field out from under it.
+  password.rect = { left: 40, top: 160, width: 240, height: 32 };
+  assert.equal(masksStillHold(doc), false, 'the field no longer sits under its cover');
+});
+
+test(`W2-C3: drift up to ${MASK_HOLD_TOLERANCE_PX} px is tolerated, more is not`, () => {
+  const password = el('input', { type: 'password', rect: { left: 40, top: 100, width: 240, height: 32 } });
+  const doc = fakeDoc({ fields: [password] });
+  maskSensitiveFields(doc);
+  password.rect = { left: 40, top: 100 + MASK_HOLD_TOLERANCE_PX - 1, width: 240, height: 32 };
+  assert.equal(masksStillHold(doc), true, 'sub-pixel and small scroll jitter is not a leak');
+  password.rect = { left: 40, top: 100 + MASK_HOLD_TOLERANCE_PX * 2, width: 240, height: 32 };
+  assert.equal(masksStillHold(doc), false, 'a real scroll out from under the cover is');
+});
+
+test('W2-C3: a removed iframe cover fails the check too', () => {
+  const frame = el('iframe', { rect: { left: 0, top: 200, width: 1512, height: 400 } });
+  (frame as any).contentDocument = null;
+  const doc = fakeDoc({ frames: [frame] });
+  const layer = maskSensitiveFields(doc) as unknown as FakeEl;
+  assert.equal(masksStillHold(doc), true);
+  layer.children[0].isConnected = false;
+  assert.equal(masksStillHold(doc), false, 'the unreadable frame must stay covered');
+});
+
+// -------------------------------------------------------------------------------------------
+// W2-C4: the point description of a masked field must not carry its value. The label chain of
+// describePointElement falls back to input.value, so a filled password (or card, or OTP) field
+// read off a picture answered with the value in its `what` text - the exact leak the mask
+// exists to prevent. The value slot becomes the redaction marker instead.
+// -------------------------------------------------------------------------------------------
+
+test('W2-C4: a filled password field is described with the marker, never with its value', () => {
+  const password = el('input', { type: 'password', value: 'hunter2-secret' });
+  const doc = fakeDoc({ pointAt: password });
+  const point = describePoint(doc, 100, 100);
+  assert.equal(point.fieldKind, 'password');
+  assert.match(point.what, /\[REDACTED: populated\]/, `the marker says the field holds something: ${point.what}`);
+  assert.ok(!point.what.includes('hunter2-secret'), `the value must not appear: ${point.what}`);
+});
+
+test('W2-C4: a filled card field is described with the marker too', () => {
+  const card = el('input', { type: 'text', attrs: { name: 'cardnumber' }, value: '4111111111111111' });
+  const doc = fakeDoc({ pointAt: card });
+  const point = describePoint(doc, 100, 100);
+  assert.equal(point.fieldKind, 'cc');
+  assert.ok(!point.what.includes('4111111111111111'), `the card number must not appear: ${point.what}`);
+  assert.match(point.what, /\[REDACTED: populated\]/);
+});
+
+test('W2-C4: an empty masked field still names itself by its placeholder', () => {
+  const password = el('input', { type: 'password', attrs: { placeholder: 'Password' }, value: '' });
+  const doc = fakeDoc({ pointAt: password });
+  const point = describePoint(doc, 100, 100);
+  assert.match(point.what, /Password/, 'a placeholder is not a value: it may name the field');
+  assert.doesNotMatch(point.what, /REDACTED/, 'nothing is held, so no marker is needed');
+});
+
+test('W2-C4: a named password field keeps its name and never gains its value', () => {
+  const password = el('input', { type: 'password', attrs: { 'aria-label': 'Password' }, value: 'hunter2' });
+  const doc = fakeDoc({ pointAt: password });
+  const point = describePoint(doc, 100, 100);
+  assert.match(point.what, /Password/);
+  assert.ok(!point.what.includes('hunter2'), `the value must not appear next to the name: ${point.what}`);
 });

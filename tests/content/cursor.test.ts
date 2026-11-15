@@ -22,7 +22,6 @@ import {
   animateCursor,
   ensureCursorOverlay,
   highlightElement,
-  removeCursorOverlay,
   showClickEffect
 } from '../../src/content/cursor.ts';
 
@@ -190,18 +189,6 @@ test('a click leaves a ripple, and the ripple goes away again', async () => {
   );
 });
 
-test('removing the overlay takes the container off the page', () => {
-  const { doc, appended } = fakeDoc();
-  const { container } = ensureCursorOverlay(null, null, doc);
-  assert.equal(appended.includes(container), true);
-
-  let cleared = false;
-  removeCursorOverlay(container, () => { cleared = true; });
-
-  assert.equal(cleared, true, 'the fade timer was cleared');
-  assert.equal(appended.includes(container), false, 'the container is off the page');
-});
-
 test('a highlighted element gets its own style back', async () => {
   const el: any = { style: { outline: '1px solid blue', outlineOffset: '0px', transition: 'none' } };
 
@@ -233,5 +220,4 @@ test('nothing throws when there is no page to draw on', () => {
   assert.doesNotThrow(() => showClickEffect(1, 2, null, null, nothing));
   assert.doesNotThrow(() => animateCursor(1, 2, null, () => null, () => {}));
   assert.doesNotThrow(() => highlightElement(null));
-  assert.doesNotThrow(() => removeCursorOverlay(null, () => {}));
 });

@@ -127,7 +127,7 @@ The check reads only facts a right answer must contain.
 | `web-arxiv-agents` | one recent arXiv paper about web-browsing LLM agents: title, first author, id |
 | `web-github-playwright` | the stars and the latest release of microsoft/playwright |
 | `web-train-hof-munich` | a train from Hof to München Hbf tomorrow around 08:00 (bahn.de has a cookie layer in a shadow root) |
-| `web-cookie-accept` | open stackoverflow.com, accept its cookie banner, and name the top question |
+| `web-cookie-accept` | a local fixture page puts a cookie banner over its article: accept all cookies and name the headline underneath |
 | `web-research-archive` | the exact file name of Ollama's latest Linux amd64 archive and whether it needs zstd, looked up with `web_search` or `fetch_url` (the run must use one) |
 
 The held-out tasks (`held-*`, `--held-out`) are open-web tasks of other kinds that nothing is ever tuned against.
@@ -202,7 +202,7 @@ A run fails when any of these is true.
 - The harness had to stop a run: the task timed out, or the run stood paused with no hold to answer.
 - The runner broadcast a `paused` state with no hold to answer and no user pause, or no `STATE_UPDATE` reached the harness at all.
 - The service worker or the driver page logs a console error or throws, or the worker has a CSP violation (watched through CDP Audits, because a worker reports it nowhere else).
-- A fixture page a task runs on shows a console error or a page error, or its content scripts are not alive (the MAIN-world net recorder flag, and an answered `GET_DOM_SNAPSHOT`).
+- A fixture page a task runs on shows a console error or a page error, or its content scripts are not alive (an answered `GET_DOM_SNAPSHOT`).
 - The side panel, opened as a page, shows a console error, a page error or a CSP violation, its script did not run, or its model-list request failed.
 - The fox mark is not where it belongs: the header next to the name, or the middle of the panel above "What would you like to automate?", has no mark, has a mark that is not the fox, or shows one too small to be seen. The check reads the shape out of the rendered DOM, so it judges what a user sees, not what a source file says.
 

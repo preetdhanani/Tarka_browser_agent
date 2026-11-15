@@ -86,8 +86,7 @@ test('a second caller waits for the first attach to settle', async () => {
 
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
-  const cdp = new CDPManager();
-  cdp.setClockSleep(() => gate);
+  const cdp = new CDPManager({ clockSleep: () => gate });
 
   let firstDone = false;
   let secondDone = false;
@@ -118,8 +117,7 @@ test('the leak sweep keeps a tab whose attach is in flight', async () => {
 
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
-  const cdp = new CDPManager();
-  cdp.setClockSleep(() => gate);
+  const cdp = new CDPManager({ clockSleep: () => gate });
 
   const pending = cdp.attach(101);
   for (let i = 0; i < 20 && !fc.debugger.attached.includes(101); i++) await tick();

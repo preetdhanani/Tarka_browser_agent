@@ -4,7 +4,7 @@
 import type { Settings } from '../../shared/storage.ts';
 import type {
   ControlSnapshot, Effect, EffectDetail, HistoryEntry, NodeName, PolicyMode, TrailEntry,
-  NetFilter, OneShot, PageAction, PageSig, GateContext, GateDecision,
+  OneShot, PageSig, GateContext, GateDecision,
 } from '../types.ts';
 
 export interface RunControl {
@@ -52,6 +52,10 @@ export interface ExecResult {
   effectDetail?: EffectDetail;
   /** The text of the field a type wrote into, read back right after typing; null when it could not be read. */
   fieldText?: string | null;
+  /** W2-B5: the dispatch's own verdicts, carried into the result the model and the panel read. */
+  securityRefusal?: boolean;
+  stale?: boolean;
+  obscuredBy?: string;
 }
 
 export interface BrowserPort {
@@ -64,17 +68,31 @@ export interface BrowserPort {
   waitDomQuiet(tabId: number, quietMs: number, maxMs: number): Promise<void>;
   cdp: {
     ensureAttached(tabId: number): Promise<{ mode: 'cdp' | 'synthetic'; reason: string | null }>;
-    detachAll(): Promise<void>;
   };
   clearBadges(tabId: number): Promise<void>;
   isTabInScope(tabId: number): Promise<boolean>;
 }
 
-export interface ActionJournal {
-  get(key: string): Promise<{ dispatchedAt: number; bootId: string; result: ExecResult | null } | null>;
-  begin(key: string, action: PageAction): Promise<void>;
-  finish(key: string, result: ExecResult): Promise<void>;
-  clearRun(runId: string): Promise<void>;
+/**
+ * What the server asks the runner to publish when a tool call needs the user's confirmation:
+ * the exact action (tool, serialized arguments, tab, frame, origin, element), so the approval is
+ * bound to this one call and nothing else.
+ */
+export interface ActionConfirmationRequest {
+  id: string;
+  toolName: string;
+  serializedArgs: string;
+  tabId: number;
+  frameUrl: string;
+  targetOrigin: string;
+  elementId?: number;
+  elementLabel?: string;
+  /** The card's variant: 'purchase' or 'submit'. */
+  variant: string;
+  actionSummary: string;
+  reason: string;
+  pageUrl: string;
+  detail?: { formActionHost?: string };
 }
 
 export interface RunRuntime {
@@ -85,16 +103,10 @@ export interface RunRuntime {
   tabs: { activeTabId: number | null; ownerTabId: number };
   windowId: number | 'default';
   tarkaGroupIds: Map<number, number>;
-  attachedTabIds: Set<number>;
   resumedAfterRestart: boolean;
   settings(): Promise<Settings>;
   llm: LlmPort;
   browser: BrowserPort;
-  journal: ActionJournal;
-  net: {
-    marker(): string;
-    read(tabId: number, filter: NetFilter, includeBody: boolean, limit: number): string;
-  };
   emit: {
     enterNode(n: string, graph: string, phase?: string): void;
     setPhase(text: string): void;
@@ -104,6 +116,17 @@ export interface RunRuntime {
     sleep(ms: number, signal?: AbortSignal): Promise<void>;
   };
   finishPolicy?: (ctx: GateContext) => GateDecision;
+  /**
+   * Asks the user to confirm one exact action (SEC-2). The server awaits it before dispatching a
+   * sensitive click or a submitting type; false or a missing channel refuses the action.
+   */
+  requestActionConfirmation?: (req: ActionConfirmationRequest) => Promise<boolean>;
+  /**
+   * CONTRACT-REMEMBER: whether the user approved an action on this origin with "remember for
+   * this run" ticked. The gate consults it before it raises a card; a remembered origin raises
+   * no card. The trust lasts one run (the runner clears it in startTask/clearHistory/loadChat).
+   */
+  isOriginApproved?: (origin: string) => boolean;
   typedTexts?: string[];
   navigatedFrom?: { site: string; before: string } | null;
 }

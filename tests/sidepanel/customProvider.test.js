@@ -105,6 +105,29 @@ test('providerMeta: a built-in resolves exactly as before, from its registry ent
   assert.equal(plain.defaultTimeout, 120000, 'a provider without a curated timeout falls back to the global default');
 });
 
+test('providerMeta: every built-in id carries the label its dropdown option shows', () => {
+  // The run chip and the toasts name the provider the way the picker does; a raw id like
+  // "openai_compatible" is never shown to the user.
+  const labels = {
+    openrouter: 'OpenRouter API',
+    agent_router: 'Agent Router API',
+    gemini: 'Google Gemini API',
+    ollama: 'Ollama (Local Host)',
+    openai_compatible: 'OpenAI-Compatible (Groq, vLLM, LM Studio, Llama API)',
+    openai: 'OpenAI Official',
+    anthropic: 'Anthropic (Claude)',
+    nvidia: 'NVIDIA NIM (build.nvidia.com)'
+  };
+  for (const [id, label] of Object.entries(labels)) {
+    const meta = providerMeta(id, {});
+    assert.equal(meta.exists, true, id);
+    assert.equal(meta.displayName, label, id);
+    assert.notEqual(meta.displayName, id, `${id} is never shown as itself`);
+  }
+  // An unknown id (a deleted custom provider, say) still falls back to the id itself.
+  assert.equal(providerMeta('gone_provider', {}).displayName, 'gone_provider');
+});
+
 test('providerMeta: a custom provider resolves from its descriptor, and the secret is never in it', () => {
   const settings = {
     customProviders: {

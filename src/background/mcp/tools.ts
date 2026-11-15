@@ -8,6 +8,12 @@ export interface ToolDef {
     required?: string[];
     additionalProperties?: boolean;
   };
+  /**
+   * True when every call of this tool needs the user's confirmation before it dispatches (SEC-2).
+   * No shipped tool sets it today; the confirmation gate reads it, so a future opt-in tool gets
+   * the hold for free.
+   */
+  requires_approval?: boolean;
 }
 
 /**
@@ -33,11 +39,6 @@ export const TARKA_TOOLS: ToolDef[] = [
           type: 'array',
           items: { type: 'integer', minimum: 1 },
           description: 'The numbers (1 for the first) of the steps that are finished now'
-        },
-        requires_approval: {
-          type: 'boolean',
-          default: true,
-          description: 'Whether to wait for user approval (true for complex tasks)'
         },
         reason: { type: 'string', description: REASON_TEXT }
       },
@@ -256,7 +257,7 @@ export const TARKA_TOOLS: ToolDef[] = [
           enum: ['done', 'partial', 'blocked'],
           description: 'How the task went, said honestly. "done": you did what the user asked. "partial": you did only part of it, or your answer is a guess you could not check. "blocked": you could not do it (a button that does nothing, a login, a bot check, an error you could not get past).'
         },
-        table: { type: 'object', description: 'A table to show alongside the answer, for quick comparison of prices, sites, or any rows the model found.' },
+        table: { type: 'object', description: 'A table to show alongside the answer, for quick comparison of prices, sites, or any rows the model found. Shape: {"columns": ["Header"], "rows": [["cell", "..."]]}, every cell a string.' },
         records_file: { type: 'string', description: 'When the user asks for a file of the data: a file name ending in .json or .csv. The records saved with save_data are written into it, and the user gets it as a download.' },
         files: {
           type: 'array',

@@ -37,29 +37,19 @@
  * worker ("executeScript func is self-contained") and fails the build when one uses a name that it
  * does not declare itself.
  *
- * Minify stays OFF. This was decided in P2, with the LangChain packages in the worker, and measured
- * in Chromium 152. The start is the worker's own clock from the creation of its global scope to the
- * end of its top level (module compile, link and run), median of six starts on a fresh profile each:
+ * Minify stays OFF. That was decided in P2 and still holds, for reasons that do not depend on a
+ * bundle size: unminified output keeps dist/ readable for a reviewer, keeps the //#region comments
+ * that name the original source file of every part, and keeps the zod jitless self-check of
+ * scripts/build.mjs working, which reads those comments (and the literal `true`) to see the order
+ * of the modules. The executeScript guard itself is not the obstacle: a scratch build with minify on
+ * and a helper called from inside an executeScript func was still caught ("uses Hne, which it does
+ * not declare"). Before turning minify on, rewrite the jitless check, then measure the worker start
+ * again. CI prints the size table of every build (raw and gzip), so a jump in the worker shows in
+ * the log.
  *
- *                       worker size (gzip)      start
- *   P0, no LangChain      157 KB  ( 45 KB)      12 ms
- *   unminified (now)    3,175 KB  (667 KB)      52 ms
- *   minified            1,432 KB  (363 KB)      39 ms
- *
- * So minify would save about 13 ms once per worker start, and it would cost more than that:
- *   - The zod jitless self-check reads the //#region comments (to see the order of the modules) and
- *     the literal `true` (minify writes `!0`). It reports "no top-level ..." on a minified bundle, so it
- *     would have to be rewritten first, and that order (zodJitless before zod) is what keeps the CSP violation away.
- *   - dist/ is no longer readable for a reviewer, and evalscan's sourcemap columns get coarser.
- * The executeScript guard itself is not the obstacle: a scratch build with minify on and a helper
- * called from inside an executeScript func was still caught ("uses Hne, which it does not declare").
- * Before turning minify on, rewrite the jitless check, then measure again. CI prints the size table
- * of every build (raw and gzip), so a jump in the worker shows in the log.
- *
- * Vite printed no chunk-size warning in this setup, not for the 3 MB worker with a limit of 500 KB
- * either, so chunkSizeWarningLimit below is only a stated expectation and cannot fail a build. The
- * expectation is the worker of the table above with some room (3,500 KB against about 3,190 KB now), and it moves
- * with the worker: raise it together with a table row when a phase adds to the worker on purpose.
+ * Vite printed no chunk-size warning in this setup, so chunkSizeWarningLimit below is only a stated
+ * expectation and cannot fail a build. It is a ceiling for the worker with some room, and it moves
+ * with the worker: raise it together with a change that adds to the worker on purpose.
  */
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -77,8 +67,6 @@ export const CONTENT_ENTRIES = [
   { input: 'src/content/domCompressorEntry.ts', output: 'content/domCompressor.js' },
   { input: 'src/content/actionExecutorEntry.ts', output: 'content/actionExecutor.js' },
   { input: 'content/content.js', output: 'content/content.js' },
-  { input: 'src/content/net-recorder.ts', output: 'content/net-recorder.js' },
-  { input: 'content/netRelay.js', output: 'content/netRelay.js' },
   { input: 'src/content/frameAgent.ts', output: 'content/frameAgent.js' }
 ];
 
@@ -113,23 +101,11 @@ const ALLOWED_WARNING_CODES = [];
  * imported by "<file>"`. Each entry is exactly one such pair, so a new import of a built-in, in any
  * file of ours or of a library, is a new warning and fails the build.
  *
- * @anthropic-ai/sdk 0.122.0 (an exact pin) can read its credentials from a config file, a profile or
- * a token exchange, and for that five files import node:fs and node:path. Nothing there runs in the
- * worker: the SDK starts that chain only for a client built with neither apiKey nor authToken
- * (client.mjs), and every ChatAnthropic of ours has a key (a missing key is our own error before any
- * client exists). tests/llm/anthropicCredentials.test.ts runs both cases and proves the chain stays
- * off with a key, and that it would touch the file system without one.
+ * The list is empty today: the provider calls are native fetch (src/background/llm/factory.ts), no
+ * bundled library imports a Node built-in any more, and the @anthropic-ai/sdk entries this list once
+ * carried died with that SDK. Add an entry only with a reason, and only for a library file.
  */
-const ANTHROPIC_SDK_CREDENTIALS = 'node_modules/@anthropic-ai/sdk';
-const ALLOWED_BROWSER_EXTERNALS = [
-  ['node:fs', 'lib/credentials/credential-chain.mjs'],
-  ['node:fs', 'lib/credentials/identity-token.mjs'],
-  ['node:fs', 'lib/credentials/types.mjs'],
-  ['node:fs', 'lib/credentials/user-oauth.mjs'],
-  ['node:fs', 'core/credentials.mjs'],
-  ['node:path', 'lib/credentials/types.mjs'],
-  ['node:path', 'core/credentials.mjs']
-].map(([module, file]) => ({ plugin: 'rolldown:vite-resolve', module, importer: `${ANTHROPIC_SDK_CREDENTIALS}/${file}` }));
+const ALLOWED_BROWSER_EXTERNALS = [];
 
 const BROWSER_EXTERNAL = /^Module "([^"]+)" has been externalized for browser compatibility, imported by "([^"]+)"/;
 

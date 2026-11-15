@@ -201,3 +201,32 @@ export function timeoutSourceOf(settings: LlmSettings): string {
   if (raw > 0) return 'the global timeout setting';
   return provider === 'nvidia' ? 'the NVIDIA default timeout' : 'the default timeout';
 }
+
+/**
+ * Whether a host is the user's own machine (loopback): localhost in its spellings, 127.0.0.0/8
+ * and ::1. A plain-http endpoint on such a host stays on the machine, so an API key over it does
+ * not leave the user's network; anywhere else, http carries the key in cleartext (SEC-9).
+ *
+ * The host arrives in two shapes: `URL.hostname` keeps the brackets of an IPv6 literal and never
+ * carries a port ("[::1]"), while endpointHostOf appends a non-default port ("[::1]:8080",
+ * "localhost:8000"). Both are normalized here, so one host passes the save gate and the call gate
+ * alike, whichever shape reached it.
+ */
+export function isLoopbackHost(host: string): boolean {
+  let h = String(host || '').toLowerCase().trim().replace(/\.$/, '');
+  // A bracketed IPv6 literal, with or without a port: "[::1]" and "[::1]:8080" both become "::1".
+  const bracketed = /^\[(.+)\](?::\d+)?$/.exec(h);
+  if (bracketed) {
+    h = bracketed[1];
+  } else {
+    // A host:port pair ("localhost:8000") loses the port. A bare IPv6 ("::1") keeps its colons:
+    // only a single colon can separate a host from a port.
+    const only = h.indexOf(':');
+    if (only !== -1 && h.indexOf(':', only + 1) === -1) h = h.slice(0, only);
+  }
+  if (!h) return false;
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  if (/^127\./.test(h)) return true;
+  if (h === '::1') return true;
+  return false;
+}

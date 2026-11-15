@@ -125,7 +125,6 @@ function makeRuntime(): RunRuntime {
     tabs: { activeTabId: 101, ownerTabId: 101 },
     windowId: 1,
     tarkaGroupIds: new Map(),
-    attachedTabIds: new Set(),
     resumedAfterRestart: false,
     settings: async () => ({ provider: 'openrouter', model: 'test-model' } as any),
     llm: { complete: async () => ({ text: '', provider: 'p', model: 'm', meta: {} }) },
@@ -139,8 +138,6 @@ function makeRuntime(): RunRuntime {
       waitForTabComplete: async () => {},
       waitDomQuiet: async () => {}
     } as any,
-    journal: {} as any,
-    net: { marker: () => 'm', read: () => '' },
     emit: { enterNode: () => {}, setPhase: () => {} },
     clock: { now: () => 0, sleep: async () => {} }
   } as RunRuntime;
@@ -183,6 +180,8 @@ function withClient(
           agent_settings: {
             provider: options.provider ?? 'openrouter',
             model: 'test-model',
+            // The key the LLM layer's missing-key check reads before a request is dispatched.
+            apiKey: 'test-key',
             maxSteps: 20,
             actionDelayMs: 1,
             ...(options.screenshots ? { screenshots: options.screenshots } : {})

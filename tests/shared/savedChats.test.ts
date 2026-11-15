@@ -92,3 +92,21 @@ test('past the cap the oldest chats go, with their keys', async () => {
   assert.equal(data[chatKey('c0')], undefined, 'the oldest chat\'s key is removed');
   assert.ok(data[chatKey('c1')]);
 });
+
+test('the legacy migration writes a chat key only for a chat that survives the index cut', async () => {
+  // An index that already holds entries pushes part of the legacy list past MAX_SAVED_CHATS.
+  // Those chats are not listed - and must not get a key either, or their rows (with whatever a
+  // row keeps) sit in storage forever under a key nothing ever reads or cleans.
+  clear();
+  for (let i = 0; i < MAX_SAVED_CHATS; i++) await Storage.saveChat({ id: `kept-${i}`, task: `K${i}`, history: [goal(`K${i}`)] });
+  const legacy = Array.from({ length: 10 }, (_, i) => ({ id: `old-${i}`, task: `Old ${i}`, timestamp: 't', model: 'm', history: [goal(`Old ${i}`)], planSteps: [] }));
+  data[LEGACY_SESSIONS_KEY] = legacy;
+  const index = await Storage.getSessions();
+  assert.equal(index.length, MAX_SAVED_CHATS, 'the index is cut at the cap');
+  const listed = new Set(index.map((s) => s.id));
+  for (const chat of legacy) {
+    if (listed.has(chat.id)) assert.ok(data[chatKey(chat.id)], `${chat.id} is listed and has its key`);
+    else assert.equal(data[chatKey(chat.id)], undefined, `${chat.id} fell past the cut and got no key`);
+  }
+  assert.equal(data[LEGACY_SESSIONS_KEY], undefined, 'the old array is gone either way');
+});

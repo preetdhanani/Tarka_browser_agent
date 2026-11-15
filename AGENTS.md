@@ -9,7 +9,7 @@ These rules apply to every agent session working in this repository.
   - Layer 1: the unit tests (`npm test`). Plain Node, no browser, no model.
   - Layer 2: the real-model Chromium run (`npm run test:e2e`). The built extension is loaded into a real Chromium and the real model drives whole tasks.
     It runs on LISA (`lisa-pro`, an OpenAI-compatible custom endpoint at `https://chat-1.ki-awz.iisys.de/api`): a neutral start page and only a question, the model picks the real websites itself.
-    Two tasks run on local pages that copy a real case (`notebook.html`, `credentials.html`); the model acts on them like on any site.
+    Five tasks run on local fixture pages that copy a real case: the notebook page, three tasks on the credentials page (a JSON file, a chained second turn, a stopped and resumed run), and a cookie banner page; the model acts on them like on any site.
     The run adds LISA through the side panel's "Custom model API" dialog, like a user does.
     It needs `LISA_API_KEY` in the environment or `LISA_API` in the repo `.env`.
     `npm run test:e2e -- --held-out` runs the held-out open-web tasks: nothing is ever tuned against them, and they run after every change to show it helps in general.
@@ -22,7 +22,7 @@ These rules apply to every agent session working in this repository.
 - Every successful Chromium run produces screenshots for EVERY test case, saved by default with the paths printed in the report:
   - the side panel showing the steps the agent took and the end result (light and dark, tall, action group open, close-ups),
   - the end state of the page the task ran on.
-- The harness loads the built extension (`dist/`) into Chromium with a fresh temp profile, serves the local pages of the two local tasks, and drives tasks through the extension's own message path. It never uses Prit's personal Chrome.
+- The harness loads the built extension (`dist/`) into Chromium with a fresh temp profile, serves the local pages of the local tasks, and drives tasks through the extension's own message path. It never uses Prit's personal Chrome.
 - A new behaviour is checked in a unit test, and where the real model can show it, in a real-model task (history entries, side panel DOM, screenshots).
 - A unit test must be able to fail: when adding a check, confirm it fails on code that lacks the behaviour.
 

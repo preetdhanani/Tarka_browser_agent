@@ -2,7 +2,7 @@
 
 Tarka is an open-source autonomous browser agent implemented as a Chrome Manifest V3 extension.
 It executes complex, multi-step web workflows by operating inside Google Chrome's native Side Panel.
-Unlike cloud-hosted headless browser wrappers, Tarka runs directly inside the user's authentic browser context, executing actions via Chrome DevTools Protocol (CDP) trusted hardware events, extracting semantic accessibility trees, and grounding model assertions against an independent evidence ledger.
+Unlike cloud-hosted headless browser wrappers, Tarka runs directly inside the user's authentic browser context, executing actions via Chrome DevTools Protocol (CDP) trusted hardware events and extracting semantic accessibility trees.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Runtime](https://img.shields.io/badge/Node.js-%3E%3D22.18-brightgreen.svg)](package.json)
@@ -27,11 +27,15 @@ Passing raw HTML or massive DOM trees to LLMs quickly saturates prompt budgets a
 - **Deterministic Off-Screen Matching (`find_element`):** Employs weighted heuristic scoring across text, ARIA attributes, placeholders, names, and roles to resolve targets located beyond the active scroll window.
 - **Embedded Frame Agent (`frameAgent`):** Injects dedicated frame agents across nested cross-origin iframes, computing absolute coordinate offsets and boundary masks.
 
-### 3. Provenance Evidence Ledger and Anti-Hallucination Gate
-Most LLM agents blindly report their final answer without auditing whether their outputs correspond to facts on the visited pages.
-- **Independent Evidence Ledger:** Tracks every URL visited, full text segments extracted, and research documents fetched throughout the session.
-- **Pre-Finish Audit Gate:** Mechanically audits the model's generated answer before showing completion to the user.
-- **Policy Enforcement:** Enforces `send_back` (instructs model to self-correct missing facts), `annotate` (flags ungrounded claims), or `replace` (prevents hallucinated success cards).
+### 3. Code-Enforced Safety Gates
+The safety rules that matter are enforced in code, not only in the model's prompt.
+- **Sensitive-Field Redaction:** Password, payment-card and one-time-code fields are classified on every read. Their values never enter the element list, the effect probe or a tool result; a populated masked field is reported only as "populated".
+- **Typing and Clicking Refusal:** The dispatcher refuses, before any input is sent, a click or a type whose target resolves to a masked field.
+- **Action-Bound Confirmation:** A click or a submitting type that targets a checkout/payment/destructive control, a form holding masked fields, or a cross-origin form action pauses the run with a confirmation card bound to the exact tool, arguments, tab and origin. The action dispatches only on an explicit approval, re-verified at dispatch time.
+- **Bot-Check Refusal:** CAPTCHAs and "verify you are human" controls are never clicked or solved, by element or by coordinate; the run stops and hands the page to the user.
+- **Pre-Press Re-Verification (TOCTOU):** Immediately before every mouse press, the point is asked of the page again and the tab's origin is compared with the one the action began on. A page that moved, covered or swapped its content, or navigated away, aborts the click.
+- **Background-Fetch Network Policy:** `fetch_url` refuses loopback, private-range, link-local and cloud-metadata addresses, and re-checks the address a redirect landed on before the body is read.
+- **Fail-Closed Screenshot Privacy:** Sensitive fields and unreadable cross-origin frames are covered before a capture; a capture whose covers do not verifiably hold is thrown away.
 
 ### 4. Heterogeneous Vision Coordinate Reconciliation
 Different visual frontier models disagree on coordinate spaces.
@@ -75,12 +79,12 @@ Tarka operates an explicit perception-action loop driven by the Model Context Pr
                       ▼
        ┌───────────────────────────────┐
        │  4. Probe Effect & Log Record │
-       │   (Provenance Evidence Ledger)│
+       │     (Measured Observation)    │
        └──────────────┬────────────────┘
                       ▼
        ┌───────────────────────────────┐
-       │   5. Audit & Validate Finish  │
-       │    (Mechanical Grounding Gate)│
+       │   5. Answer With an Outcome   │
+       │  (done / partial / blocked)   │
        └───────────────────────────────┘
 ```
 
@@ -99,24 +103,27 @@ Tarka operates an explicit perception-action loop driven by the Model Context Pr
 
 ### Resumable Long-Horizon Tasks
 - Saves task states and session snapshots incrementally in local extension storage.
-- Allows users to pause, inspect DOM steps, manually resolve ambiguous authentication challenges, and resume task execution seamlessly.
+- Allows users to pause, inspect DOM steps, and resume task execution seamlessly.
+- A bot check or a login the agent must not touch pauses the run for the user, by design.
 
 ---
 
 ## Supported Model Infrastructure
 
-Tarka supports any OpenAI-compatible API format, as well as native SDK integrations:
+Tarka supports any OpenAI-compatible API format, as well as native integrations, all called over direct HTTP fetch.
 
-| Provider | Runtime Mode | Recommended Models |
+The model picker fetches the live list from the provider you configure. The column below is the fallback list the picker shows when that fetch fails or answers nothing (`getFallbackModels` in `src/background/llm/models.ts`); a user-added endpoint falls back to the model ids you saved for it.
+
+| Provider | Runtime Mode | Fallback model list |
 | --- | --- | --- |
-| **Ollama** | Local / Offline | `qwen3.8:27b-mlx`, `gemma4:12b`, `llama3.3:70b` |
-| **Google Gemini** | Cloud API | `gemini-2.0-flash`, `gemini-1.5-pro` |
-| **Anthropic** | Cloud API | `claude-3-7-sonnet`, `claude-3-5-sonnet` |
-| **OpenAI** | Cloud API | `gpt-4o`, `o3-mini` |
-| **NVIDIA NIM** | Enterprise / Cloud | `nvidia/nemotron-3.5-super-vl-120b-a12b` |
-| **Groq** | Low-Latency Cloud | `llama-3.3-70b-versatile` |
-| **OpenRouter / AgentRouter** | Multi-Provider Gateway | Dynamic model routing |
-| **Custom Endpoints** | Local or Hosted | Self-hosted vLLM, SGLang, LISA, or custom proxies |
+| **Ollama** | Local / Offline | `qwen3.8:27b-mlx`, `qwen2.5:14b`, `llama3.1:8b`, `gemma2:9b` |
+| **Google Gemini** | Cloud API | `gemini-2.0-flash`, `gemini-2.0-flash-lite`, `gemini-1.5-flash`, `gemini-1.5-pro`, `gemini-2.0-pro-exp-02-05`, `gemini-1.5-flash-8b` |
+| **Anthropic** | Cloud API | `claude-3-5-sonnet-20241022`, `claude-3-5-haiku-20241022` |
+| **OpenAI / OpenAI-compatible** | Cloud API (Groq is the compatible default) | `gpt-4o`, `gpt-4o-mini`, `llama-3.3-70b-versatile`, `llama-3.1-8b-instant` |
+| **NVIDIA NIM** | Enterprise / Cloud | `meta/llama-3.3-70b-instruct`, `deepseek-ai/deepseek-r1`, `nvidia/llama-3.1-nemotron-70b-instruct`, `meta/llama-3.1-405b-instruct`, `mistralai/mixtral-8x22b-instruct`, `qwen/qwen2.5-72b-instruct`, `nvidia/nemotron-4-340b-instruct` |
+| **OpenRouter** | Multi-Provider Gateway | `anthropic/claude-3.5-sonnet`, `meta-llama/llama-3.3-70b-instruct`, `google/gemini-2.0-flash-001`, `deepseek/deepseek-r1`, `deepseek/deepseek-chat`, `openai/gpt-4o-mini` |
+| **AgentRouter** | Multi-Provider Gateway | `claude-3-5-sonnet`, `gpt-4o`, `deepseek-r1`, `llama-3.3-70b`, `claude-3-haiku` |
+| **Custom Endpoints** | Local or Hosted | The model ids you save in the "Custom model API" dialog (self-hosted vLLM, SGLang, LISA, or custom proxies) |
 
 ---
 
@@ -159,11 +166,16 @@ Tarka supports any OpenAI-compatible API format, as well as native SDK integrati
 
 ## Security Model
 
-- **Zero Remote Code Execution:** Built strictly under Chrome MV3 CSP.
-- **Visual Credential Protection:** Password, cardholder, and verification fields are visually shielded with non-mutating overlay masks before any screenshot leaves the browser.
-- **Prompt Injection Defense:** External page content is demarcated within structured untrusted boundary tags.
+The full threat model and the reporting process live in [SECURITY.md](SECURITY.md). The short version:
+
+- **Zero Remote Code Execution:** Built strictly under Chrome MV3 CSP, with a build-time scan for `eval` and `Function`.
+- **Sensitive Fields Never Leave the Page as Text:** Password, card and one-time-code fields are redacted in the element list and the effect probe, refused for clicks and typing, and masked in screenshots before the picture leaves the browser.
+- **Risky Actions Ask First:** A click or submit that can pay, order or destroy asks the user on a card bound to the exact action; a declined action is never retried or worked around.
+- **Prompt Injection Containment:** External page content and search results are demarcated inside untrusted boundary tags, and the gates above hold even when a page talks the model into something.
 - **No CAPTCHA Tampering:** Refuses automated bot bypasses, pausing execution for human intervention.
-- **Device-Local Data Ownership:** Session histories, token logs, and API credentials are kept strictly inside local browser storage.
+- **Background Fetch Network Policy:** `fetch_url` cannot reach loopback, private networks or cloud metadata endpoints, and re-checks redirect destinations.
+- **Honest Transport:** Requests identify themselves as Tarka; no other client's User-Agent is spoofed. A key-bearing custom endpoint over plain http is refused unless the host is loopback or the user opts in explicitly.
+- **Device-Local Data Ownership:** Session histories, logs and API credentials are kept strictly inside local browser storage, and log content is redacted before it is persisted.
 
 ---
 

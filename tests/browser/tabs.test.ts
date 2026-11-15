@@ -6,7 +6,6 @@ import {
   isDisposableTab,
   lastRuntimeError,
   getTab,
-  waitForTabComplete,
   liveTabUrl
 } from '../../src/background/browser/tabs.ts';
 
@@ -152,64 +151,6 @@ test('liveTabUrl returns tab url or fallback', async () => {
     assert.equal(await liveTabUrl(101, 'https://fallback.com'), 'https://example.com');
     assert.equal(await liveTabUrl(102, 'https://fallback.com'), 'https://fallback.com');
     assert.equal(await liveTabUrl(999, 'https://fallback.com'), 'https://fallback.com');
-  } finally {
-    (globalThis as any).chrome = originalChrome;
-  }
-});
-
-test('waitForTabComplete resolves when tab status becomes complete', async () => {
-  const originalChrome = (globalThis as any).chrome;
-  try {
-    let listenerRef: any = null;
-    (globalThis as any).chrome = {
-      tabs: {
-        onUpdated: {
-          addListener: (l: any) => { listenerRef = l; },
-          removeListener: () => { listenerRef = null; }
-        }
-      }
-    };
-
-    const waitPromise = waitForTabComplete(101, 1000);
-    assert.ok(listenerRef !== null);
-
-    // Fire listener with complete
-    listenerRef(101, { status: 'complete' });
-    await waitPromise;
-    assert.equal(listenerRef, null);
-  } finally {
-    (globalThis as any).chrome = originalChrome;
-  }
-});
-
-test('waitForTabComplete handles abort signal and custom clock', async () => {
-  const controller = new AbortController();
-  controller.abort();
-
-  // Already aborted should return immediately
-  await waitForTabComplete(101, 1000, controller.signal);
-
-  // Injected clock sleep
-  let sleptMs = 0;
-  const mockClock = {
-    sleep: async (ms: number) => {
-      sleptMs = ms;
-    }
-  };
-
-  const originalChrome = (globalThis as any).chrome;
-  try {
-    (globalThis as any).chrome = {
-      tabs: {
-        onUpdated: {
-          addListener: () => {},
-          removeListener: () => {}
-        }
-      }
-    };
-
-    await waitForTabComplete(101, 500, undefined, mockClock);
-    assert.equal(sleptMs, 500);
   } finally {
     (globalThis as any).chrome = originalChrome;
   }

@@ -1,12 +1,17 @@
 // src/background/runner/runnerMeta.ts
 // Runner metadata stored in chrome.storage.session across worker cold boots.
-import type { StorageSessionArea } from './actionJournal.ts';
+
+/** The three methods of chrome.storage.session the runner's stores use (also in tests as a fake). */
+export interface StorageSessionArea {
+  get(keys?: string | string[] | null): Promise<Record<string, unknown>>;
+  set(items: Record<string, unknown>): Promise<void>;
+  remove(keys: string | string[]): Promise<void>;
+}
 
 export interface RunnerMeta {
   stateVersion: number;
   tarkaGroupIds: [windowId: number, groupId: number][];
   aliases: number[];
-  attachedTabIds: number[];
   pauseDetach: { tabIds: number[]; at: number } | null;
   lastBeatAt: number;
   evidence?: any;

@@ -24,9 +24,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 globalThis.window = { addEventListener() {} };
-globalThis.document = { readyState: 'loading', addEventListener() {}, getElementById: () => null };
+globalThis.document = { readyState: 'loading', addEventListener() {}, getElementById: () => null, querySelectorAll: () => [] };
+// The picture fetch talks to the background over chrome.runtime; a test that drives it replaces
+// sendMessage (holdScreenshotReplies below).
+globalThis.chrome = { runtime: { lastError: undefined, sendMessage: () => {} } };
 
-const { buildTurns, describeAction, renderTurns, shotCache, shotGone } = await import('../../sidepanel/sidepanel.js');
+const { buildTurns, describeAction, renderTurns, shotCache, shotGone, loadShotPicture } = await import('../../sidepanel/sidepanel.js');
 
 const CSS = fs.readFileSync(new URL('../../sidepanel/sidepanel.css', import.meta.url), 'utf8');
 
@@ -88,14 +91,14 @@ test('a row without a picture gets no slot', () => {
     { type: 'execution_result', step: 1, success: true, message: 'ok' },
     { type: 'finish', answer: 'Done.' }
   ];
-  const html = renderTurns(history, 'idle', '', null, null, null, null, null, null, null);
+  const html = renderTurns(history, 'idle', '', null, null, null);
   assert.doesNotMatch(html, /act-shot-slot/);
 });
 
 test('a picture that is no longer held shows the honest line, not a broken image', () => {
   // The session dropped it (a long run keeps the last few), so the panel must say so.
   shotGone.add('shot-gone-1');
-  const html = renderTurns(historyWithShot('shot-gone-1'), 'idle', '', null, null, null, null, null, null, null);
+  const html = renderTurns(historyWithShot('shot-gone-1'), 'idle', '', null, null, null);
   // The finished group's "Captured page" says so, and its head has no thumbnail to show.
   assert.match(html, /<div class="act-captured"><div class="act-captured-label">Captured page<\/div><span class="act-shot-gone">Picture no longer kept<\/span><\/div>/);
   assert.doesNotMatch(html, /act-head-thumb/);
@@ -112,6 +115,58 @@ test('the cache keeps a picture once it is known, so a re-render costs no fetch'
   assert.equal(shotGone instanceof Set, true);
 });
 
+// ---------------------------------------------------------------------------------------------
+// The fetch of a picture's bytes: a timeout is "unknown", never "gone" (W2-S10)
+// ---------------------------------------------------------------------------------------------
+
+/** A minimal <img>: the panel only sets src, decodes, and clones for the thumbnail. */
+class FakeImage {
+  constructor() { this.naturalWidth = 4; this.naturalHeight = 3; }
+  set src(_) {}
+  async decode() {}
+  cloneNode() { return new FakeImage(); }
+}
+
+/** Holds every GET_SCREENSHOT reply back until the test releases it. */
+function holdScreenshotReplies() {
+  const replies = [];
+  const realSend = globalThis.chrome.runtime.sendMessage;
+  globalThis.Image = FakeImage;
+  globalThis.chrome.runtime.sendMessage = (msg, cb) => {
+    if (msg.action === 'GET_SCREENSHOT') replies.push(cb);
+  };
+  return { replies, restore: () => { globalThis.chrome.runtime.sendMessage = realSend; } };
+}
+
+test('a fetch that times out does not mark the picture gone, and a late answer still renders', async () => {
+  const hold = holdScreenshotReplies();
+  try {
+    await loadShotPicture('shot-late-1', 20);
+    await new Promise((r) => setTimeout(r, 60));
+    assert.equal(shotGone.has('shot-late-1'), false, 'a timeout is "unknown", not "gone"');
+
+    // The worker answers after the timer: the picture is stored and drawn anyway.
+    hold.replies[0]({ success: true, data: 'aGVsbG8=', mediaType: 'image/jpeg' });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.ok(shotCache.has('shot-late-1'), 'the late answer still stored the picture');
+    assert.equal(shotGone.has('shot-late-1'), false);
+  } finally {
+    hold.restore();
+  }
+});
+
+test('a real not-found answer still marks the picture gone', async () => {
+  const hold = holdScreenshotReplies();
+  try {
+    await loadShotPicture('shot-gone-real', 20);
+    hold.replies[0]({ success: false, error: 'That picture is no longer kept.' });
+    await new Promise((r) => setTimeout(r, 10));
+    assert.ok(shotGone.has('shot-gone-real'), 'the background said it is gone, so it is gone');
+  } finally {
+    hold.restore();
+  }
+});
+
 test('a run that stopped without an answer shows the real reason on the failed card', () => {
   const history = [
     { type: 'user_goal', turn: 1, prompt: 'Go to Google.', isNewRun: true },
@@ -119,7 +174,7 @@ test('a run that stopped without an answer shows the real reason on the failed c
     { type: 'execution_result', step: 1, success: true, message: '[1] a "Search"' },
     { type: 'error', content: 'The model returned neither a tool call nor text.' }
   ];
-  const html = renderTurns(history, 'stopped', '', null, null, null, null, null, null, null);
+  const html = renderTurns(history, 'stopped', '', null, null, null);
   assert.match(html, /The run ended with an error: The model returned neither a tool call nor text\./,
     'the card names the real stop reason');
   assert.match(html, /<div class="act-row fault"/, 'the failed turn renders as a fault row');
@@ -131,7 +186,7 @@ test('a stopped run with no recorded error says the user stopped it, not that it
     { type: 'agent_response', step: 1, thought: '', action: { action: 'navigate', url: 'https://example.com' }, rawResponse: '{}' },
     { type: 'execution_result', step: 1, success: true, message: 'Navigated to https://example.com' }
   ];
-  const html = renderTurns(history, 'stopped', '', null, null, null, null, null, null, null);
+  const html = renderTurns(history, 'stopped', '', null, null, null);
   assert.match(html, /Stopped by you/);
   assert.match(html, /The run was stopped before it finished\./);
   assert.doesNotMatch(html, /Failed|ended with an error/);
@@ -143,7 +198,7 @@ test('an errored run with no recorded error still says it ended with an error', 
     { type: 'agent_response', step: 1, thought: '', action: { action: 'navigate', url: 'https://example.com' }, rawResponse: '{}' },
     { type: 'execution_result', step: 1, success: true, message: 'Navigated to https://example.com' }
   ];
-  const html = renderTurns(history, 'error', '', null, null, null, null, null, null, null);
+  const html = renderTurns(history, 'error', '', null, null, null);
   assert.match(html, /The run ended with an error\./);
 });
 

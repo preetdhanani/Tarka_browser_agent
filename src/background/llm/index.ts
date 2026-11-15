@@ -6,19 +6,19 @@
  *
  * generateCompletion handles completion calls: one log line on dispatch, a deadline
  * (settings.llmTimeoutMs, 120 s by default) plus the task's abort signal, one log line when a call fails.
- * What is new is what happens under it. The provider call is a LangChain chat model built for that call
+ * What is new is what happens under it. The provider call is a native fetch built for that call
  * (factory.ts, ollama.ts, agentRouter.ts), and the deadline and the signal really cancel its request (deadline.ts).
  */
 import { Logger } from '../../shared/logger.ts';
 import { callAgentRouter } from './agentRouter.ts';
 import { withDeadline } from './deadline.ts';
-import { GEMINI_EMPTY_TEXT, ProviderError, assertApiKey, classifyProviderFailure, describeCustomFailure, describeFailure, retryAfterOf, wrapCustomFailure, wrapFailure } from './errors.ts';
-import { createCustomProviderCall, createProviderCall, toLangChainMessages } from './factory.ts';
+import { GEMINI_EMPTY_TEXT, ProviderError, assertApiKey, classifyProviderFailure, describeAgentRouterFailure, describeCustomFailure, describeFailure, describeOllamaFailure, retryAfterOf, wrapAgentRouterFailure, wrapCustomFailure, wrapFailure } from './errors.ts';
+import { assertSecureCustomTransport, createCustomProviderCall, createProviderCall, toLangChainMessages } from './factory.ts';
 import type { ProviderCall } from './factory.ts';
 import { callOllama } from './ollama.ts';
 import { NVIDIA_BASE_URL, baseUrlOf, getApiKey, normalizeCustomOpenaiBase, normalizeNvidiaBaseUrl, providerOf, timeoutMsOf, timeoutSourceOf, withV1 } from './settings.ts';
 import { getEffectiveContextWindow } from './models.ts';
-import { applyEffortPatch, effortPatch, effortSupportOf, geminiThinkingConfig, learnValuesFromError, nearestSupportedLevel, ollamaThink, openaiReasoningBody, refusedEffortField, registryDialect, rememberRefused, resolveEffortSupport } from './effort.ts';
+import { NO_PATCH, applyEffortPatch, effortPatch, effortSupportOf, geminiThinkingConfig, learnValuesFromError, nearestSupportedLevel, ollamaThink, openaiReasoningBody, refusedEffortField, registryDialect, rememberRefused, resolveEffortSupport } from './effort.ts';
 import type { EffortLevel, EffortPatch, EffortSupport } from './effort.ts';
 import { isChatProvider } from './types.ts';
 import { usageOfMessage, usageOfOllama, usageOfOpenAI } from './usage.ts';
@@ -74,6 +74,12 @@ export async function callProviderWithTools(
     : messages;
   const toolChoice = options.toolChoice ?? 'auto';
   const custom = settings.customProviders?.[providerId];
+  // The chat path's missing-key check, before anything is dispatched: a provider that needs a key
+  // fails with today's text instead of the provider's 401. A custom endpoint keeps its own rules
+  // (a keyless one is legitimate), and Ollama has no key at all.
+  if (!custom && (isChatProvider(providerId) || providerId === 'agent_router')) {
+    assertApiKey(providerId, getApiKey(settings, providerId));
+  }
   // What this model takes is resolved before the deadline starts: for Ollama it may be one
   // /api/show the first time (with its own short timeout, and the run's signal). A custom endpoint
   // never gets an effort. The level sent is always one the model supports (the panel's nearest).
@@ -326,6 +332,9 @@ async function callOllamaWithTools(
 
   // The context window of this model (llm/models.ts): the user's, the server's, the family table, then num_ctx.
   const numCtx = (await getEffectiveContextWindow(settings)).tokens;
+  // The generation cap of Settings (ollamaNumPredict), as the chat path sends it: not sent when
+  // it is missing or not above 0.
+  const numPredict = Number(settings.ollamaNumPredict) > 0 ? Number(settings.ollamaNumPredict) : undefined;
 
   const payload = {
     model: settings.model,
@@ -333,7 +342,7 @@ async function callOllamaWithTools(
     tools: ollamaTools,
     tool_choice: toolChoice === 'none' ? 'none' : 'auto',
     stream: false,
-    options: { temperature: 0.1, num_ctx: numCtx }
+    options: { temperature: 0.1, num_ctx: numCtx, ...(numPredict ? { num_predict: numPredict } : {}) }
   };
   const think = effort ? ollamaThink(effort.support.dialect, effort.level, effort.support.values) : undefined;
   const post = (body: object) => fetch(url, {
@@ -358,10 +367,20 @@ async function callOllamaWithTools(
 
   if (!response.ok) {
     // The status travels with the error, so the loop can tell a passing server error from a refusal.
-    throw Object.assign(new Error(`Ollama error: ${response.status} ${await response.text()}`), { status: response.status });
+    const rawBody = await response.text();
+    const error = Object.assign(new Error(rawBody || `Ollama API error (${response.status})`), { status: response.status, headers: response.headers, rawBody });
+    // The curated words of the chat path (errors.ts): a 404 is a model to pull, a 403 is OLLAMA_ORIGINS.
+    throw new ProviderError(
+      describeOllamaFailure(error, { url, model: String(settings.model || ''), rawBody }),
+      { status: response.status, kind: classifyProviderFailure(error).kind, retryAfterMs: retryAfterOf(error) }
+    );
   }
 
   const data = await response.json();
+  // A 200 that carries Ollama's error object (a runner that died mid-answer) fails the call,
+  // like it does on the chat path: the plain Error the documented contract names, not an empty
+  // success the loop would read as a model answer with no tool call.
+  if (typeof data?.error === 'string' && data.error) throw new Error(data.error);
   const message = data.message || {};
   const reasoning = typeof message.thinking === 'string' && message.thinking ? message.thinking : undefined;
   const usage = usageOfOllama(data);
@@ -398,6 +417,11 @@ function withoutReasoningDetails(message: any): any {
 
 /** The reasoning fields of one OpenAI-shaped call, from the model's support and the level. */
 function openaiEffortPatch(providerId: string, effort: CallEffort): EffortPatch {
+  // The anthropic dialects speak the Messages wire (thinking, output_config), which the
+  // OpenAI-shaped /chat/completions body of the tool path must not carry. The chat path sends no
+  // anthropic effort field either (anthropicCall ignores the thinking config), so this is
+  // consistency, not a loss.
+  if (effort.support.dialect === 'anthropic-budget' || effort.support.dialect === 'anthropic-adaptive') return NO_PATCH;
   const patch = effortPatch(effort.support.dialect, effort.level, effort.support.values);
   // OpenAI's own reasoning models refuse a temperature and take max_completion_tokens.
   return providerId === 'openai' ? openaiReasoningBody(patch) : patch;
@@ -415,6 +439,12 @@ async function callOpenAICompatibleWithTools(
   ;(tools || []).forEach(assertToolSchema);
   const baseUrl = toolBaseUrlOf(settings, providerId);
   const url = `${baseUrl}/chat/completions`;
+
+  // SEC-9 on the tool path: a custom endpoint over plain http that would carry a key is refused
+  // here too, by the same guard the completion path runs when it builds its call. Without it the
+  // tool loop would send the key in cleartext although the completion path refuses to.
+  const custom = settings.customProviders?.[providerId];
+  if (custom) assertSecureCustomTransport(custom, getApiKey(settings, providerId));
 
   const openaiTools = (tools || []).map(t => ({
     type: 'function',
@@ -438,7 +468,6 @@ async function callOpenAICompatibleWithTools(
   };
 
   const apiKey = getApiKey(settings, providerId);
-  const custom = settings.customProviders?.[providerId];
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   // A custom endpoint saved with keyMode 'none' takes no key, so no Authorization header at all.
   if (custom?.keyMode !== 'none') headers.Authorization = `Bearer ${apiKey}`;
@@ -475,7 +504,25 @@ async function callOpenAICompatibleWithTools(
 
   if (!response.ok) {
     // The status travels with the error, so the loop can tell a passing server error from a refusal.
-    throw Object.assign(new Error(`API error: ${response.status} ${await response.text()}`), { status: response.status });
+    const rawBody = await response.text();
+    const error = Object.assign(new Error(rawBody), { status: response.status, headers: response.headers, rawBody });
+    // The curated words of the chat path (errors.ts), per provider: the 401 authentication texts,
+    // the provider's name and URL. A custom endpoint names its display name and protocol.
+    const context = { baseUrl, apiKey, rawBody };
+    const customContext = { ...context, providerLabel: custom?.displayName || providerId, protocol: (custom?.protocol || 'openai') as 'openai' | 'anthropic' };
+    const inner = custom
+      ? describeCustomFailure(error, customContext)
+      : providerId === 'agent_router'
+        ? describeAgentRouterFailure(error, { rawBody, apiKey })
+        : describeFailure(providerId as ChatProvider, error, context);
+    throw new ProviderError(
+      custom
+        ? wrapCustomFailure(inner, customContext)
+        : providerId === 'agent_router'
+          ? wrapAgentRouterFailure(inner)
+          : wrapFailure(providerId as ChatProvider, inner, context),
+      { status: response.status, kind: classifyProviderFailure(error).kind, retryAfterMs: retryAfterOf(error) }
+    );
   }
 
   const data = await response.json();

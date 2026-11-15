@@ -1,9 +1,9 @@
 /**
  * The error texts of the LLM layer (llm/errors.ts), on the errors that the real SDKs throw.
  *
- * The texts are the ones apiClients.js always produced, for example
- * "OpenRouter API connection error: OpenRouter API Error (500): <body>". What changed is where they come from:
- * LangChain and the SDKs throw errors with a `status`, and errors.ts maps them back. Two parts:
+ * The texts are the ones the extension has always shown, for example
+ * "OpenRouter API connection error: OpenRouter API Error (500): <body>". The provider calls throw
+ * errors with a `status`, and errors.ts maps them back. Two parts:
  *   - end to end: each provider answers an HTTP error, or fails to connect, through the real client, and the
  *     text that reaches the caller is compared word for word with today's
  *   - the functions on their own, on made-up errors, for the shapes a server can send that a test cannot
@@ -304,7 +304,7 @@ test('describeFailure and wrapFailure: the pieces of today\'s texts, one by one'
   // The provider's own words, which the old code logged as "Failed request to ...".
   assert.equal(describeFailure('openrouter', http(500, '500 x'), { ...ctx, rawBody: 'raw' }), 'OpenRouter API Error (500): raw');
   assert.equal(describeFailure('openai', http(429, '429 Rate limit reached'), ctx), 'API Error (429): Rate limit reached', 'without a raw body the SDK text is used, minus the status');
-  assert.equal(describeFailure('openai', http(401, '401 bad key\n\nTroubleshooting URL: https://docs.langchain.com/x/\n'), ctx), 'API Error (401): bad key', 'LangChain\'s link is not part of the old text');
+  assert.equal(describeFailure('openai', http(401, '401 bad key\n\nTroubleshooting URL: https://docs.langchain.com/x/\n'), ctx), 'API Error (401): bad key', 'a docs link is not part of the text');
   assert.equal(describeFailure('openai', http(404, '404 status code (no body)'), ctx), 'API Error (404): ');
   assert.equal(describeFailure('anthropic', http(529, '529 {"type":"error"}'), ctx), 'Anthropic API error (529): {"type":"error"}');
   assert.equal(

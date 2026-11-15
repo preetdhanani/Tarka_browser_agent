@@ -4,21 +4,14 @@
  * Employs persistent per-provider API key storage, automatic model fetching, instant key auto-saving, and a smart searchable combobox component.
  */
 
-// Must stay the first import: it sets zod's jitless flag before any module that bundles zod runs (see the file).
-import '../src/background/boot/zodJitless.ts';
 import { Storage, DEFAULT_SETTINGS, DEFAULT_PROVIDER_CONFIGS, CHAT_INDEX_KEY } from '../src/shared/storage.ts';
 import { extractReadableAnswer } from '../src/shared/answerText.ts';
 import { BUILD_STAMP, IS_BUILD } from '../src/shared/build.ts';
-import {
-  renderActionConfirmationCard,
-  renderChallengeHelpCard,
-  renderContinueBudgetCard,
-  renderProvenanceFindingsTable
-} from './cards.js';
+import { renderActionConfirmationCard } from './cards.js';
 
 import { BRAND_MARK } from './brand.js';
 import { contextCardHtml, contextWindowHint, meterView, ringSvg } from './contextMeter.js';
-import { parseTokenCount } from '../src/shared/tokens.ts';
+import { formatTokens, parseTokenCount } from '../src/shared/tokens.ts';
 import { logEntryHtml, logMatchesFilter, parseLogData, treeStateKey } from './logView.js';
 
 import {
@@ -107,6 +100,12 @@ let hasConnectedBefore = false;
 // every update from the fresh worker forever (which would freeze the panel permanently).
 let lastRenderedStateVersion = -1;
 let lastBootId = null;
+// The last state that passed the staleness gate, so a failure that happens outside a broadcast
+// (a refused confirm, a dead worker) can re-render the timeline it belongs to.
+let lastState = null;
+// The task-level error the panel shows as a card in the timeline. It is panel state, not a DOM
+// node, so a re-render cannot swallow it: it is cleared when a new task starts or the chat changes.
+let taskError = null;
 
 // Expand/collapse state for the batched action groups. renderState() rewrites the whole
 // timeline on every state broadcast (~7x per step), so this must live OUTSIDE the DOM or a
@@ -172,6 +171,7 @@ const ICONS = {
   dot: '<svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4" fill="currentColor"/></svg>',
   circle: '<svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
   warning: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3L2 20h20L12 3z"/><line x1="12" y1="9" x2="12" y2="14"/><circle cx="12" cy="17.3" r="0.6" fill="currentColor" stroke="none"/></svg>',
+  shield: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6z"/></svg>',
   complete: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 12.5l2.3 2.3L16 10"/></svg>',
   clock: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>',
   trash: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/></svg>',
@@ -826,6 +826,8 @@ function openComboboxMenu() {
 
     menu.style.display = 'flex';
     combobox.classList.add('open');
+    const trigger = document.getElementById('modelComboboxTrigger');
+    if (trigger) trigger.setAttribute('aria-expanded', 'true');
     if (!allFetchedModels || allFetchedModels.length === 0) {
       fetchDynamicModels(false);
     }
@@ -843,6 +845,8 @@ function closeComboboxMenu() {
   if (menu && combobox) {
     menu.style.display = 'none';
     combobox.classList.remove('open');
+    const trigger = document.getElementById('modelComboboxTrigger');
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
   }
 }
 
@@ -965,10 +969,21 @@ async function fetchDynamicModels(forceRefresh = false) {
   });
 }
 
+// The provider and model the effort levels and the context-window field were last asked for.
+// Rendering the picker again (typing in its search, re-rendering the list) marks the selected row
+// without changing the model, and the two background asks must not fire per keystroke.
+let lastModelAskKey = null;
+
 function updateModelBadge(modelName) {
-  // Every model change passes here, so the effort levels and the context window field follow the model.
-  refreshEffortSupport();
-  refreshContextWindowField();
+  // Every real model change passes here, so the effort levels and the context window field follow
+  // the model. A render that keeps the same model (the search filtering the list) skips them.
+  const provider = document.getElementById('providerSelect')?.value || currentSettings.provider;
+  const askKey = `${provider}|${modelName || ''}`;
+  if (askKey !== lastModelAskKey) {
+    lastModelAskKey = askKey;
+    refreshEffortSupport();
+    refreshContextWindowField();
+  }
   renderContextMeter();
   const badge = document.getElementById('currentModelBadge');
   if (badge) {
@@ -1371,6 +1386,9 @@ function initEventListeners() {
       const what = target.getAttribute('data-ctx');
       if (what === 'compact') {
         compactChatFromPanel();
+        // The card's job is done once Compact was clicked: close it, so an open card cannot sit
+        // over the timeline (a "Chat compacted" divider lands right above the composer).
+        closeComposerMenus();
       } else if (what === 'settings') {
         closeComposerMenus();
         const nav = document.querySelector ? document.querySelector('.nav-btn[data-tab="settings"]') : null;
@@ -1851,6 +1869,8 @@ function currentRunModel() {
 async function startTaskInner(prompt) {
   // Auto-sync form state into Storage before launching task
   await autoSaveCurrentForm();
+  // A new task is starting: its own failure (if any) is the one worth showing.
+  clearTaskError();
   runModelSnapshot = currentRunModel();
   // A new task is watched from its first row on.
   setFollowTimeline(true);
@@ -1885,16 +1905,28 @@ async function startTaskInner(prompt) {
 /**
  * Surface a task-level failure in the timeline rather than a modal alert(), which the user
  * has to dismiss and which leaves no record of what went wrong.
+ *
+ * The message is kept in panel state and drawn by the timeline render, so it survives the next
+ * state broadcast; it is cleared when a new task starts or the chat changes. Before the first
+ * state has arrived there is nothing to re-render, so the card is appended directly.
  */
 function showTaskError(message) {
+  taskError = String(message || '');
+  if (lastState) {
+    renderTimelineFromState(lastState);
+    return;
+  }
   const timeline = document.getElementById('timeline');
   if (!timeline) return;
-  const card = document.createElement('div');
-  card.className = 'result-badge error';
-  card.style.cssText = 'margin-top: 8px; padding: 10px 12px; border-radius: 8px; font-size: 12px; line-height: 1.5; align-items: flex-start;';
-  card.innerHTML = `${ICONS.warning}<span><strong>Could not start task:</strong><br>${escapeHtml(message)}</span>`;
-  timeline.appendChild(card);
+  timeline.insertAdjacentHTML('beforeend', taskErrorCardHtml(taskError));
   timeline.scrollTop = timeline.scrollHeight;
+}
+
+/** Clears the held task error and takes the card out of the timeline when one is on screen. */
+function clearTaskError() {
+  if (!taskError) return;
+  taskError = null;
+  if (lastState) renderTimelineFromState(lastState);
 }
 
 async function loadSessionHistory() {
@@ -1954,11 +1986,11 @@ async function loadSessionHistory() {
  *
  * The state names the chat it belongs to (its Recent tasks entry): that id is part of the finish
  * card's identity and marks the chat in the list. The background saves the chat; this panel never
- * writes one.
+ * writes one. renderState adopts it, but only once the state has passed the staleness gate, so an
+ * out-of-order duplicate can never move the panel to another chat.
  */
 function receiveState(state) {
   if (!state) return;
-  if (typeof state.chatId === 'string' && state.chatId) currentSessionId = state.chatId;
   renderState(state);
 }
 
@@ -1973,6 +2005,15 @@ function resetChatView() {
   turnExpandOverride.clear();
   expandedRows.clear();
   seenFinishKey = null;
+  // The view state of the chat that was on screen: its open summaries and audit sections, the
+  // files it handed over, the code boxes the reader unfolded, and any task error it held. The
+  // keys of all of these name turns or rows of that chat, so none of them may leak into the next.
+  openCompactSummaries.clear();
+  openAuditDetails.clear();
+  closedAuditDetails.clear();
+  shownFiles.clear();
+  unfoldedCode.clear();
+  taskError = null;
   setFollowTimeline(true);
 }
 
@@ -2053,7 +2094,12 @@ function renderState(state) {
     lastRenderedStateVersion = state.stateVersion;
   }
 
-  const { status, stepCount, history, planSteps, currentPhase, pendingQuestion, pendingApproval, pendingConfirm, pendingChallengeHelp, pendingContinueBudget, findings } = state;
+  // The chat this state belongs to is adopted only now, after the staleness gate: a stale
+  // broadcast must not move the panel to another chat.
+  if (typeof state.chatId === 'string' && state.chatId) currentSessionId = state.chatId;
+  lastState = state;
+
+  const { status, stepCount, history, planSteps, currentPhase, pendingApproval, pendingConfirm } = state;
   const isDisconnected = backgroundPort === null;
 
   const statusPill = document.getElementById('statusPill');
@@ -2083,10 +2129,11 @@ function renderState(state) {
       ? 'Waiting for your approval'
       : (pauseReasonText(state) || currentPhase || `Processing step ${stepCount}...`);
     
-    const maxSteps = (state.budget && state.budget.hardCap) || currentSettings.maxSteps || DEFAULT_SETTINGS.maxSteps;
-    const workingSteps = (state.budget && state.budget.workingTotal) || maxSteps;
-    const currentSteps = (state.budget && state.budget.used) || stepCount || 1;
-    const pct = Math.min(100, Math.round((currentSteps / Math.max(1, workingSteps)) * 100));
+    // The bar walks the step limit the settings hold (CONTRACT-STATE: the runner no longer sends
+    // a budget object, and the panel does not read one).
+    const maxSteps = currentSettings.maxSteps || DEFAULT_SETTINGS.maxSteps;
+    const currentSteps = stepCount || 1;
+    const pct = Math.min(100, Math.round((currentSteps / Math.max(1, maxSteps)) * 100));
     if (progressBarFill) {
       progressBarFill.style.width = `${pct}%`;
       // A hold at the plan is not progress through the steps; the bar would claim 4% of a run
@@ -2182,6 +2229,9 @@ function renderState(state) {
       const runModel = run.model;
       if (runProvider.exists && runModel && !pendingApproval) {
         processingModelChip.textContent = `${runProvider.displayName} · ${runModel}`;
+        // The label of a built-in can be long ("OpenAI-Compatible (Groq, ...)"): the chip clamps
+        // to one line, and the hover text carries the whole thing.
+        processingModelChip.title = `${runProvider.displayName} · ${runModel}`;
         processingModelChip.style.display = 'inline-block';
       } else {
         processingModelChip.style.display = 'none';
@@ -2191,27 +2241,42 @@ function renderState(state) {
     }
   }
 
-  const timeline = document.getElementById('timeline');
-  if (timeline) {
-    if ((!history || history.length === 0) && !pendingApproval && !pendingConfirm && !pendingChallengeHelp && !pendingContinueBudget) {
-      renderEmptyState();
-      return;
-    }
+  renderTimelineFromState(state);
+}
 
-    const finishArrived = noteFinishCard(status, history);
-    const html = renderTurns(history, status, currentPhase, pendingQuestion, pendingApproval, pendingConfirm, pendingChallengeHelp, pendingContinueBudget, findings, state.effortProfile, planSteps);
-    const changed = html !== lastTimelineHtml;
-    lastTimelineHtml = html;
-    timeline.innerHTML = html;
-    attachShotSlots();
-    // Following: the newest row stays in view however the content grew. A reader who scrolled up
-    // keeps their place, and the Jump button tells them that something new came in below.
-    if (followTimeline) {
-      if (scrollTimelineToLatest(timeline, finishArrived) === 'card-top') setFollowTimeline(false);
-    } else if (changed) {
-      showJumpToLatest(true);
-    }
+/**
+ * The timeline part of a state render: the turns, the holds, and (when one is held) the task error
+ * card. Split from renderState so a failure that happens between broadcasts (a refused confirm, a
+ * dead worker) can put its card up at once, and so the card survives every later broadcast.
+ */
+function renderTimelineFromState(state) {
+  const { status, currentPhase, history, pendingApproval, pendingConfirm, planSteps } = state;
+  const timeline = document.getElementById('timeline');
+  if (!timeline) return;
+  if ((!history || history.length === 0) && !pendingApproval && !pendingConfirm && !taskError) {
+    renderEmptyState();
+    return;
   }
+
+  const finishArrived = noteFinishCard(status, history);
+  let html = renderTurns(history, status, currentPhase, pendingApproval, pendingConfirm, planSteps);
+  if (taskError) html += taskErrorCardHtml(taskError);
+  const changed = html !== lastTimelineHtml;
+  lastTimelineHtml = html;
+  timeline.innerHTML = html;
+  attachShotSlots();
+  // Following: the newest row stays in view however the content grew. A reader who scrolled up
+  // keeps their place, and the Jump button tells them that something new came in below.
+  if (followTimeline) {
+    if (scrollTimelineToLatest(timeline, finishArrived) === 'card-top') setFollowTimeline(false);
+  } else if (changed) {
+    showJumpToLatest(true);
+  }
+}
+
+/** The card of a task-level failure, as the timeline renders it. */
+function taskErrorCardHtml(message) {
+  return `<div class="result-badge error" style="margin-top: 8px; padding: 10px 12px; border-radius: 8px; font-size: 12px; line-height: 1.5; align-items: flex-start;">${ICONS.warning}<span><strong>Task error:</strong><br>${escapeHtml(message)}</span></div>`;
 }
 
 /** Whether the timeline follows the run now (for the tests). */
@@ -2344,48 +2409,81 @@ function attachShotThumb(slot, thumb) {
   slot.appendChild(thumb);
 }
 
-/** Fetches one picture by id, decodes it, and attaches it to every slot that shows it. */
-async function loadShotPicture(imageId) {
+/**
+ * Fetches one picture by id, decodes it, and attaches it to every slot that shows it.
+ *
+ * Only a real answer from the background decides anything: a reply that carries the bytes stores
+ * the picture, and a reply that does not marks it gone. The panel's own timeout (a busy worker)
+ * only ends the waiting - it never marks the picture gone, and an answer that arrives after it
+ * still stores and draws the picture. `timeoutMs` exists for the tests; production waits 3 s.
+ */
+function loadShotPicture(imageId, timeoutMs = 3000) {
   if (shotLoading.has(imageId)) return;
   shotLoading.add(imageId);
-  try {
-    const dataUrlFor = (data, mediaType) => (String(data).startsWith('data:')
-      ? String(data)
-      : `data:${mediaType || 'image/jpeg'};base64,${data}`);
-    const answer = await new Promise((resolve) => {
-      let done = false;
-      const finish = (value) => { if (!done) { done = true; resolve(value); } };
-      try {
-        sendBgMessage({ action: 'GET_SCREENSHOT', payload: { imageId } }, (resp) => finish(chrome.runtime.lastError ? null : resp));
-      } catch (_) {
-        finish(null);
-      }
-      setTimeout(() => finish(null), 3000);
-    });
-    if (!answer || !answer.success || !answer.data) {
-      shotGone.add(imageId);
-    } else {
+  const dataUrlFor = (data, mediaType) => (String(data).startsWith('data:')
+    ? String(data)
+    : `data:${mediaType || 'image/jpeg'};base64,${data}`);
+  // This request's own lifecycle: the flag is held until the bytes are decoded (or the wait
+  // ends), so a re-render cannot start a second fetch for the same picture meanwhile.
+  let settled = false;
+  const release = () => {
+    if (settled) return;
+    settled = true;
+    shotLoading.delete(imageId);
+  };
+  const attach = () => {
+    // The timeline may have been rendered again while the picture was loading: its slots now are
+    // the ones that get it.
+    attachShotSlots();
+  };
+
+  /** Applies one real answer: the picture goes into the cache, or it is recorded as gone. */
+  const applyAnswer = (answer) => {
+    if (answer && answer.success && answer.data) {
       const dataUrl = dataUrlFor(answer.data, answer.mediaType);
       const img = new Image();
       img.src = dataUrl;
-      try {
-        await img.decode();
+      img.decode().then(() => {
         // The thumbnail is a second element of the same decoded bytes, made once here.
-        const thumb = img.cloneNode();
-        shotCache.set(imageId, { dataUrl, img, thumb });
-      } catch (_) {
+        shotCache.set(imageId, { dataUrl, img, thumb: img.cloneNode() });
+        release();
+        attach();
+      }, () => {
         // The bytes came back but they are not a picture the browser can decode. That is not the
         // same as "the session dropped it", and saying so would be a wrong explanation.
         shotGone.add(imageId);
         shotGone.add(`${imageId}#undecodable`);
-      }
+        release();
+        attach();
+      });
+      return;
     }
-  } finally {
-    shotLoading.delete(imageId);
+    shotGone.add(imageId);
+    release();
+    attach();
+  };
+
+  try {
+    sendBgMessage({ action: 'GET_SCREENSHOT', payload: { imageId } }, (resp) => {
+      if (chrome.runtime.lastError || !resp) {
+        // No reply (the channel closed, the worker is gone): unknown, not gone. The next render
+        // asks again.
+        release();
+        return;
+      }
+      release();
+      // A real answer always decides, even one that arrives after the timer gave up waiting.
+      applyAnswer(resp);
+    });
+  } catch (_) {
+    release();
+    return;
   }
-  // The timeline may have been rendered again while the picture was loading: its slots now are
-  // the ones that get it.
-  attachShotSlots();
+  setTimeout(() => {
+    // Still nothing after the wait: stop waiting. The slot stays empty until the next render
+    // asks again; nothing is marked gone.
+    release();
+  }, timeoutMs);
 }
 
 /**
@@ -2517,6 +2615,16 @@ function buildTurns(history) {
       cur.failed = true;
     } else if (item.type === 'user_answer') {
       cur.entries.push({ kind: 'answer', idx, content: item.content });
+    } else if (item.type === 'confirm_review') {
+      // The decision on a confirmation card, kept so the record of the run shows what the user
+      // allowed or denied, and whether the origin was remembered for the rest of the run.
+      cur.entries.push({
+        kind: 'confirm',
+        idx,
+        actionSummary: String(item.actionSummary || ''),
+        decision: item.decision === 'denied' ? 'denied' : 'approved',
+        remembered: !!item.remembered
+      });
     } else if (item.type === 'finish') {
       cur.answer = item.answer;
       cur.answerUnconfirmed = !!item.unconfirmed;
@@ -2529,7 +2637,6 @@ function buildTurns(history) {
       // saved sessions from before the audit existed: those render exactly as they always did.
       cur.audit = item.audit || null;
       cur.table = item.table || null;
-      cur.findings = item.findings || null;
       cur.runStats = item.runStats || null;
       // The files the run hands over with its answer (finish records_file or files).
       cur.files = Array.isArray(item.files) ? item.files.filter((f) => f && typeof f.name === 'string' && typeof f.content === 'string') : null;
@@ -2541,7 +2648,6 @@ function buildTurns(history) {
       cur.partialReason = typeof item.reason === 'string' ? item.reason : '';
       cur.audit = item.audit || null;
       cur.table = item.table || null;
-      cur.findings = item.findings || null;
       cur.runStats = item.runStats || null;
     }
   });
@@ -2957,8 +3063,8 @@ function openFilePreview(key) {
   dialog.querySelector('.file-close').focus();
 }
 
-function renderFinishCard(turn, findings = null) {
-  if (turn.partial) return renderPartialCard(turn, findings);
+function renderFinishCard(turn) {
+  if (turn.partial) return renderPartialCard(turn);
   const audit = normalizeAudit(turn.audit);
   const unconfirmed = !!turn.answerUnconfirmed;
   // With an audit the card already says all of it (title, subtitle, the notes below): the stored answer keeps the
@@ -2984,25 +3090,24 @@ function renderFinishCard(turn, findings = null) {
     ? `<details class="audit verified answer-evidence"><summary class="audit-summary"><span class="audit-chev">${ICONS.chevron}</span><span>Evidence</span></summary><div class="audit-body"><div class="audit-plain">${escapeHtml(evidenceText)}</div></div></details>`
     : '';
 
-  const allFindings = (findings && findings.length > 0) ? findings : (turn.findings || (turn.table && turn.table.rows ? turn.table.rows : []));
-  const hasEmbeddedTable = hasMarkdownTable(shown);
-  const findingsHtml = (allFindings && allFindings.length > 0 && !hasEmbeddedTable) ? renderProvenanceFindingsTable(allFindings) : '';
+  const tableHtml = renderFinishTable(turn.table);
+  const statsHtml = renderRunStats(turn.runStats);
 
   if (!audit && turn.outcome && !isFailedAnswer) {
     const card = OUTCOME_CARD[turn.outcome];
     const note = failedStepsNote(turn.failedSteps);
     const classes = ['finish-card', card.cls, note ? 'has-sub' : ''].filter(Boolean).join(' ');
     const subHtml = note ? `<div class="finish-subs"><div class="finish-sub">${escapeHtml(note)}</div></div>` : '';
-    return `<div class="${classes}"><div class="finish-title">${ICONS[card.icon]} ${card.title}</div>${subHtml}${body}${evidenceHtml}${findingsHtml}</div>`;
+    return `<div class="${classes}"><div class="finish-title">${ICONS[card.icon]} ${card.title}</div>${subHtml}${body}${evidenceHtml}${tableHtml}${statsHtml}</div>`;
   }
 
   if (!audit) {
     if (isFailedAnswer || hadFailedStep) {
-      return `<div class="finish-card failed"><div class="finish-title">${ICONS.warning} Failed</div>${body}${evidenceHtml}${findingsHtml}</div>`;
+      return `<div class="finish-card failed"><div class="finish-title">${ICONS.warning} Failed</div>${body}${evidenceHtml}${tableHtml}${statsHtml}</div>`;
     }
     return unconfirmed
-      ? `<div class="finish-card unconfirmed"><div class="finish-title">${ICONS.warning} Unconfirmed answer</div>${body}${evidenceHtml}${findingsHtml}</div>`
-      : `<div class="finish-card"><div class="finish-title">${ICONS.complete} Done</div>${body}${evidenceHtml}${findingsHtml}</div>`;
+      ? `<div class="finish-card unconfirmed"><div class="finish-title">${ICONS.warning} Unconfirmed answer</div>${body}${evidenceHtml}${tableHtml}${statsHtml}</div>`
+      : `<div class="finish-card"><div class="finish-title">${ICONS.complete} Done</div>${body}${evidenceHtml}${tableHtml}${statsHtml}</div>`;
   }
 
   let title;
@@ -3040,7 +3145,47 @@ function renderFinishCard(turn, findings = null) {
   const details = renderAuditDetails(audit, turn.turn, attention ? 'attention' : 'verified');
   // The caveat goes above a doubtful answer, so it is seen before the answer is read, and below a
   // checked one, where it is only a receipt.
-  return `<div class="${classes.join(' ')}"><div class="finish-title">${icon} ${title}</div>${subHtml}${attention ? details : ''}${body}${evidenceHtml}${findingsHtml}${attention ? '' : details}</div>`;
+  return `<div class="${classes.join(' ')}"><div class="finish-title">${icon} ${title}</div>${subHtml}${attention ? details : ''}${body}${evidenceHtml}${tableHtml}${statsHtml}${attention ? '' : details}</div>`;
+}
+
+/**
+ * The finish tool's table (CONTRACT-TABLE): { columns: string[], rows: string[][] }. Rendered as a
+ * real table, the header row built from `columns` and one row per `rows` entry, in the same
+ * scrollable wrapper the answer's own markdown tables use. Every cell is escaped. Anything that is
+ * not that shape (an older session, a malformed row) renders nothing instead of breaking the card.
+ */
+function renderFinishTable(table) {
+  const columns = table && Array.isArray(table.columns) ? table.columns : null;
+  const rows = table && Array.isArray(table.rows) ? table.rows : null;
+  if (!columns || columns.length === 0 || !rows || rows.length === 0) return '';
+  const head = `<thead><tr>${columns.map((c) => `<th scope="col">${escapeHtml(c)}</th>`).join('')}</tr></thead>`;
+  const body = `<tbody>${rows.map((row) => {
+    const cells = Array.isArray(row) ? row : [];
+    // escapeHtml treats every falsy value as empty, so a number 0 or false has to be stringified first.
+    return `<tr>${columns.map((_, i) => `<td>${escapeHtml(cells[i] == null ? '' : String(cells[i]))}</td>`).join('')}</tr>`;
+  }).join('')}</tbody>`;
+  return `<div class="md-table-wrap" role="region" aria-label="Table" tabindex="0"><table class="md-table">${head}${body}</table></div>`;
+}
+
+/**
+ * The run's numbers, as one quiet line under the answer (the runner attaches runStats to the
+ * finish row and to the closing partial row). Rendered defensively: a run without stats, an
+ * older session, or an object with nothing in it shows no line at all.
+ */
+function renderRunStats(stats) {
+  if (!stats || typeof stats !== 'object') return '';
+  const calls = Number(stats.modelCalls) || 0;
+  const steps = Number(stats.stepsUsed) || 0;
+  const tokensIn = Number(stats.tokensIn) || 0;
+  const tokensOut = Number(stats.tokensOut) || 0;
+  if (!calls && !steps && !tokensIn && !tokensOut) return '';
+  const parts = [
+    `${calls} model call${calls === 1 ? '' : 's'}`,
+    `${steps} step${steps === 1 ? '' : 's'}`
+  ];
+  if (tokensIn) parts.push(`${formatTokens(tokensIn)} tokens in`);
+  if (tokensOut) parts.push(`${formatTokens(tokensOut)} tokens out`);
+  return `<div class="finish-stats">${escapeHtml(parts.join(' · '))}</div>`;
 }
 
 /**
@@ -3084,7 +3229,7 @@ function splitPartialReason(answer) {
     : { reason: '', rest: text };
 }
 
-function renderPartialCard(turn, findings = null) {
+function renderPartialCard(turn) {
   const audit = normalizeAudit(turn.audit);
   const reasonCode = turn.partialReason || '';
   const title = PARTIAL_TITLE[reasonCode] || 'Not finished';
@@ -3093,9 +3238,8 @@ function renderPartialCard(turn, findings = null) {
   const shown = audit ? withoutEngineNotes(rest) : rest;
   const body = shown ? `<div class="finish-body">${formatMarkdownText(shown)}</div>` : '';
 
-  const allFindings = (findings && findings.length > 0) ? findings : (turn.findings || (turn.table && turn.table.rows ? turn.table.rows : []));
-  const hasEmbeddedTable = hasMarkdownTable(shown);
-  const findingsHtml = (allFindings && allFindings.length > 0 && !hasEmbeddedTable) ? renderProvenanceFindingsTable(allFindings) : '';
+  const tableHtml = renderFinishTable(turn.table);
+  const statsHtml = renderRunStats(turn.runStats);
 
   // An unverified audit turns the edge red, as on any other card (the .unverified rule comes after .partial).
   const classes = ['finish-card', 'partial', 'has-sub'];
@@ -3105,7 +3249,7 @@ function renderPartialCard(turn, findings = null) {
   const resume = turn.resumable && RESUMABLE_REASONS.includes(reasonCode)
     ? `<div class="finish-actions"><button type="button" class="btn btn-secondary btn-xs finish-resume" data-resume="1">Resume</button></div>`
     : '';
-  return `<div class="${classes.join(' ')}"><div class="finish-title">${ICONS.warning} ${title}</div><div class="finish-subs"><div class="finish-sub">${subtitle}</div></div>${details}${body}${findingsHtml}${resume}</div>`;
+  return `<div class="${classes.join(' ')}"><div class="finish-title">${ICONS.warning} ${title}</div><div class="finish-subs"><div class="finish-sub">${subtitle}</div></div>${details}${body}${tableHtml}${statsHtml}${resume}</div>`;
 }
 
 // What the engine writes into an annotated answer (annotateAnswer in agent/answerAudit.ts): one warning line on top, and a
@@ -3126,20 +3270,17 @@ function withoutEngineNotes(answer) {
 }
 
 /**
- * Why the run is paused, in one line, for a pause that has no card of its own: the question, confirmation, challenge and
- * budget holds each draw their own card (renderTurns), so this says nothing for them. '' when the run is not paused.
- * `pauseReason` comes from the runner: 'user' (the Pause button), 'llm_failure' (the model request failed, the error is in
- * the timeline), 'worker_restart' (the browser restarted the extension's worker, or a run that was cut off with no Pause pending); anything else is unknown, said honestly.
+ * Why the run is paused, in one line, for a pause that has no card of its own: the confirmation
+ * and plan holds each draw their own card (renderTurns), so this says nothing for them. '' when
+ * the run is not paused. `pauseReason` comes from the runner, and the only reason it produces is
+ * 'user' (the Pause button); anything else is unknown, said honestly.
  */
 function pauseReasonText(state) {
   if (!state || state.status !== 'paused') return '';
-  if (state.pendingQuestion || state.pendingApproval || state.pendingConfirm || state.pendingChallengeHelp || state.pendingContinueBudget) return '';
-  switch (state.pauseReason) {
-    case 'user': return 'Paused by you. Press Resume to continue.';
-    case 'llm_failure': return 'Paused: the model request failed (see the error above). Press Resume to try again.';
-    case 'worker_restart': return 'Paused: the extension restarted. Press Resume to continue.';
-    default: return 'Paused. Press Resume to continue.';
-  }
+  if (state.pendingApproval || state.pendingConfirm) return '';
+  return state.pauseReason === 'user'
+    ? 'Paused by you. Press Resume to continue.'
+    : 'Paused. Press Resume to continue.';
 }
 
 /** Plan progress. Only 'completed' counts as done: a skipped step is not progress. */
@@ -3204,7 +3345,7 @@ function renderCompactedItem(item) {
     </div>`;
 }
 
-function renderTurns(history, status, currentPhase, pendingQuestion, pendingApproval = null, pendingConfirm = null, pendingChallengeHelp = null, pendingContinueBudget = null, findings = null, effortProfile = null, planSteps = null) {
+function renderTurns(history, status, currentPhase, pendingApproval = null, pendingConfirm = null, planSteps = null) {
   const items = buildTurns(history);
   // The runs alone: a Compact divider is not a turn, so it is never the live turn, never gets the
   // synthetic end card, and counts no steps.
@@ -3215,7 +3356,7 @@ function renderTurns(history, status, currentPhase, pendingQuestion, pendingAppr
   // twice and count "step 1 of N" for a run that has not started.
   const progressPlan = pendingApproval ? null : planSteps;
 
-  if (turns.length === 0 && (pendingApproval || pendingConfirm || pendingChallengeHelp || pendingContinueBudget)) {
+  if (turns.length === 0 && (pendingApproval || pendingConfirm)) {
     const held = { turn: 1, goal: null, entries: [], answer: null, audit: null, failed: false, timestamp: null, isNewRun: false };
     turns.push(held);
     items.push(held);
@@ -3275,6 +3416,13 @@ function renderTurns(history, status, currentPhase, pendingQuestion, pendingAppr
       if (e.kind === 'answer') {
         return `<div class="act-row answer"><span class="act-ico">${ICONS.keyboard}</span><span class="act-text">You answered: <em>${escapeHtml(e.content)}</em></span></div>`;
       }
+      if (e.kind === 'confirm') {
+        // The user's decision on a confirmation card: what was asked, what was decided, and
+        // whether the origin was remembered for the rest of the run.
+        const allowed = e.decision === 'approved';
+        const mark = e.remembered ? '<span class="act-detail">remembered for this task</span>' : '';
+        return `<div class="act-row confirm"><span class="act-ico">${ICONS.shield}</span><span class="act-text">${allowed ? 'You allowed' : 'You denied'}: ${escapeHtml(e.actionSummary)}${mark}</span></div>`;
+      }
       const d = describeAction(e.action, e.outcome);
       const key = `${turn.turn}:${e.idx}`;
       const shown = expandedRows.has(key);
@@ -3317,19 +3465,6 @@ function renderTurns(history, status, currentPhase, pendingQuestion, pendingAppr
       ? `<div class="act-phase">${escapeHtml(currentPhase)}</div>`
       : '';
 
-    // The agent called ask_user and is waiting - give the user an actual way to answer, right
-    // where the question was asked, instead of leaving them stuck at a generic Resume button
-    // with no way to say anything back.
-    const answerPrompt = (isLive && status === 'paused' && pendingQuestion)
-      ? `<div class="ask-user-prompt">
-          <div class="ask-user-question">${ICONS.ask} ${escapeHtml(pendingQuestion)}</div>
-          <div class="ask-user-input-row">
-            <input type="text" class="ask-user-input form-input" placeholder="Type your answer..." />
-            <button class="ask-user-send btn btn-primary btn-xs" type="button">Send</button>
-          </div>
-        </div>`
-      : '';
-
     const confirmPrompt = (isLive && status === 'paused' && pendingConfirm)
       ? renderActionConfirmationCard(pendingConfirm)
       : '';
@@ -3338,14 +3473,6 @@ function renderTurns(history, status, currentPhase, pendingQuestion, pendingAppr
     // would repeat its Approve/Cancel buttons for runs that are long over.
     const planPrompt = (isLive && pendingApproval)
       ? renderPlanApprovalCard(pendingApproval)
-      : '';
-
-    const challengePrompt = (isLive && status === 'paused' && pendingChallengeHelp)
-      ? renderChallengeHelpCard(pendingChallengeHelp)
-      : '';
-
-    const budgetPrompt = (isLive && status === 'paused' && pendingContinueBudget)
-      ? renderContinueBudgetCard(pendingContinueBudget)
       : '';
 
     const sessionDivider = (turn.turn > 1 || turn.isNewRun)
@@ -3360,17 +3487,15 @@ function renderTurns(history, status, currentPhase, pendingQuestion, pendingAppr
       ${turn.goal ? `<div class="user-goal-card"><span class="goal-label">Goal</span>${escapeHtml(turn.goal)}</div>` : ''}
       ${planPrompt}
       ${confirmPrompt ? confirmPrompt : ''}
-      ${challengePrompt ? challengePrompt : ''}
-      ${budgetPrompt ? budgetPrompt : ''}
       ${count || turn.entries.length || planDetail ? `<div class="act-group${open ? ' open' : ''}">
         <button class="act-head" data-turn="${turn.turn}" aria-expanded="${open}"${captured && !capturedGone ? ` aria-label="${escapeHtml(`${headline}, with a captured page`)}"` : ''}>
           <span class="act-chev">${ICONS.chevron}</span>
           <span class="act-head-text">${headline}</span>
           ${captured && !capturedGone ? `<span class="act-head-thumb" data-thumb="${escapeHtml(String(captured.imageId))}" aria-hidden="true"></span>` : ''}
         </button>
-        <div class="act-body" ${open ? '' : 'hidden'}>${capturedSection ? capturedSectionHtml(captured, capturedGone) : ''}${planDetail}${rows}${phase}${answerPrompt}</div>
+        <div class="act-body" ${open ? '' : 'hidden'}>${capturedSection ? capturedSectionHtml(captured, capturedGone) : ''}${planDetail}${rows}${phase}</div>
       </div>` : ''}
-      ${turn.answer ? renderFinishCard(Object.assign(turn, { resumable: isLast && !busy }), isLast ? findings : null) : ''}
+      ${turn.answer ? renderFinishCard(Object.assign(turn, { resumable: isLast && !busy }), null) : ''}
     </div>`;
   }).join('');
 }
@@ -3448,25 +3573,6 @@ function initTimelineInteraction() {
     return false;
   };
 
-  const sendAnswer = (promptEl) => {
-    const input = promptEl.querySelector('.ask-user-input');
-    const btn = promptEl.querySelector('.ask-user-send');
-    const answer = (input && input.value || '').trim();
-    if (!answer) { if (input) input.focus(); return; }
-    if (input) input.disabled = true;
-    if (btn) btn.disabled = true;
-    sendBgMessage({ action: 'ANSWER_QUESTION', payload: { answer } }, (res) => {
-      if (chrome.runtime.lastError || (res && res.success === false)) {
-        const errMsg = chrome.runtime.lastError ? chrome.runtime.lastError.message : res.error;
-        appendLocalLog('ERROR', 'Sidepanel', `[ANSWER_FAILED] ${errMsg}`);
-        showTaskError(errMsg || 'Could not send your answer to the agent.');
-        if (input) input.disabled = false;
-        if (btn) btn.disabled = false;
-      }
-      // On success the next STATE_UPDATE broadcast replaces this prompt with the recorded
-      // answer row - nothing further to do here.
-    });
-  };
 
   timeline.addEventListener('click', (e) => {
     // Resume on an Interrupted or Stopped card: the same request as typing it in the composer.
@@ -3477,9 +3583,6 @@ function initTimelineInteraction() {
       startTask();
       return;
     }
-
-    const sendBtn = e.target.closest('.ask-user-send');
-    if (sendBtn) { sendAnswer(sendBtn.closest('.ask-user-prompt')); return; }
 
     // The manual-approve plan card: Approve releases the hold, Cancel ends the run.
     const planBtn = e.target.closest('[data-plan-decision]');
@@ -3527,59 +3630,6 @@ function initTimelineInteraction() {
       return;
     }
 
-    const solvedBtn = e.target.closest('.btn-challenge-solved');
-    if (solvedBtn) {
-      solvedBtn.disabled = true;
-      sendBgMessage({ action: 'RESOLVE_CHALLENGE', payload: { action: 'resolved' } }, (res) => {
-        if (chrome.runtime.lastError || (res && res.success === false)) {
-          solvedBtn.disabled = false;
-          const errMsg = chrome.runtime.lastError ? chrome.runtime.lastError.message : (res && res.error);
-          showTaskError(errMsg || 'Failed to resolve challenge.');
-        }
-      });
-      return;
-    }
-
-    const skipChallengeBtn = e.target.closest('.btn-challenge-skip');
-    if (skipChallengeBtn) {
-      skipChallengeBtn.disabled = true;
-      sendBgMessage({ action: 'RESOLVE_CHALLENGE', payload: { action: 'skip' } }, (res) => {
-        if (chrome.runtime.lastError || (res && res.success === false)) {
-          skipChallengeBtn.disabled = false;
-          const errMsg = chrome.runtime.lastError ? chrome.runtime.lastError.message : (res && res.error);
-          showTaskError(errMsg || 'Failed to skip challenge.');
-        }
-      });
-      return;
-    }
-
-    const continueBtn = e.target.closest('.btn-budget-continue');
-    if (continueBtn) {
-      continueBtn.disabled = true;
-      const additionalSteps = parseInt(continueBtn.getAttribute('data-reserve'), 10) || 10;
-      sendBgMessage({ action: 'CONTINUE_BUDGET', payload: { action: 'continue', additionalSteps } }, (res) => {
-        if (chrome.runtime.lastError || (res && res.success === false)) {
-          continueBtn.disabled = false;
-          const errMsg = chrome.runtime.lastError ? chrome.runtime.lastError.message : (res && res.error);
-          showTaskError(errMsg || 'Failed to continue budget.');
-        }
-      });
-      return;
-    }
-
-    const finishBudgetBtn = e.target.closest('.btn-budget-finish');
-    if (finishBudgetBtn) {
-      finishBudgetBtn.disabled = true;
-      sendBgMessage({ action: 'CONTINUE_BUDGET', payload: { action: 'finish' } }, (res) => {
-        if (chrome.runtime.lastError || (res && res.success === false)) {
-          finishBudgetBtn.disabled = false;
-          const errMsg = chrome.runtime.lastError ? chrome.runtime.lastError.message : (res && res.error);
-          showTaskError(errMsg || 'Failed to finish site.');
-        }
-      });
-      return;
-    }
-
     const fileChip = e.target.closest('.file-chip');
     if (fileChip) {
       openFilePreview(fileChip.getAttribute('data-file'));
@@ -3596,41 +3646,6 @@ function initTimelineInteraction() {
     const codeFold = e.target.closest('.code-fold');
     if (codeFold) {
       toggleCodeFold(codeFold);
-      return;
-    }
-
-    const copyBtn = e.target.closest('.btn-copy-findings-table');
-    if (copyBtn) {
-      const container = copyBtn.closest('.provenance-findings-container');
-      const table = container ? container.querySelector('.provenance-table') : null;
-      if (table) {
-        let md = '| Source | Field | Value | Status |\n| --- | --- | --- | --- |\n';
-        const rows = table.querySelectorAll('tbody tr.findings-table-row');
-        rows.forEach(r => {
-          const cells = Array.from(r.querySelectorAll('td')).map(td => td.textContent.trim().replace(/\|/g, '\\|'));
-          if (cells.length >= 4) {
-            md += `| ${cells[0]} | ${cells[1]} | ${cells[2]} | ${cells[3]} |\n`;
-          }
-        });
-        if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-          navigator.clipboard.writeText(md).then(() => {
-            showToast('Findings copied to clipboard!');
-          }).catch(() => {
-            showToast('Failed to copy findings.');
-          });
-        }
-      }
-      return;
-    }
-
-    const findingRow = e.target.closest('.findings-table-row');
-    if (findingRow && !e.target.closest('a')) {
-      const rowId = findingRow.getAttribute('data-row-id');
-      const detailRow = document.getElementById(`finding-detail-${rowId}`);
-      if (detailRow) {
-        const isVisible = detailRow.style.display !== 'none';
-        detailRow.style.display = isVisible ? 'none' : 'table-row';
-      }
       return;
     }
 
@@ -3657,11 +3672,6 @@ function initTimelineInteraction() {
     }
   }, true);
   timeline.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target.classList.contains('ask-user-input')) {
-      e.preventDefault();
-      sendAnswer(e.target.closest('.ask-user-prompt'));
-      return;
-    }
     if (e.key === 'Enter' || e.key === ' ') {
       if (toggle(e.target)) e.preventDefault();
     }
@@ -3782,7 +3792,7 @@ function hasMarkdownBlocks(text) {
   return !!text && parseMarkdownBlocks(String(text)) !== null;
 }
 
-/** True when the answer holds a pipe table of its own (then the findings table is not shown twice). */
+/** True when the text holds a pipe table at the block level (a table inside a code fence is not one). */
 function hasMarkdownTable(text) {
   const blocks = text ? parseMarkdownBlocks(String(text)) : null;
   return !!blocks && blocks.some((block) => block.type === 'table');
@@ -4323,15 +4333,15 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
-// Exported only so tests/sidepanelAudit.test.js can call the pure renderers. The page itself
-// never imports this file; the export list does not change how it loads in the browser.
+// Exported only so the sidepanel tests can call the pure renderers and reach the panel's state.
+// The page itself never imports this file; the export list does not change how it loads in the browser.
 export {
   buildTurns, renderTurns, renderCompactedItem, renderContextMeter, renderFinishCard, renderAuditDetails, renderPlanRows, normalizeAudit,
-  planCounts, pauseReasonText, escapeHtml, initTimelineInteraction, openAuditDetails, closedAuditDetails, describeAction, firstSentence, withoutEngineNotes,
+  planCounts, pauseReasonText, escapeHtml, initTimelineInteraction, openAuditDetails, closedAuditDetails, openCompactSummaries, describeAction, firstSentence, withoutEngineNotes,
   partialSubtitle, renderState, receiveState, loadSelectedSession, finishLandingTop, finishCardKey, noteFinishCard, scrollTimelineToLatest,
-  formatMarkdownText, hasMarkdownBlocks, hasMarkdownTable, legacyBullets, splitTableRow, renderCodeBox, textKey, unfoldedCode,
-  attachShotSlots, attachShotPicture, shotCache, shotGone, lastShotOf, capturedSectionHtml, RESUME_PROMPT,
-  setFollowTimeline, isFollowingTimeline,
+  formatMarkdownText, hasMarkdownBlocks, hasMarkdownTable, legacyBullets, splitTableRow, renderCodeBox, textKey, unfoldedCode, shownFiles,
+  attachShotSlots, attachShotPicture, shotCache, shotGone, loadShotPicture, lastShotOf, capturedSectionHtml, RESUME_PROMPT,
+  setFollowTimeline, isFollowingTimeline, showTaskError, resetChatView, startTaskInner,
   loadSettings, autoSaveCurrentForm, openComboboxMenu, closeComboboxMenu, updateSelectedModel,
-  pickComboboxModel, initEventListeners
+  pickComboboxModel, initEventListeners, initCombobox
 };

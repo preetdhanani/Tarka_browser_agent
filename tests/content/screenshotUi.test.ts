@@ -3,9 +3,9 @@
  * HIDE_AGENT_UI / SHOW_AGENT_UI / DESCRIBE_POINT content-script actions.
  *
  * What these tests hold on to:
- *   1. Hide makes the overlays invisible; it does not REMOVE them. removeBadges and
- *      removeCursorOverlay delete the elements and nothing brings them back, so a screenshot that
- *      used them would leave the page without its overlays for the rest of the run.
+ *   1. Hide makes the overlays invisible; it does not REMOVE them. removeBadges deletes the
+ *      elements and nothing brings them back, so a screenshot that used them would leave the page
+ *      without its overlays for the rest of the run.
  *   2. The visibility each overlay had is remembered and put back exactly.
  *   3. Hiding also draws the privacy covers, and showing removes them.
  *   4. content.js answers the three actions, and a point on a sensitive field comes back as a

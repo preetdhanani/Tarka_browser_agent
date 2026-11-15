@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_SETTINGS } from '../../src/shared/storage.ts';
-import { DEFAULT_LLM_TIMEOUT_MS, DEFAULT_NVIDIA_LLM_TIMEOUT_MS, baseUrlOf, getApiKey, maxTokensOf, modelOf, normalizeNvidiaBaseUrl, providerOf, timeoutMsOf, withV1 } from '../../src/background/llm/settings.ts';
+import { DEFAULT_LLM_TIMEOUT_MS, DEFAULT_NVIDIA_LLM_TIMEOUT_MS, baseUrlOf, getApiKey, isLoopbackHost, maxTokensOf, modelOf, normalizeNvidiaBaseUrl, providerOf, timeoutMsOf, withV1 } from '../../src/background/llm/settings.ts';
 import type { LlmSettings } from '../../src/background/llm/types.ts';
 
 test('the settings the extension stores are accepted as they are (this file is type-checked)', () => {
@@ -113,4 +113,15 @@ test('max tokens is 8192 unless the settings hold a positive number (also as tex
   assert.equal(maxTokensOf({ maxTokens: 'lots' as unknown as number }), 8192);
   assert.equal(maxTokensOf({ maxTokens: 1024 }), 1024);
   assert.equal(maxTokensOf({ maxTokens: '2048' as unknown as number }), 2048, 'a number saved as text');
+});
+
+test('isLoopbackHost reads the host shapes both gates hand it: with brackets, with a port, or both', () => {
+  // The save gate passes URL.hostname ('[::1]', no port); the call gate passes endpointHostOf
+  // ('[::1]:8080', 'localhost:8000'). One host must pass both, so the shapes are normalized here.
+  for (const host of ['localhost', 'localhost:8000', 'LOCALHOST:8000', '127.0.0.1', '127.0.0.1:11434', '::1', '[::1]', '[::1]:8080', 'host.localhost']) {
+    assert.equal(isLoopbackHost(host), true, host);
+  }
+  for (const host of ['', 'example.com', 'example.com:8443', '[2001:db8::1]:443', '192.168.1.20', '10.0.0.2:8000']) {
+    assert.equal(isLoopbackHost(host), false, host);
+  }
 });

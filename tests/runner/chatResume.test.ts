@@ -55,11 +55,6 @@ test('the chat saver writes a running chat at most once per window, and a restin
   saver.save(build, true);
   await Promise.resolve();
   assert.equal(writes.length, 2, 'a resting state goes out at once');
-  saver.save(build);
-  saver.discard();
-  t.mock.timers.tick(CHAT_SAVE_THROTTLE_MS);
-  await Promise.resolve();
-  assert.equal(writes.length, 2, 'a discarded save is never made');
 });
 
 test('the runner saves the chat while it runs, with status, and at once when it ends', async (t) => {
@@ -153,13 +148,11 @@ test('LOAD_CHAT takes the saved chat over: history, plan, an interrupted row for
   const { runner, store, local } = setup(t);
   await runner.restorePromise;
   await seedCutOffChat();
-  (runner as any).findings = [{ x: 1 }];
   const res = await runner.loadChat('chat_saved_1');
   assert.equal(res.success, true);
   assert.equal(runner.chatId, 'chat_saved_1');
   assert.equal(runner.status, 'idle');
   assert.deepEqual(runner.planSteps, [{ text: 'Save', status: 'in_progress' }]);
-  assert.deepEqual(runner.findings, [], 'what belonged to the chat on screen is gone');
   const row = runner.history.at(-1) as any;
   assert.deepEqual({ type: row.type, answer: row.answer, reason: row.reason }, { type: 'partial_result', answer: CLOSED_TEXT, reason: 'closed' });
   assert.deepEqual(row.records, RECORDS);

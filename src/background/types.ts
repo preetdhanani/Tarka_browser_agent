@@ -2,7 +2,7 @@
 // Consolidated type definitions extracted from graph/state.ts, graph/workerState.ts,
 // and agent/finishPolicy.ts. These are the only types still referenced by the
 // simplified MCP-based runner (AgentRunner.ts, runtimeRegistry.ts, execute.ts,
-// actionJournal.ts, snapshot.ts).
+// snapshot.ts).
 //
 // Erasable TypeScript only (no enums, no parameter properties).
 
@@ -110,15 +110,17 @@ export interface Limits {
 }
 
 // ---------- run stats ----------
+/**
+ * The counts of one run (W2-R4): how many model calls it made, how many steps it used, and the
+ * tokens in and out. Carried on the turn's closing row (withRunData), so a reopened chat keeps
+ * the numbers of the turn it shows.
+ */
 export interface RunStats {
   level: Level;
   modelCalls: number;
   stepsUsed: number;
   tokensIn?: number;
   tokensOut?: number;
-  sitesDone: number;
-  sitesPartial: number;
-  elapsedMs: number;
 }
 
 // ---------- plan and sites ----------
@@ -272,16 +274,8 @@ export interface PageSig {
   scrollY: number; pageType: PageType;
 }
 
-export interface PerceiveError {
-  message: string; terminal: boolean;
-  fatal: boolean;
-  kind: 'tab_gone' | 'out_of_scope' | 'restricted' | 'unreadable'; tries: number;
-}
-
 // ---------- actions ----------
 export interface OneShot { label: string; text: string; step: number; note?: string }
-
-export interface NetFilter { status?: 'error' | 'success'; since?: 'last_action'; urlContains?: string }
 
 export type PageAction =
   | { action: 'click'; element_id: number }

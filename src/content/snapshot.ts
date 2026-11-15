@@ -254,8 +254,10 @@ function collectFrom(scope: Scope, doc: Document, add: (el: Element) => void, ke
 /**
  * Where an element sits relative to the viewport: inside it, or how many pixels its nearest edge
  * is away from it. The same containment test perception.ts uses for the [off-screen] marker, so
- * the ordering and the marker never disagree. An element whose rect cannot be read counts as
- * in-viewport, like the marker does.
+ * the ordering and the marker never disagree. The distance is the gap to the viewport on both
+ * axes (the larger of the two, each floored at 0), so a horizontally off-screen element is
+ * ranked by how far off it is instead of getting a negative distance from the vertical axis
+ * alone. An element whose rect cannot be read counts as in-viewport, like the marker does.
  */
 export function viewportPosition(
   el: Element,
@@ -268,7 +270,9 @@ export function viewportPosition(
     if (rect.bottom > 0 && rect.right > 0 && rect.top < vh && rect.left < vw) {
       return { inViewport: true, distance: 0 };
     }
-    const distance = rect.bottom <= 0 ? -rect.bottom : rect.top - vh;
+    const gapY = rect.bottom <= 0 ? -rect.bottom : rect.top >= vh ? rect.top - vh : 0;
+    const gapX = rect.right <= 0 ? -rect.right : rect.left >= vw ? rect.left - vw : 0;
+    const distance = Math.max(gapX, gapY);
     return { inViewport: false, distance: Number.isFinite(distance) ? distance : Number.MAX_SAFE_INTEGER };
   } catch {
     return { inViewport: true, distance: 0 };

@@ -1,9 +1,10 @@
 /**
  * The bundler warnings gate of vite.config.mjs and scripts/build.mjs: a warning that is not on the list fails the build.
  *
- * The list is exact pairs of a Node built-in and the file that imports it (the 7 that @anthropic-ai/sdk's credential code
- * causes), and the gate records warnings instead of throwing from the bundler's hook, because a throw is swallowed for a
- * warning of a plugin. These tests feed the recorder the messages Vite writes. `npm run build` runs the real thing.
+ * The list is empty since the LangChain and SDK removals: the worker must not import Node built-ins through a browser
+ * build at all, so every externalized-built-in warning is unexpected and fails the build. The gate records warnings
+ * instead of throwing from the bundler's hook, because a throw is swallowed for a warning of a plugin. These tests feed
+ * the recorder the messages Vite writes. `npm run build` runs the real thing.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,35 +15,21 @@ const SEE = 'See https://vite.dev/guide/troubleshooting.html#module-externalized
 /** The warning Vite's resolver writes, with the importer as an absolute path (what it does). */
 const external = (module, importer, plugin = PLUGIN) => ({ plugin, message: `Module "${module}" has been externalized for browser compatibility, imported by "${ROOT}${importer}". ${SEE}` });
 
-const SDK = 'node_modules/@anthropic-ai/sdk';
-const KNOWN = [
-  ['node:fs', 'lib/credentials/credential-chain.mjs'],
-  ['node:fs', 'lib/credentials/identity-token.mjs'],
-  ['node:fs', 'lib/credentials/types.mjs'],
-  ['node:fs', 'lib/credentials/user-oauth.mjs'],
-  ['node:fs', 'core/credentials.mjs'],
-  ['node:path', 'lib/credentials/types.mjs'],
-  ['node:path', 'core/credentials.mjs']
-];
-
-test('allows exactly the seven pairs that the Anthropic SDK credential code causes', () => {
-  for (const [module, file] of KNOWN) assert.equal(isAllowedWarning(external(module, `${SDK}/${file}`)), true, `${module} in ${file}`);
+test('allows nothing: every externalized-built-in warning fails the build', () => {
+  for (const module of ['node:fs', 'node:path', 'node:os', 'node:child_process']) {
+    assert.equal(isAllowedWarning(external(module, 'node_modules/some-lib/index.mjs')), false, module);
+  }
 });
 
-test('does not allow another built-in, another file, or another place for the same one', () => {
+test('does not allow a warning from any importer, whatever its file or nesting', () => {
   const others = [
-    external('node:os', `${SDK}/lib/credentials/types.mjs`),
-    external('node:child_process', `${SDK}/core/credentials.mjs`),
-    external('node:path', `${SDK}/lib/credentials/credential-chain.mjs`), // a real file, but not this pair
-    external('node:fs', `${SDK}/lib/credentials/new-file.mjs`),
-    external('node:fs', `${SDK}/client.mjs`),
     external('node:fs', 'src/background/llm/factory.ts'),
     external('node:fs', 'src/background/background.ts'),
     external('node:fs', 'node_modules/openai/index.mjs'),
-    external('node:fs', `node_modules/some-lib/node_modules/@anthropic-ai/sdk/lib/credentials/types.mjs`),
-    external('fs', `${SDK}/lib/credentials/types.mjs`),
-    external('node:fs', `${SDK}/lib/credentials/types.mjs`, 'vite:something-else'),
-    { plugin: PLUGIN, message: `Module "node:fs" has been externalized for browser compatibility, imported by "/elsewhere/${SDK}/lib/credentials/types.mjs". ${SEE}` }
+    external('node:fs', 'node_modules/some-lib/node_modules/deeper/lib/credentials/types.mjs'),
+    external('fs', 'node_modules/some-lib/lib/credentials/types.mjs'),
+    external('node:fs', 'node_modules/some-lib/lib/credentials/types.mjs', 'vite:something-else'),
+    { plugin: PLUGIN, message: `Module "node:fs" has been externalized for browser compatibility, imported by "/elsewhere/node_modules/some-lib/lib/credentials/types.mjs". ${SEE}` }
   ];
   for (const log of others) assert.equal(isAllowedWarning(log), false, log.message);
 });
@@ -57,17 +44,18 @@ test('the recorder keeps allowed and unexpected warnings apart, and leaves other
   const recorder = warningRecorder();
   const handled = [];
   const defaultHandler = (level, log) => handled.push([level, log.message]);
-  recorder.onLog('warn', external('node:fs', `${SDK}/core/credentials.mjs`), defaultHandler);
+  recorder.onLog('warn', external('node:fs', 'node_modules/some-lib/core/credentials.mjs'), defaultHandler);
   recorder.onLog('warn', { code: 'EMPTY_IMPORT_META', plugin: 'rolldown', message: 'import.meta is empty here' }, defaultHandler);
   recorder.onLog('warn', external('node:os', 'src/x.ts'), defaultHandler);
   recorder.onLog('info', { message: 'just info' }, defaultHandler);
   recorder.onLog('debug', { message: 'just debug' }, defaultHandler);
   recorder.viteWarning('some chunks are larger than 500 kB\nafter minification');
-  assert.equal(recorder.allowed.length, 1);
-  assert.deepEqual(recorder.unexpected.length, 3);
-  assert.match(recorder.unexpected[0], /^\[rolldown\] EMPTY_IMPORT_META: import\.meta is empty here$/);
-  assert.match(recorder.unexpected[1], /^\[rolldown:vite-resolve\] Module "node:os"/);
-  assert.equal(recorder.unexpected[2], '[vite] some chunks are larger than 500 kB');
+  assert.equal(recorder.allowed.length, 0);
+  assert.deepEqual(recorder.unexpected.length, 4);
+  assert.match(recorder.unexpected[0], /^\[rolldown:vite-resolve\] Module "node:fs"/);
+  assert.match(recorder.unexpected[1], /^\[rolldown\] EMPTY_IMPORT_META: import\.meta is empty here$/);
+  assert.match(recorder.unexpected[2], /^\[rolldown:vite-resolve\] Module "node:os"/);
+  assert.equal(recorder.unexpected[3], '[vite] some chunks are larger than 500 kB');
   assert.deepEqual(handled, [['info', 'just info'], ['debug', 'just debug']]);
 });
 

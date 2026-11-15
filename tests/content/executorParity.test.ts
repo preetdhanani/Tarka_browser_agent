@@ -16,9 +16,16 @@ test('1. renderBadges and removeBadges manage floating badges correctly', () => 
     appendChild: (el: any) => bodyChildren.push(el),
     contains: (el: any) => bodyChildren.includes(el)
   };
+  // The badge container hangs off documentElement (a positioned body must not become its
+  // containing block), so the fake has one that registers into the same child list.
+  const documentElement = {
+    appendChild: (el: any) => bodyChildren.push(el),
+    contains: (el: any) => bodyChildren.includes(el)
+  };
 
   const fakeDocument = {
     body,
+    documentElement,
     getElementById: (id: string) => bodyChildren.find((el) => el.id === id) || null,
     createElement: (tag: string) => {
       const el: any = {
@@ -108,11 +115,6 @@ test('2. ensureCursorOverlay, animateCursor, and showClickEffect produce correct
 
   executor.showClickEffect(150, 250);
   assert.ok(executor.cursorFadeTimer);
-
-  executor.removeCursorOverlay();
-  assert.equal(executor.cursorContainer, null);
-  assert.equal(executor.cursorEl, null);
-  assert.equal(executor.cursorFadeTimer, null);
 });
 
 test('3. doClick dispatches PointerEvent and MouseEvent sequence when PointerEvent is available', () => {

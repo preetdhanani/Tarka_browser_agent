@@ -95,3 +95,46 @@ test('resolveElementWithStatus detects navigated document and detached element',
   assert.equal(missingResult.stale, true);
   assert.match(missingResult.error || '', /no longer attached/);
 });
+
+test('getSnapshot writes no data-agent-id attribute on the page\'s elements', () => {
+  // The attribute mutated up to 120 page elements per snapshot and tripped the page's own
+  // MutationObservers; nothing read it, so it stays deleted.
+  const writes: Array<[string, string]> = [];
+  const button: any = {
+    tagName: 'BUTTON',
+    nodeType: 1,
+    id: '',
+    innerText: 'Buy',
+    textContent: 'Buy',
+    disabled: false,
+    checked: false,
+    value: '',
+    parentElement: null,
+    previousElementSibling: null,
+    getAttribute: () => null,
+    closest: () => null,
+    setAttribute: (name: string, value: string) => { writes.push([name, value]); },
+    checkVisibility: () => true,
+    getBoundingClientRect: () => ({ width: 50, height: 20, top: 10, bottom: 30, left: 10, right: 60 })
+  };
+  const fakeDoc = {
+    title: 'Shop',
+    contentType: 'text/html',
+    documentElement: { scrollHeight: 1200 },
+    body: { nodeType: 1, innerText: 'Buy', textContent: 'Buy' },
+    querySelector: () => null,
+    querySelectorAll: (selector: string) => (selector.includes('a[href]') ? [button] : []),
+  };
+  const fakeWin = {
+    location: { href: 'https://shop.example.com/', hostname: 'shop.example.com' },
+    innerWidth: 1200,
+    innerHeight: 800,
+    scrollY: 0
+  };
+
+  const compressor = new DOMCompressor();
+  const snapshot = withGlobals({ document: fakeDoc, window: fakeWin, Node: { ELEMENT_NODE: 1 }, CSS: { escape: (s: string) => s } }, () => compressor.getSnapshot()) as any;
+
+  assert.equal(snapshot.elementCount, 1, 'the button is listed');
+  assert.deepEqual(writes, [], 'no attribute is written onto the page\'s elements');
+});

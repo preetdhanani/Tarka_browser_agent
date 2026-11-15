@@ -15,12 +15,14 @@ import { toPicturePixels, type CoordinateSpace } from '../llm/coordinates.ts';
 import { resolveKey } from '../browser/input.ts';
 import type { ExecResult, RunRuntime } from '../runner/runtimeRegistry.ts';
 import type { EffectDetail } from '../types.ts';
-import { RESEARCH_TOOL_NAMES } from './tools.ts';
+import { RESEARCH_TOOL_NAMES, TOOL_MAP } from './tools.ts';
 import { sourceOf, wrapUntrusted } from './untrusted.ts';
 import { finishOutcomeOf, type FinishOutcome } from './historyEntries.ts';
 import { webSearch } from '../research/search.ts';
 import { fetchUrl } from '../research/fetchText.ts';
 import { Storage, normalizeResearch } from '../../shared/storage.ts';
+import { MASKED_FIELD_KINDS } from '../../shared/maskedFields.ts';
+import type { ActionConfirmationRequest } from '../runner/runtimeRegistry.ts';
 
 /** A block of text in a tool result, which is what a model reads. */
 export interface TextContent {
@@ -86,8 +88,11 @@ export function coordinateClickRefusal(args: Record<string, any>): string | null
   return 'Error: click needs either an element_id from get_page_elements or find, or both x and y read off a take_screenshot picture.';
 }
 
-/** The words a bot check or CAPTCHA control uses. Tarka never clicks one: a person must pass it. */
-export const BOT_CHECK_PATTERN = /verify (?:that )?you(?: are|'re) (?:a )?human|i'?m not a robot|are you a robot|captcha|human verification|bot check|challenges\.cloudflare\.com|turnstile/i;
+// The bot-check pattern, the high-risk labels and the masked-field refusal texts live in
+// shared/safetyPatterns.ts, so the input dispatcher and the gate use the same ones. Re-exported
+// here for the existing importers.
+export { BOT_CHECK_PATTERN, MASKED_TYPE_REFUSAL, MASKED_CLICK_REFUSAL } from '../../shared/safetyPatterns.ts';
+import { BOT_CHECK_PATTERN, HIGH_RISK_ACTION_PATTERN, MASKED_TYPE_REFUSAL, MASKED_CLICK_REFUSAL } from '../../shared/safetyPatterns.ts';
 
 /** The refusal of a click on a bot check, worded so the model stops and tells the user. */
 export function botCheckRefusal(elementId: unknown, label: string): string {
@@ -98,15 +103,108 @@ export function botCheckPointRefusal(what: string): string {
   return `Refused: that point is on a bot check (${what.trim().slice(0, 80)}). Tarka never clicks or solves bot checks or CAPTCHAs. Call finish now and tell the user the page is behind a bot check that a person has to pass.`;
 }
 
+/** The answer to a tool call the user declined on the confirmation card. */
+export const CONFIRM_DECLINED_TEXT = 'Refused: the user declined this action. Do not try to work around the decision, and do not repeat it. Say what you could not do and finish, or take a different path that needs no such action.';
+
+/** The error text for a finish whose table is not { columns, rows } of strings (CONTRACT-TABLE). */
+export const FINISH_TABLE_ERROR = 'Error: finish needs table as {"columns": ["Header"], "rows": [["cell"]]}: columns a list of header strings, rows a list of rows where every cell is a string. Call finish again with the same answer and the table in that shape, or without table.';
+
 /**
- * What a click on a link to another page of this site says when the tab did not go there. A
- * consent banner can swallow every click on the page (frame.work does until cookies are answered),
- * and a bare "Clicked" made the model believe it had arrived.
+ * The finish tool's table as the panel renders it (CONTRACT-TABLE): `{ columns: string[],
+ * rows: string[][] }`. Null when the call has none; the error text when the shape is wrong, so
+ * the model is asked again instead of the panel rendering whatever came.
+ */
+export function finishTableOf(table: unknown): { columns: string[]; rows: string[][] } | null | string {
+  if (table === undefined || table === null) return null;
+  const t = table as any;
+  const ok = typeof table === 'object' && !Array.isArray(table)
+    && Array.isArray(t.columns) && t.columns.length > 0 && t.columns.every((c: unknown) => typeof c === 'string')
+    && Array.isArray(t.rows) && t.rows.every((row: unknown) => Array.isArray(row) && row.every((cell: unknown) => typeof cell === 'string'));
+  if (!ok) return FINISH_TABLE_ERROR;
+  return { columns: t.columns, rows: t.rows };
+}
+
+/** The answer when no confirmation channel is connected: a sensitive action never runs unconfirmed. */
+const CONFIRM_UNAVAILABLE_TEXT = 'Refused by security policy: this action needs your confirmation, but the confirmation card could not be shown. Ask the user to do this step manually.';
+
+/** The risk facts of an element, as the content script answers them (ELEMENT_SECURITY). */
+export interface ElementSecurity {
+  tag?: string;
+  type?: string;
+  fieldKind?: string;
+  isSubmitControl?: boolean;
+  formTarget?: { formActionHost?: string; formMethod?: 'get' };
+  formHasMaskedField?: boolean;
+  /** The label of the form's default button (the one Enter would press), or '' when there is none. */
+  formSubmitLabel?: string;
+  label?: string;
+  text?: string;
+}
+
+/** What the gate decides for one tool call: a hard refusal, a confirmation hold, or nothing. */
+export interface SensitiveActionDecision {
+  refuse?: string;
+  confirm?: { variant: 'purchase' | 'submit'; actionSummary: string; reason: string };
+}
+
+const GATE_REASON = 'This action can submit a form, start a payment or change account data. Tarka asks you before it acts.';
+
+/**
+ * The gate's rules, pure: what one click or type needs before it may dispatch.
+ *
+ *   - a masked field (password, card, one-time code) is refused outright, per tool;
+ *   - a high-risk label (pay, purchase, checkout, delete account and friends) asks the user;
+ *   - a submit control of a form that holds a masked field or sends to another host asks;
+ *   - a submitting type into such a form asks, and so does a submitting type into a form whose
+ *     own submit control carries a high-risk label: the Enter would do what that button's click
+ *     would do, so it is judged the same way;
+ *   - a tool whose definition sets requires_approval asks;
+ *   - everything else runs as before (a search submit, a link, an ordinary button).
+ */
+export function sensitiveActionDecision(input: {
+  tool: 'click' | 'type';
+  sec: ElementSecurity | null | undefined;
+  label?: string;
+  submitting?: boolean;
+  requiresApproval?: boolean;
+}): SensitiveActionDecision {
+  const sec = input.sec ?? null;
+  if (sec?.fieldKind && MASKED_FIELD_KINDS.has(sec.fieldKind)) {
+    return { refuse: input.tool === 'type' ? MASKED_TYPE_REFUSAL : MASKED_CLICK_REFUSAL };
+  }
+  const name = `${input.label || ''} ${sec?.label || ''} ${sec?.text || ''}`.trim();
+  const summaryTarget = sec?.label || sec?.text || input.label || 'the element';
+  const confirm = (variant: 'purchase' | 'submit', actionSummary: string): SensitiveActionDecision =>
+    ({ confirm: { variant, actionSummary, reason: GATE_REASON } });
+  if (input.requiresApproval) {
+    return confirm('submit', `${input.tool === 'type' ? 'Type into' : 'Click'} ${summaryTarget}`);
+  }
+  if (HIGH_RISK_ACTION_PATTERN.test(name)) {
+    const money = /\b(pay|purchase|buy now|checkout|place order|submit order|transfer)\b/i.test(name);
+    return confirm(money ? 'purchase' : 'submit', `${input.tool === 'type' ? 'Type into' : 'Click'} ${summaryTarget}`);
+  }
+  const submitting = input.tool === 'type' && input.submitting === true;
+  const submitLabel = String(sec?.formSubmitLabel || '');
+  const implicitSubmitIsHighRisk = submitting && Boolean(submitLabel) && HIGH_RISK_ACTION_PATTERN.test(submitLabel);
+  const riskyForm = Boolean(sec?.isSubmitControl || submitting)
+    && Boolean(sec && (sec.formHasMaskedField || sec.formTarget?.formActionHost || implicitSubmitIsHighRisk));
+  if (riskyForm) {
+    const money = implicitSubmitIsHighRisk && /\b(pay|purchase|buy now|checkout|place order|submit order|transfer)\b/i.test(submitLabel);
+    return confirm(money ? 'purchase' : 'submit', `${submitting ? 'Type into' : 'Click'} ${summaryTarget}${submitting ? ' and submit the form' : ''}`);
+  }
+  return {};
+}
+
+/**
+ * What a click on a link to another page of this site says when the tab did not go there. The tab
+ * is still on the old page, but the link itself may have opened in a new tab (which this run does
+ * not see), or a consent banner may be swallowing every click on the page (frame.work does until
+ * cookies are answered): the note names both instead of asserting a blocked click.
  */
 export function linkNotOpenedNote(elementLine: string): string {
   const path = /\(.*?\bhref="([^"]+)"/.exec(elementLine)?.[1];
   return path
-    ? `\nNote: the link did not open its page (${path}): this tab is still on the same page. Something may be blocking clicks, such as a cookie or consent banner: answer it first, or navigate to the link's address.`
+    ? `\nNote: the link did not open its page (${path}) in this tab: it may have opened in a new tab, or something may be blocking clicks, such as a cookie or consent banner. Answer a banner first if there is one, or navigate to the link's address.`
     : '';
 }
 
@@ -150,7 +248,11 @@ export function observationLine(detail: EffectDetail | undefined | null, urlAfte
     return `${OBSERVATION_PREFIX} url ${urlChanged === false ? 'unchanged' : `now ${url}`}; a new page loaded, so what changed in view is unknown`;
   }
   const focus = detail.focus;
-  const caret = focus && focus.editable && typeof focus.caretLine === 'string' ? `, caret line ${quoted(focus.caretLine)}` : '';
+  // A masked field's caret line is null from the content script; a marker-shaped answer is never
+  // quoted either, so a redacted value cannot reach the model through the Observation line.
+  const caret = focus && focus.editable && typeof focus.caretLine === 'string' && !isRedactedFieldText(focus.caretLine)
+    ? `, caret line ${quoted(focus.caretLine)}`
+    : '';
   const containerMoved = detail.container && typeof detail.container.moved === 'number' && detail.container.moved !== 0;
   const quiet = detail.textChanged === false && detail.focusChanged === false && detail.scrollChanged === false
     && !containerMoved && urlChanged === false;
@@ -183,10 +285,26 @@ export function isLargeChange(detail: EffectDetail | undefined | null): boolean 
 }
 
 /**
+ * The marker the content script answers with for a masked field's text (a password, a card or a
+ * one-time code field): it says only whether the field holds anything, never what. Must match
+ * REDACTED_MARKER in content/content.js; the parity and redaction tests anchor it.
+ */
+export const REDACTED_FIELD_MARKER = '[REDACTED: populated]';
+
+/** True when a read-back text is the redaction marker (or any marker-shaped answer), not real content. */
+export function isRedactedFieldText(text: unknown): boolean {
+  return typeof text === 'string' && text.startsWith('[REDACTED');
+}
+
+/**
  * What type says about the field after typing: the first 120 characters it holds, and an honest
- * note when the typed text is not in it.
+ * note when the typed text is not in it. A masked field (the marker, or null from a sensitive
+ * field) is never quoted: the note says the field is the user's to fill.
  */
 export function fieldReadBack(fieldText: string | null | undefined, typed: string): string {
+  if (isRedactedFieldText(fieldText)) {
+    return '\nThis is a sensitive field (a password, card or one-time code field), so Tarka does not read its content back. The field holds a value.';
+  }
   if (typeof fieldText !== 'string') return '\nThe field could not be read back, so it is not known what it holds now.';
   const norm = (t: string) => t.replace(/\s+/g, ' ').trim();
   const head = fieldText.replace(/\s+/g, ' ').trim().slice(0, 120);
@@ -309,11 +427,6 @@ export class TarkaMCPServer {
     return held ? { data: held.data, mediaType: held.mediaType } : null;
   }
 
-  /** How many pictures the registry holds. */
-  get keptImages(): number {
-    return this.images.size;
-  }
-
   /** Turns the screenshot tool off for the rest of the run, after a provider refused a picture. */
   setVisionUnavailable(): void {
     this.visionUnavailable = true;
@@ -329,17 +442,132 @@ export class TarkaMCPServer {
     return this.elementLines.get(tabId)?.get(Number(elementId)) || '';
   }
 
-  // List available tools - returns the same definitions as TARKA_TOOLS
-  async listTools(): Promise<any[]> {
-    const { TARKA_TOOLS } = await import('./tools.ts');
-    return TARKA_TOOLS;
-  }
-
   /** The fetch the research tools use: the worker's own, unless a test stood one in. */
   private researchFetch: typeof fetch | null = null;
 
   setResearchFetch(fetchImpl: typeof fetch | null) {
     this.researchFetch = fetchImpl;
+  }
+
+  /**
+   * The risk facts of one element, asked of the content script before anything is dispatched
+   * (ELEMENT_SECURITY). The content script answers synchronously and touches nothing. Null when
+   * the page does not answer: the gate then stays open - an older content script must keep
+   * working, and the dispatcher's own checks at dispatch time still refuse a masked field - and
+   * the degrade is logged, so a silent gate is never the reason an action went through.
+   */
+  async elementSecurity(tabId: number, elementId: unknown): Promise<ElementSecurity | null> {
+    if (typeof chrome === 'undefined' || !chrome.tabs?.sendMessage) return null;
+    const gateBlind = (why: string, level: 'warn' | 'info' = 'warn') =>
+      Logger[level]('MCP Server', `The security gate could not read the risk facts of element [${String(elementId)}] (${why}), so it judged the action on the element line alone.`);
+    try {
+      const response: any = await new Promise((resolve) => {
+        const timer = setTimeout(() => resolve(null), 3000);
+        try {
+          chrome.tabs.sendMessage(tabId, { action: 'ELEMENT_SECURITY', payload: { element_id: elementId } }, TOP_FRAME, (resp: any) => {
+            clearTimeout(timer);
+            resolve(chrome.runtime?.lastError ? null : resp ?? null);
+          });
+        } catch (_) {
+          clearTimeout(timer);
+          resolve(null);
+        }
+      });
+      if (!response) {
+        gateBlind('the page did not answer in time');
+        return null;
+      }
+      if (response.success === false) {
+        gateBlind(String(response.error || 'the element is gone'), 'info');
+        return null;
+      }
+      return response as ElementSecurity;
+    } catch (err: any) {
+      gateBlind(String(err?.message || 'the ask failed'));
+      return null;
+    }
+  }
+
+  /**
+   * Asks the runner to put the confirmation card up and waits for the user's decision. False when
+   * the user declines, the run ends while the card is up, or no channel is connected: a sensitive
+   * action never runs without an explicit yes.
+   */
+  private async requestConfirmation(req: ActionConfirmationRequest): Promise<boolean> {
+    const ask = this.runtime?.requestActionConfirmation;
+    if (!ask) {
+      Logger.warn('MCP Server', `A sensitive action (${req.toolName}) needs user confirmation, but no confirmation channel is connected: the action was refused.`);
+      return false;
+    }
+    try {
+      return await ask(req);
+    } catch (err: any) {
+      Logger.warn('MCP Server', 'The confirmation ask failed; the action was refused.', err);
+      return false;
+    }
+  }
+
+  /**
+   * Whether this run already approved the page's origin (CONTRACT-REMEMBER): the user ticked the
+   * remember box on an earlier card, the runner kept the origin in its per-run set, and the same
+   * origin is not asked again. The port is optional on the runtime, so a runtime without it (an
+   * older runner, a test stub) is never treated as approved, and the card goes up.
+   */
+  private originApproved(origin: string): boolean {
+    if (!origin) return false;
+    try {
+      return this.runtime?.isOriginApproved?.(origin) === true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * The gate of one element-id action: refuse a masked field, ask the user for a risky one, and
+   * only then let the dispatch happen. Returns the refusal text to return to the model, or null
+   * when the action may go on (possibly after an approval).
+   */
+  private async gateElementAction(
+    tabId: number,
+    tool: 'click' | 'type',
+    args: Record<string, any>,
+    label: string
+  ): Promise<string | null> {
+    const sec = await this.elementSecurity(tabId, args.element_id);
+    const decision = sensitiveActionDecision({
+      tool,
+      sec,
+      label,
+      submitting: tool === 'type' && Boolean(args.submit),
+      requiresApproval: TOOL_MAP.get(tool)?.requires_approval === true,
+    });
+    if (decision.refuse) return decision.refuse;
+    if (decision.confirm) {
+      const info = await (this.runtime?.browser.tabInfo(tabId).catch(() => null));
+      const pageUrl = info?.url || '';
+      let targetOrigin = '';
+      try { targetOrigin = pageUrl ? new URL(pageUrl).origin : ''; } catch (_) { targetOrigin = ''; }
+      // An origin the run already approved (CONTRACT-REMEMBER) gets no second card.
+      if (!this.originApproved(targetOrigin)) {
+        const approved = await this.requestConfirmation({
+          id: '',
+          toolName: tool,
+          serializedArgs: JSON.stringify(args),
+          tabId,
+          frameUrl: pageUrl,
+          targetOrigin,
+          elementId: Number(args.element_id) || undefined,
+          elementLabel: sec?.label || label || undefined,
+          variant: decision.confirm.variant,
+          actionSummary: decision.confirm.actionSummary,
+          reason: decision.confirm.reason,
+          pageUrl,
+          detail: sec?.formTarget?.formActionHost ? { formActionHost: sec.formTarget.formActionHost } : undefined,
+        });
+        if (!approved) return CONFIRM_DECLINED_TEXT;
+      }
+    }
+    return null;
   }
 
   // Execute a tool call
@@ -433,6 +661,9 @@ export class TarkaMCPServer {
         // A bot check is never clicked, whatever the model thinks it should do: that is the user's.
         const target = this.elementLines.get(tabId)?.get(Number(args.element_id)) || '';
         if (BOT_CHECK_PATTERN.test(target)) return { text: botCheckRefusal(args.element_id, target), isError: true };
+        // The security gate: a masked field is refused outright, a risky submit asks the user.
+        const gateRefusal = await this.gateElementAction(tabId, 'click', args, target);
+        if (gateRefusal) return { text: `Error: ${gateRefusal}`, isError: true };
         const outcome = await this.run(tabId, { action: 'click', element_id: args.element_id }, rt);
         if (!outcome.ok) return outcome.result;
         this.lastTyped.delete(tabId);
@@ -444,6 +675,12 @@ export class TarkaMCPServer {
         const hasId = args?.element_id !== undefined && args?.element_id !== null;
         const field = hasId ? this.elementLines.get(tabId)?.get(Number(args.element_id)) || '' : '';
         if (BOT_CHECK_PATTERN.test(field)) return { text: botCheckRefusal(args.element_id, field), isError: true };
+        // The security gate: a masked field is refused outright, a submitting type into a risky
+        // form asks the user.
+        if (hasId) {
+          const gateRefusal = await this.gateElementAction(tabId, 'type', args, field);
+          if (gateRefusal) return { text: `Error: ${gateRefusal}`, isError: true };
+        }
         const mode = args.mode === 'append' ? 'append' : 'replace';
         const outcome = await this.run(tabId, {
           action: 'type',
@@ -498,24 +735,39 @@ export class TarkaMCPServer {
       }
 
       case 'wait': {
-        await rt.clock.sleep(args.amount * 1000);
-        return { text: `Waited ${args.amount}s${args.reason ? `: ${args.reason}` : ''}` };
-      }
-
-      case 'go_back': {
-        const outcome = await this.run(tabId, { action: 'go_back' }, rt);
+        // Through the dispatcher: its 1 to 5 s clamp and the step signal apply here too (a cloud
+        // reply of amount 600 once parked a run for ten minutes inside one action, BUG-36).
+        const outcome = await this.run(tabId, { action: 'wait', amount: args.amount }, rt);
         if (!outcome.ok) return outcome.result;
-        return { text: 'Went back in history' };
+        // The dispatcher's message says what really waited (the clamped amount), never the
+        // amount the model asked for.
+        const waited = outcome.exec?.message || 'Waited';
+        return { text: `${waited}${args.reason ? `: ${args.reason}` : ''}` };
       }
 
+      case 'go_back':
       case 'go_forward': {
-        const outcome = await this.run(tabId, { action: 'go_forward' }, rt);
+        // Honest about whether the tab moved: the dispatcher's effect says whether the URL
+        // changed. Without a change there was no earlier (or later) page to go to, and a "Went
+        // back" would make the model believe it is on a page it never saw.
+        const back = name === 'go_back';
+        const outcome = await this.run(tabId, { action: back ? 'go_back' : 'go_forward' }, rt);
         if (!outcome.ok) return outcome.result;
-        return { text: 'Went forward in history' };
+        if (outcome.exec?.effect !== 'url_changed') {
+          return { text: back
+            ? 'Did not move: there is no earlier page in this tab\'s history.'
+            : 'Did not move: there is no later page in this tab\'s history.' };
+        }
+        const how = back ? 'Went back in history' : 'Went forward in history';
+        return { text: `${how}${args?.reason ? `: ${args.reason}` : ''}${await this.arrivedPageText(tabId, rt)}` };
       }
 
       case 'finish': {
-        return { text: `TASK_COMPLETE: ${args.answer}`, table: args.table, outcome: finishOutcomeOf(args.outcome) };
+        // The table is checked here too (CONTRACT-TABLE): a malformed one is an error, never a
+        // row the panel cannot render. The client asks the model again before this point.
+        const table = finishTableOf(args.table);
+        if (typeof table === 'string') return { text: table, isError: true };
+        return { text: `TASK_COMPLETE: ${args.answer}`, ...(table ? { table } : {}), outcome: finishOutcomeOf(args.outcome) };
       }
 
       default:
@@ -677,7 +929,6 @@ export class TarkaMCPServer {
     const live = await this.readLiveState(tabId, rt, this.screenshotDepsFor(tabId));
     const check = checkFrame(frame, live);
     if (!check.ok) {
-      this.refusalCount += 1;
       return { text: check.reason || 'Error: the screenshot is out of date. Take a new one.', isError: true };
     }
 
@@ -697,7 +948,48 @@ export class TarkaMCPServer {
     }
     if (described.snapped) point = { x: described.snapped.x, y: described.snapped.y };
 
-    this.refusalCount = 0;
+    // The security gate for a coordinate click: the same rules an element click goes through,
+    // judged on what the point (or the control it was snapped onto) really is.
+    const pointSec: ElementSecurity = {
+      fieldKind: described.fieldKind,
+      isSubmitControl: described.isSubmitControl,
+      formTarget: described.formTarget,
+      formHasMaskedField: described.formHasMaskedField,
+      label: described.snapped?.what || described.what,
+      text: '',
+    };
+    const pointDecision = sensitiveActionDecision({
+      tool: 'click',
+      sec: pointSec,
+      label: described.snapped?.what || described.what,
+      requiresApproval: TOOL_MAP.get('click')?.requires_approval === true,
+    });
+    if (pointDecision.refuse) return { text: `Error: ${pointDecision.refuse}`, isError: true };
+    if (pointDecision.confirm) {
+      const info = await (rt.browser.tabInfo(tabId).catch(() => null));
+      const pageUrl = info?.url || '';
+      let targetOrigin = '';
+      try { targetOrigin = pageUrl ? new URL(pageUrl).origin : ''; } catch (_) { targetOrigin = ''; }
+      // An origin the run already approved (CONTRACT-REMEMBER) gets no second card.
+      if (!this.originApproved(targetOrigin)) {
+        const approved = await this.requestConfirmation({
+          id: '',
+          toolName: 'click',
+          serializedArgs: JSON.stringify(args),
+          tabId,
+          frameUrl: pageUrl,
+          targetOrigin,
+          elementLabel: pointSec.label || undefined,
+          variant: pointDecision.confirm.variant,
+          actionSummary: pointDecision.confirm.actionSummary,
+          reason: pointDecision.confirm.reason,
+          pageUrl,
+          detail: pointSec.formTarget?.formActionHost ? { formActionHost: pointSec.formTarget.formActionHost } : undefined,
+        });
+        if (!approved) return { text: `Error: ${CONFIRM_DECLINED_TEXT}`, isError: true };
+      }
+    }
+
     const outcome = await this.run(tabId, { action: 'click_at', x: point.x, y: point.y }, rt);
     if (!outcome.ok) return outcome.result;
     this.lastTyped.delete(tabId);
@@ -734,13 +1026,6 @@ export class TarkaMCPServer {
     this.coordinateSpace = space;
   }
 
-  /** How many coordinate clicks in a row the frame refused (reported, never a reason to close the path). */
-  private refusalCount = 0;
-
-  get coordinateRefusals(): number {
-    return this.refusalCount;
-  }
-
   /** The live page state a frame is checked against. */
   private async readLiveState(tabId: number, rt: RunRuntime, deps: ScreenshotDeps): Promise<{
     url: string; viewportWidth: number; viewportHeight: number; devicePixelRatio: number;
@@ -764,7 +1049,10 @@ export class TarkaMCPServer {
   private async describePointOnPage(
     tabId: number,
     point: { x: number; y: number }
-  ): Promise<{ what: string; interactive: boolean; refused?: string; snapped?: { x: number; y: number; distance: number } }> {
+  ): Promise<{
+    what: string; interactive: boolean; refused?: string; snapped?: { x: number; y: number; distance: number; what?: string };
+    fieldKind?: string; isSubmitControl?: boolean; formTarget?: { formActionHost?: string; formMethod?: 'get' }; formHasMaskedField?: boolean;
+  }> {
     if (typeof chrome === 'undefined' || !chrome.tabs?.sendMessage) return { what: '', interactive: false };
     try {
       const response: any = await new Promise((resolve) => {
@@ -784,7 +1072,15 @@ export class TarkaMCPServer {
       const snapped = snap && Number.isFinite(Number(snap.x)) && Number.isFinite(Number(snap.y))
         ? { x: Number(snap.x), y: Number(snap.y), distance: Number(snap.distance) || 0 }
         : undefined;
-      return { what: String(response.what || ''), interactive: response.interactive === true, ...(snapped ? { snapped } : {}) };
+      return {
+        what: String(response.what || ''),
+        interactive: response.interactive === true,
+        ...(response.fieldKind ? { fieldKind: String(response.fieldKind) } : {}),
+        ...(response.isSubmitControl !== undefined ? { isSubmitControl: response.isSubmitControl === true } : {}),
+        ...(response.formTarget && typeof response.formTarget === 'object' ? { formTarget: response.formTarget } : {}),
+        ...(response.formHasMaskedField !== undefined ? { formHasMaskedField: response.formHasMaskedField === true } : {}),
+        ...(snapped ? { snapped } : {}),
+      };
     } catch (_) {
       return { what: '', interactive: false };
     }

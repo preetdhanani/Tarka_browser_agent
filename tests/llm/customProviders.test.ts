@@ -1,7 +1,7 @@
 /**
  * A user-added endpoint is a provider: the factory builds its client from the descriptor's
  * protocol and base URL, and the headers it sends are the ones its dialect dictates (featere/
- * custom-endpoint). Captured with a fetch spy through the real LangChain clients, exactly like
+ * custom-endpoint). Captured with a fetch spy through the real provider calls, exactly like
  * providers.test.ts does for the built-ins; the URL rules behind the paths are pinned in
  * customUrls.test.ts.
  */
@@ -9,7 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateCompletion } from '../../src/background/llm/index.ts';
 import type { LlmSettings } from '../../src/background/llm/types.ts';
-import { spyFetch, textReply } from '../helpers/llmWire.ts';
+import { jsonResponse, spyFetch, textReply } from '../helpers/llmWire.ts';
 import { customChatUrl } from '../../src/background/llm/settings.ts';
 import type { CustomProvider } from '../../src/shared/storage.ts';
 
@@ -218,4 +218,49 @@ test('the timeout message names the effective value and where it came from (B3.3
   const err = await generateCompletion(descriptorTimed, TURNS, 'SYS').then(() => null, (e: Error) => e);
   assert.ok(err, 'the per-provider deadline fired despite the larger global value');
   assert.match(err!.message, /within 0s \(the provider's own timeout setting\)/);
+});
+
+// -------------------------------------------------------------------------------------------
+// A custom endpoint is its own provider in the log and the usage meter too (W2-L7, W2-L10):
+// its callbacks run under the CustomClient tag, and its replies carry the usage the server
+// reported, so the context meter reads real numbers for a custom model as it does for a built-in.
+// -------------------------------------------------------------------------------------------
+
+class TagSpy {
+  started: string[] = [];
+  handleChatModelStart(llm: { id: string[] }) {
+    this.started.push(String(llm.id.at(-1)));
+  }
+}
+
+test('a custom call notifies its callbacks under CustomClient, not GeminiClient', async (t) => {
+  const openai = new TagSpy();
+  spyFetch(t);
+  await generateCompletion(openaiSettings({ apiKey: 'k' }), TURNS, 'SYS', { callbacks: [openai] });
+  assert.deepEqual(openai.started, ['CustomClient'], 'the OpenAI-protocol call names its own client');
+
+  const anthropic = new TagSpy();
+  await generateCompletion(anthropicSettings({ apiKey: 'k' }), TURNS, 'SYS', { callbacks: [anthropic] });
+  assert.deepEqual(anthropic.started, ['CustomClient'], 'so does the Anthropic-protocol call');
+});
+
+test('a custom OpenAI-style reply carries the usage the server reported', async (t) => {
+  const seen: Array<{ promptTokens: number; outputTokens: number }> = [];
+  spyFetch(t, () => jsonResponse({
+    choices: [{ index: 0, message: { role: 'assistant', content: 'done' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 4321, completion_tokens: 33 }
+  }));
+  await generateCompletion(openaiSettings({ apiKey: 'k' }), TURNS, 'SYS', { onUsage: (usage) => seen.push(usage) });
+  assert.deepEqual(seen, [{ promptTokens: 4321, outputTokens: 33 }]);
+});
+
+test('a custom Anthropic-style reply carries the usage the server reported', async (t) => {
+  const seen: Array<{ promptTokens: number; outputTokens: number }> = [];
+  spyFetch(t, () => jsonResponse({
+    id: 'msg_1', type: 'message', role: 'assistant', model: 'm',
+    content: [{ type: 'text', text: 'done' }],
+    usage: { input_tokens: 812, output_tokens: 17 }
+  }));
+  await generateCompletion(anthropicSettings({ apiKey: 'k' }), TURNS, 'SYS', { onUsage: (usage) => seen.push(usage) });
+  assert.deepEqual(seen, [{ promptTokens: 812, outputTokens: 17 }]);
 });

@@ -48,7 +48,7 @@ function turnsOf(html) {
 }
 
 test('the plan approval card shows once, under the live turn only', () => {
-  const html = renderTurns(twoRuns(), 'paused', '', null, APPROVAL);
+  const html = renderTurns(twoRuns(), 'paused', '', APPROVAL);
   assert.equal(count(html, 'class="plan-approval-card"'), 1, 'one card, not one per turn');
   const turns = turnsOf(html);
   assert.equal(turns.length, 2);
@@ -58,13 +58,13 @@ test('the plan approval card shows once, under the live turn only', () => {
 
 test('a run that is not live never shows the approval card', () => {
   for (const status of ['idle', 'stopped', 'error', 'completed']) {
-    const html = renderTurns(twoRuns(), status, '', null, APPROVAL);
+    const html = renderTurns(twoRuns(), status, '', APPROVAL);
     assert.equal(html.includes('plan-approval-card'), false, status);
   }
 });
 
 test('the approval card still shows when the hold comes before any history', () => {
-  const html = renderTurns([], 'paused', '', null, APPROVAL);
+  const html = renderTurns([], 'paused', '', APPROVAL);
   assert.equal(count(html, 'class="plan-approval-card"'), 1);
 });
 
@@ -74,7 +74,7 @@ test('the live turn draws the plan checklist and says which step it is on', () =
     { text: 'Read the price', status: 'in_progress' },
     { text: 'Compare <b>offers</b>', status: 'pending' }
   ];
-  const html = renderTurns(twoRuns(), 'running', '', null, null, null, null, null, null, null, planSteps);
+  const html = renderTurns(twoRuns(), 'running', '', null, null, planSteps);
   const turns = turnsOf(html);
   assert.equal(turns[0].includes('act-plan'), false, 'a finished turn has no checklist');
   assert.match(turns[1], /class="act-plan"/);
@@ -90,7 +90,7 @@ test('a skipped step does not move the counter and says "not checked"', () => {
     { text: 'Read shop A', status: 'skipped' },
     { text: 'Read shop B', status: 'in_progress' }
   ];
-  const html = renderTurns(twoRuns(), 'running', '', null, null, null, null, null, null, null, planSteps);
+  const html = renderTurns(twoRuns(), 'running', '', null, null, planSteps);
   assert.match(html, /Working · step 1 of 2/);
   assert.match(html, /act-plan-row skipped/);
   assert.match(html, /not checked/);
@@ -98,14 +98,14 @@ test('a skipped step does not move the counter and says "not checked"', () => {
 
 test('the checklist shows before the first action of a live run', () => {
   const history = [{ type: 'user_goal', turn: 1, prompt: 'Go', timestamp: '10:00:00', isNewRun: true }];
-  const html = renderTurns(history, 'running', '', null, null, null, null, null, null, null, [{ text: 'Open the page', status: 'in_progress' }]);
+  const html = renderTurns(history, 'running', '', null, null, [{ text: 'Open the page', status: 'in_progress' }]);
   assert.match(html, /class="act-plan"/);
   assert.match(html, /Working · step 1 of 1 · 0 actions/);
 });
 
 test('while the plan card is up, the checklist does not repeat it', () => {
   const planSteps = [{ text: 'Open the shop', status: 'pending' }, { text: 'Read the price', status: 'pending' }];
-  const html = renderTurns(twoRuns(), 'paused', '', null, APPROVAL, null, null, null, null, null, planSteps);
+  const html = renderTurns(twoRuns(), 'paused', '', APPROVAL, null, planSteps);
   assert.equal(count(html, 'class="plan-approval-card"'), 1);
   assert.equal(html.includes('class="act-plan"'), false);
   assert.equal(/step \d+ of/.test(html), false);
@@ -113,11 +113,11 @@ test('while the plan card is up, the checklist does not repeat it', () => {
 
 test('a finished run hides the checklist unless a step was skipped', () => {
   const done = [{ text: 'Open the shop', status: 'completed' }];
-  const idle = renderTurns(twoRuns(), 'idle', '', null, null, null, null, null, null, null, done);
+  const idle = renderTurns(twoRuns(), 'idle', '', null, null, done);
   assert.equal(idle.includes('act-plan'), false);
 
   const skipped = [{ text: 'Read shop A', status: 'skipped' }, { text: 'Read shop B', status: 'completed' }];
-  const idleSkipped = renderTurns(twoRuns(), 'idle', '', null, null, null, null, null, null, null, skipped);
+  const idleSkipped = renderTurns(twoRuns(), 'idle', '', null, null, skipped);
   assert.equal(turnsOf(idleSkipped)[1].includes('act-plan-row skipped'), true);
   assert.equal(turnsOf(idleSkipped)[0].includes('act-plan'), false);
 });

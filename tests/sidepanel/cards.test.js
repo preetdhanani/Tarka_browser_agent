@@ -2,11 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   escapeHtml,
-  formatTime,
-  renderActionConfirmationCard,
-  renderChallengeHelpCard,
-  renderContinueBudgetCard,
-  renderProvenanceFindingsTable
+  renderActionConfirmationCard
 } from '../../sidepanel/cards.js';
 import fs from 'node:fs';
 
@@ -22,8 +18,8 @@ test('cards: escapeHtml escapes dangerous characters', () => {
 test('cards: renderActionConfirmationCard renders variants and details', () => {
   assert.equal(renderActionConfirmationCard(null), '');
 
-  // A purchase hold never carries a targetDomain (the risk gate sets one only for navigation), and the worker
-  // remembers only a hold's targetDomain, so this card has no remember checkbox: it would do nothing.
+  // A card without a target origin offers no remember checkbox: there is nothing the engine could
+  // remember, so the checkbox would do nothing.
   const confirmPurchase = {
     variant: 'purchase',
     actionSummary: 'Click "Place Order"',
@@ -36,23 +32,38 @@ test('cards: renderActionConfirmationCard renders variants and details', () => {
   assert.ok(htmlPurchase.includes('Purchase / Checkout Action'), 'Should render purchase title');
   assert.ok(htmlPurchase.includes('tag-purchase'), 'Should render purchase tag');
   assert.ok(htmlPurchase.includes('Place Order'), 'Should render element label');
-  assert.ok(!htmlPurchase.includes('chkRememberSite'), 'No remember checkbox on a hold without a targetDomain');
+  assert.ok(!htmlPurchase.includes('chkRememberSite'), 'No remember checkbox on a hold without a target origin');
   assert.ok(htmlPurchase.includes('shop.test'), 'Should still show the page host');
   assert.ok(htmlPurchase.includes('btn-confirm-allow'), 'Should render allow button');
   assert.ok(htmlPurchase.includes('btn-confirm-deny'), 'Should render deny button');
+
+  // The engine remembers a card's targetOrigin (CONTRACT-REMEMBER), so every card that carries
+  // one offers the checkbox: ticking it skips the later cards for this origin in this run.
+  const confirmPurchaseOrigin = {
+    variant: 'purchase',
+    actionSummary: 'Click "Place Order"',
+    elementLabel: 'Place Order',
+    pageUrl: 'https://shop.test/checkout',
+    targetOrigin: 'https://shop.test',
+    reason: 'Purchase action detected.',
+  };
+  const htmlPurchaseOrigin = renderActionConfirmationCard(confirmPurchaseOrigin);
+  assert.ok(htmlPurchaseOrigin.includes('chkRememberSite'), 'A card with a targetOrigin offers the remember checkbox');
+  assert.ok(htmlPurchaseOrigin.includes('Remember <strong>shop.test</strong> for this task'), 'The checkbox names the domain that would be remembered');
+  assert.ok(!/<input type="checkbox" id="chkRememberSite" checked>/.test(htmlPurchaseOrigin), 'The remember checkbox is not pre-ticked: remembering an origin must be an explicit tick, or one unnoticed approval silences every later card on that origin');
 
   const confirmNav = {
     variant: 'navigate',
     actionSummary: 'Navigate to external website',
     pageUrl: 'https://external-auth.com/login',
     reason: 'Navigating to domain outside approved list.',
-    targetDomain: 'external-auth.com',
+    targetOrigin: 'https://external-auth.com',
   };
 
   const htmlNav = renderActionConfirmationCard(confirmNav);
   assert.ok(htmlNav.includes('External Site Navigation'), 'Should render navigate title');
   assert.ok(htmlNav.includes('external-auth.com'), 'Should display target domain');
-  assert.ok(htmlNav.includes('chkRememberSite'), 'A navigate hold with a targetDomain keeps the remember checkbox');
+  assert.ok(htmlNav.includes('chkRememberSite'), 'A navigate hold with a targetOrigin keeps the remember checkbox');
 });
 
 // safety/confirm-card-blind-approval: the card shows what the user approves.
@@ -124,71 +135,6 @@ test('cards: a batch card lists its steps, escaped', () => {
   assert.ok(!html.includes('<i>hi</i>'));
 });
 
-test('cards: renderProvenanceFindingsTable renders findings and snippets', () => {
-  assert.equal(renderProvenanceFindingsTable([]), '');
-
-  const findings = [
-    {
-      id: 'f1',
-      siteId: 'framework.com',
-      url: 'https://frame.work/products/laptop16',
-      field: 'price',
-      value: '1.599 EUR',
-      quality: 'verified',
-      step: 4,
-      capturedAt: 1727800000000,
-      evidence: {
-        snippet: 'Framework Laptop 16 starts from 1.599 EUR including VAT.',
-      },
-      pageTitle: 'Framework Laptop 16 Store',
-    },
-  ];
-
-  const html = renderProvenanceFindingsTable(findings);
-  assert.ok(html.includes('provenance-findings-container'), 'Should contain table container');
-  assert.ok(html.includes('frame.work'), 'Should display site domain');
-  assert.ok(html.includes('1.599 EUR'), 'Should display price value');
-  assert.ok(html.includes('quality-verified'), 'Should display verified badge');
-  assert.ok(html.includes('Framework Laptop 16 starts from 1.599 EUR'), 'Should include snippet quote');
-  assert.ok(html.includes('Step #4'), 'Should display step number');
-  assert.ok(html.includes('btn-copy-findings-table'), 'Should include copy table button');
-});
-
-test('cards: renderChallengeHelpCard renders challenge details and action buttons', () => {
-  assert.equal(renderChallengeHelpCard(null), '');
-
-  const challenge = {
-    domain: 'cloudflare-protected.test',
-    url: 'https://cloudflare-protected.test/verify',
-    reason: 'Cloudflare captcha challenge detected.',
-  };
-
-  const html = renderChallengeHelpCard(challenge);
-  assert.ok(html.includes('challenge-help-card'), 'Should have challenge-help-card class');
-  assert.ok(html.includes('cloudflare-protected.test'), 'Should display domain');
-  assert.ok(html.includes('tag-challenge'), 'Should have challenge tag');
-  assert.ok(html.includes('btn-challenge-solved'), 'Should have solved button');
-  assert.ok(html.includes('btn-challenge-skip'), 'Should have skip button');
-});
-
-test('cards: renderContinueBudgetCard renders budget steps and action buttons', () => {
-  assert.equal(renderContinueBudgetCard(null), '');
-
-  const budgetInfo = {
-    domain: 'heavy-catalog.test',
-    stepsUsed: 50,
-    reserveBudget: 15,
-  };
-
-  const html = renderContinueBudgetCard(budgetInfo);
-  assert.ok(html.includes('continue-budget-card'), 'Should have continue-budget-card class');
-  assert.ok(html.includes('50 steps'), 'Should display steps used');
-  assert.ok(html.includes('heavy-catalog.test'), 'Should display domain');
-  assert.ok(html.includes('+15 steps'), 'Should display reserve budget');
-  assert.ok(html.includes('btn-budget-continue'), 'Should have continue button');
-  assert.ok(html.includes('btn-budget-finish'), 'Should have finish button');
-});
-
 test('cards: the confirm detail styles use theme tokens only, and long code scrolls inside its box', () => {
   const start = CSS.indexOf('/* Confirm card: what the user approves */');
   const end = CSS.indexOf('/* End confirm card detail */');
@@ -215,5 +161,22 @@ test('cards: the confirm detail styles use theme tokens only, and long code scro
     // Buttons are styled elsewhere; a variant or tag without its own rule keeps the base card and tag look.
     if (/^(btn|btn-[a-z-]+|variant-[a-z]+|tag-[a-z]+)$/.test(name)) continue;
     assert.ok(CSS.includes(`.${name}`), `.${name} has no rule`);
+  }
+});
+
+test('cards: the confirmation card variants and tag badges use theme tokens, never literal colours', () => {
+  // The whole confirm-card family: the variant edges, the tag badges, the risk box, the details.
+  const start = CSS.indexOf('.action-confirmation-card {');
+  const end = CSS.indexOf('/* End confirm card detail */', start);
+  assert.ok(start !== -1 && end > start, 'the confirm card family block exists');
+  const block = CSS.slice(start, end);
+  assert.ok(!/#[0-9a-f]{3,8}\b|rgba?\(|hsl/i.test(block), `no fixed colour anywhere in the family: ${block.match(/#[0-9a-f]{3,8}\b|rgba?\([^)]*\)|hsl\([^)]*\)/gi)}`);
+  // Every token the family uses is defined in all three theme blocks (light, system dark, forced dark).
+  for (const variable of [...new Set([...block.matchAll(/var\((--[a-z-]+)\)/g)].map((m) => m[1]))].filter((n) => !n.startsWith('--font'))) {
+    assert.ok(CSS.split(`${variable}:`).length - 1 >= 3, `${variable} is defined in all three theme blocks`);
+  }
+  // The variants the card really renders keep their own edge colours.
+  for (const variant of ['purchase', 'navigate', 'script']) {
+    assert.match(CSS, new RegExp(`\\.action-confirmation-card\\.variant-${variant}[^{]*\\{[^}]*border-left-color:\\s*var\\(--[a-z-]+\\)`), variant);
   }
 });

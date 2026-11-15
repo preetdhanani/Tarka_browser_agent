@@ -69,6 +69,28 @@ test('per-tool hints: scroll that did not move, repeated read, repeated screensh
   assert.match(repeatHint('navigate', 2), /choose another tool/);
 });
 
+test('a go_back or go_forward that did not move feeds the stall and repeat machinery, and a real move resets it', () => {
+  // "Went back in history" for a tab that stayed put made every go_back look like progress and
+  // reset the stall counter forever; the did-not-move wording is what the tracker reads.
+  const t = new ProgressTracker();
+  const stuck = 'Did not move: there is no earlier page in this tab\'s history.';
+  assert.equal(t.record('go_back', { reason: 'first' }, stuck).hint, null, 'the first did-not-move gets no hint yet');
+  assert.match(t.record('go_back', { reason: 'second' }, stuck).hint || '', /go_back/, 'the repeat gets the hint');
+  const third = t.record('go_back', { reason: 'third' }, stuck);
+  assert.ok(third.hint, 'the third one is told again');
+  assert.ok(third.noProgressInWindow >= 3, 'the did-not-move steps count as no progress in the window');
+  assert.equal(t.stepsSinceProgress, 3, 'three did-not-move moves fed the stall counter instead of resetting it');
+  // A go_back that really moved the tab is progress again.
+  t.record('go_back', { reason: 'now it works' }, 'Went back in history\n\nNOW ON: Items (https://shop.test/items)');
+  assert.equal(t.stepsSinceProgress, 0, 'a real move resets the stall counter');
+  // The same for go_forward.
+  const f = new ProgressTracker();
+  const stuckForward = 'Did not move: there is no later page in this tab\'s history.';
+  f.record('go_forward', {}, stuckForward);
+  assert.match(f.record('go_forward', {}, stuckForward).hint || '', /go_forward/);
+  assert.equal(f.stepsSinceProgress, 2);
+});
+
 test('an element list or find that brings the same text again is no progress', () => {
   const t = new ProgressTracker();
   assert.equal(t.record('find', { query: 'x' }, '[1] button "X"').hint, null);

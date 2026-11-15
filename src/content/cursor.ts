@@ -159,19 +159,6 @@ export function showClickEffect(
 }
 
 /**
- * Remove cursor overlay elements
- */
-export function removeCursorOverlay(
-  container: HTMLElement | null,
-  clearTimer: () => void
-): void {
-  clearTimer();
-  if (container && typeof container.remove === 'function') {
-    container.remove();
-  }
-}
-
-/**
  * The style an element had before the agent highlighted it, keyed by element.
  * Set only on the FIRST highlight: a second highlight of the same element must
  * not capture the orange ring as the "original" and restore it permanently

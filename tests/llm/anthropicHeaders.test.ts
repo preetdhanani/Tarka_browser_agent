@@ -34,8 +34,8 @@ test('the request goes to /v1/messages with the four headers the old client sent
   assert.match(headers['content-type'], /^application\/json/);
   assert.equal(headers['dangerously-allow-browser'], undefined, 'the SDK option name is not a header, it fails CORS preflight');
   assert.equal(headers['authorization'], undefined, 'Anthropic takes x-api-key, not a bearer token');
-  // Exactly the four, and nothing the SDK adds on its own: accept, a User-Agent and eight x-stainless-* headers
-  // (os, arch, runtime, ...) that the old request did not send, and that tell a server which machine this is.
+  // Exactly the four, and nothing that tells a server which machine this is (a User-Agent, or an
+  // SDK-style telemetry header).
   assert.deepEqual(Object.keys(headers).sort(), ['anthropic-dangerous-direct-browser-access', 'anthropic-version', 'content-type', 'x-api-key']);
 });
 
@@ -57,7 +57,7 @@ test('the body is the old body plus stream:false, and nothing else', async (t) =
   });
 });
 
-test('max_tokens is 8192 unless settings.maxTokens is a positive number (LangChain\'s own default is 4096)', async (t) => {
+test('max_tokens is 8192 unless settings.maxTokens is a positive number', async (t) => {
   const sent = spyFetch(t);
   const maxTokens = async (value: unknown) => {
     await generateCompletion({ ...SETTINGS, maxTokens: value as number }, TURNS, 'SYS');

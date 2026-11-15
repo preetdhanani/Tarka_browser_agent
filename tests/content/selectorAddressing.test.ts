@@ -432,7 +432,6 @@ function clickContext(built: Built): ActionExecutionContext {
     highlightElement: () => {},
     showClickEffect: () => {},
     animateCursor: () => {},
-    waitForDomQuiet: async () => {},
     describeElement: () => '',
     setFieldValue: () => ({ success: true }),
     doClick: () => ({ success: true }),

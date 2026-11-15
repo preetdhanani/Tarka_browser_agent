@@ -2,7 +2,7 @@
  * Storage utility for Tarka Agentic Browser Extension
  * Manages settings, per-provider API configuration memory, multi-session history, and model caching.
  */
-import { DEFAULT_NVIDIA_LLM_TIMEOUT_MS, endpointHostOf, endpointOriginOf } from '../background/llm/settings.ts';
+import { DEFAULT_NVIDIA_LLM_TIMEOUT_MS, endpointHostOf, endpointOriginOf, isLoopbackHost } from '../background/llm/settings.ts';
 
 export interface ProviderConfig {
   baseUrl: string;
@@ -38,6 +38,12 @@ export interface CustomProvider {
   keyMode: 'apiKey' | 'none';
   /** Per-provider LLM timeout. When missing, the global llmTimeoutMs applies (timeoutMsOf precedence). */
   llmTimeoutMs?: number;
+  /**
+   * SEC-9, per server: this endpoint may be called over plain http although it carries an API
+   * key. The user ticks it in the provider dialog for THIS server; it never reaches another one.
+   * Loopback endpoints (the user's own machine) never need it. Absent means false.
+   */
+  allowInsecureHttp?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -210,8 +216,11 @@ async function chatIndex(): Promise<SavedSessionSummary[]> {
   const moved = legacy.filter((s) => s && typeof s.id === 'string').slice(0, MAX_SAVED_CHATS);
   const known = new Set((index || []).map((s) => s.id));
   const merged = [...(index || []), ...moved.filter((s) => !known.has(s.id)).map(chatSummary)].slice(0, MAX_SAVED_CHATS);
+  // Only chats that survive the index cut get a key: one written for a chat the cut dropped
+  // would hold its rows forever under a key nothing lists, reads or cleans.
+  const surviving = new Set(merged.map((s) => s.id));
   const items: Record<string, unknown> = { [CHAT_INDEX_KEY]: merged };
-  for (const chat of moved) if (!known.has(chat.id)) items[chatKey(chat.id)] = chat;
+  for (const chat of moved) if (!known.has(chat.id) && surviving.has(chat.id)) items[chatKey(chat.id)] = chat;
   await localSet(items);
   await localRemove([LEGACY_SESSIONS_KEY]);
   return merged;
@@ -316,6 +325,8 @@ export function sanitizeCustomProviders(raw: unknown): CustomProviders {
       models: Array.isArray(entry.models) ? entry.models.filter((m): m is string => typeof m === 'string') : [],
       keyMode: entry.keyMode === 'none' ? 'none' : 'apiKey',
       ...(typeof entry.llmTimeoutMs === 'number' && entry.llmTimeoutMs > 0 ? { llmTimeoutMs: entry.llmTimeoutMs } : {}),
+      // SEC-9: the plain-http opt-in is part of the descriptor, so a read keeps it.
+      ...(entry.allowInsecureHttp === true ? { allowInsecureHttp: true } : {}),
       createdAt: typeof entry.createdAt === 'number' ? entry.createdAt : 0,
       updatedAt: typeof entry.updatedAt === 'number' ? entry.updatedAt : 0
     };
@@ -346,6 +357,11 @@ export interface CustomProviderInput {
   apiKey?: string;
   keyMode?: string;
   llmTimeoutMs?: number;
+  /**
+   * SEC-9: the user's explicit yes to calling this endpoint over plain http although it carries a
+   * key. Given, it is stored on this provider's descriptor; absent, the stored value stands.
+   */
+  allowInsecureHttp?: boolean;
 }
 
 export type SaveCustomProviderResult =
@@ -406,6 +422,20 @@ export async function saveCustomProvider(input: CustomProviderInput): Promise<Sa
     return { ok: false, error: `At most ${MAX_CUSTOM_PROVIDERS} custom providers can be stored. Delete one to add another.` };
   }
 
+  // SEC-9: a plain-http endpoint that would carry an API key is refused, unless the host is the
+  // user's own machine (loopback) or the user turned allowInsecureHttp on for THIS server.
+  const previousConfig = current.providerConfigs?.[id] || {};
+  const originChanged = Boolean(existing) && endpointOriginOf(existing!.baseUrl) !== endpointOriginOf(baseUrl);
+  const keyWillBeCarried = input.keyMode !== 'none'
+    && ((typeof input.apiKey === 'string' && input.apiKey.trim() !== '') || (!originChanged && Boolean(previousConfig.apiKey)));
+  const allowInsecureHttp = input.allowInsecureHttp === true;
+  if (parsed.protocol === 'http:' && keyWillBeCarried && !isLoopbackHost(parsed.hostname) && !allowInsecureHttp) {
+    return {
+      ok: false,
+      error: 'A plain http:// endpoint would send the API key unencrypted. Use https://, or a loopback address (localhost, 127.0.0.1), or tick "Allow insecure http" in the dialog if this server can only do http.',
+    };
+  }
+
   const now = Date.now();
   const provider: CustomProvider = {
     id,
@@ -415,6 +445,9 @@ export async function saveCustomProvider(input: CustomProviderInput): Promise<Sa
     models,
     keyMode: input.keyMode === 'none' ? 'none' : 'apiKey',
     ...(typeof input.llmTimeoutMs === 'number' && input.llmTimeoutMs > 0 ? { llmTimeoutMs: input.llmTimeoutMs } : {}),
+    // SEC-9: the opt-in lives on the descriptor, so it covers this server and no other. An edit
+    // without the tick drops a stored opt-in, and the call-time guard refuses again.
+    ...(input.allowInsecureHttp === true ? { allowInsecureHttp: true } : {}),
     createdAt: existing?.createdAt || now,
     updatedAt: now
   };
@@ -424,11 +457,9 @@ export async function saveCustomProvider(input: CustomProviderInput): Promise<Sa
   // The credential lives in providerConfigs[id], as for every provider. A key given in the input
   // wins (it gets the same cleanup getApiKey applies on read); a key not mentioned stays. The
   // origin rule clears it when the endpoint host changes, and keeps it for a path-only correction.
-  const previousConfig = current.providerConfigs?.[id] || {};
   const inputKey = typeof input.apiKey === 'string'
     ? input.apiKey.trim().replace(/^Bearer\s+/i, '').replace(/^["']|["']$/g, '')
     : undefined;
-  const originChanged = Boolean(existing) && endpointOriginOf(existing!.baseUrl) !== endpointOriginOf(baseUrl);
   const apiKey = originChanged ? '' : (inputKey !== undefined ? inputKey : (previousConfig.apiKey || ''));
   const providerConfigs: ProviderConfigs = {
     ...current.providerConfigs,
@@ -440,7 +471,10 @@ export async function saveCustomProvider(input: CustomProviderInput): Promise<Sa
     }
   };
 
-  const settings = await Storage.saveSettings({ customProviders, providerConfigs });
+  const settings = await Storage.saveSettings({
+    customProviders,
+    providerConfigs,
+  });
   return { ok: true, settings, provider, keyCleared: originChanged };
 }
 
@@ -504,6 +538,9 @@ export const Storage = {
         delete (settings as any).showElementBadges;
         // There is no execute_js tool any more; an old stored opt-in is dropped.
         delete (settings as any).allowExecuteJs;
+        // SEC-9's plain-http opt-in moved onto each provider's descriptor; an old stored global
+        // flag is dropped, so no provider gains an opt-in its user never gave it.
+        delete (settings as any).allowInsecureHttp;
         resolve(settings);
       });
     });
@@ -650,8 +687,10 @@ export const Storage = {
   },
 
   /**
-   * Drop every model-cache entry of one provider (its cache keys all start with "<id>_"). Used when
-   * a custom provider is deleted, so no stale list of a gone endpoint is served on the next open.
+   * Drop every model-cache entry of one provider: its `models_cache` keys (they all start with
+   * "<id>_") and its `models_ctx_cache` entry (keyed by the provider id). Used when a custom
+   * provider is deleted, so no stale list or stale context window of a gone endpoint is served
+   * on the next open.
    */
   async purgeCachedModelsForProvider(providerId: string): Promise<void> {
     return new Promise((resolve) => {
@@ -659,7 +698,7 @@ export const Storage = {
         resolve();
         return;
       }
-      chrome.storage.local.get<{ models_cache?: ModelsCache }>(['models_cache'], (res) => {
+      chrome.storage.local.get<{ models_cache?: ModelsCache; models_ctx_cache?: ModelsCtxCache }>(['models_cache', 'models_ctx_cache'], (res) => {
         const cache = res.models_cache || {};
         const prefix = `${providerId}_`;
         const kept: ModelsCache = {};
@@ -671,11 +710,14 @@ export const Storage = {
           }
           kept[key] = entry;
         }
-        if (!removed) {
+        const ctxCache = res.models_ctx_cache || {};
+        const ctxRemoved = providerId in ctxCache;
+        if (!removed && !ctxRemoved) {
           resolve();
           return;
         }
-        chrome.storage.local.set({ models_cache: kept }, () => resolve());
+        if (ctxRemoved) delete ctxCache[providerId];
+        chrome.storage.local.set({ models_cache: kept, models_ctx_cache: ctxCache }, () => resolve());
       });
     });
   },

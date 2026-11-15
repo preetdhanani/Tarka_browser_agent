@@ -3,9 +3,9 @@
  * evalscan: fails if dist/ reaches eval() or the Function constructor.
  *
  * Why: the extension pages and the service worker run under the MV3 CSP (`script-src 'self'`),
- * which blocks eval and the Function constructor. A library that probes them once (zod does, with
- * `new Function('')`) costs a CSP violation event, and a real call breaks a feature only in the
- * packaged extension.
+ * which blocks eval and the Function constructor. A library that probes them once (as zod did,
+ * with `new Function('')`) costs a CSP violation event, and a real call breaks a feature only in
+ * the packaged extension.
  *
  * How: every .js file under dist/ is parsed (with Vite's parser, so comments and strings never
  * count), each hit is mapped back to its ORIGINAL source file and line through the sourcemap
@@ -16,8 +16,8 @@
  * What counts as a hit:
  *   - a call or `new` of eval or Function, however the callee is written: eval(x), new Function(x),
  *     (0, eval)(x), new (Function)(x), globalThis.Function(x), window['eval'](x)
- *   - any other USE of the global `eval` or `Function` as a value: an alias (`const F = Function`,
- *     which is how zod 4 compiles), Reflect.construct(Function, ...), Function.call/apply/bind(...),
+ *   - any other USE of the global `eval` or `Function` as a value: an alias (`const F = Function`),
+ *     Reflect.construct(Function, ...), Function.call/apply/bind(...),
  *     eval.call(...), a tagged template (Function`x`), Function.prototype.constructor, and the
  *     same through globalThis, window, self or this (`const F = globalThis.Function`)
  *   - setTimeout, setInterval or setImmediate called with a string or template literal
@@ -63,55 +63,18 @@ const DIST = path.join(ROOT, 'dist');
  * snippet in another file, or another kind of hit on that line is a new hit and fails. Add an
  * entry only with a reason.
  *
- * Every entry names a file under node_modules/. That is what keeps the list from
+ * The list is empty: no dependency that ships in the bundle probes eval or the Function
+ * constructor, so every hit fails the scan. When a dependency needs an entry, add it with a
+ * reason, an exact version pin, and a test here.
+ *
+ * An entry would name a file under node_modules/. That is what keeps the list from
  * hiding a hit in our own sources: a hit in src/ or content/ has a different file, so
  * no library entry can match it (tests/evalscan.test.js pins that). Never add an entry for our own
  * code, fix the code. A library entry says why the call cannot run or why it is harmless, and names
  * the version that was read. Versions are exact pins, so an entry goes stale loudly (its snippet or
  * kind stops matching, and the hit fails) when an upgrade changes the line.
  */
-export const ALLOWLIST = [
-  {
-    // zod 4.6.5. `allowsEval` returns false on its first line when globalThis.__zod_globalConfig.jitless is true,
-    // before it gets to this call. src/background/boot/zodJitless.ts sets the flag as the first import of the
-    // worker, scripts/build.mjs checks that order in dist/, and the smoke test's zod-not-jitless control shows
-    // the CSP violation that this call causes when the flag is missing.
-    file: 'node_modules/zod/v4/core/util.js',
-    kind: 'new Function(',
-    snippet: 'new F("")',
-    max: 1,
-    why: "zod's allowsEval probe, skipped under jitless (zodJitless is the first import of the worker)"
-  },
-  {
-    // zod 4.6.5. Doc.compile is called from one place that is in the bundle: generateFastpass of an object schema,
-    // which runs only when `jit && allowsEval.value`. jit is `!globalConfig.jitless`, so it is false here.
-    // (compileFn in compile.js has the same alias, and it is not in the bundle because nothing calls it.)
-    file: 'node_modules/zod/v4/core/doc.js',
-    kind: 'Function (used as a value)',
-    snippet: 'const F = Function;',
-    max: 1,
-    why: "zod's Doc.compile, only reached by the object fast path, which is off under jitless"
-  },
-  {
-    // openai 7.25.0, lib/EventStream.mjs. It builds a set of trusted native error and intrinsic constructors.
-    // The native Function constructor is only asked for its source text, to compare that text with another.
-    file: 'node_modules/openai/lib/EventStream.mjs',
-    kind: 'Function (used as a value)',
-    snippet: 'functionToString.call(Function)',
-    max: 1,
-    why: 'the openai SDK reads the source text of the native Function constructor and compares it, it never calls it'
-  },
-  {
-    // openai 7.25.0, lib/EventStream.mjs. `Function` is one entry of a list of native constructors. The loop only reads
-    // each one's `prototype` descriptor and its source text (rememberTrustedIntrinsic), and the only Reflect.construct
-    // in the file takes a constructor whose source text equals the native Error constructor's, so never Function.
-    file: 'node_modules/openai/lib/EventStream.mjs',
-    kind: 'Function (used as a value)',
-    snippet: 'Function,',
-    max: 1,
-    why: 'the openai SDK lists Function among native constructors whose descriptors it reads, it never calls it'
-  }
-];
+export const ALLOWLIST = [];
 
 // ---- sourcemap reading ----------------------------------------------------------------------
 

@@ -22,6 +22,7 @@ test('InputDispatcher: click dispatches CDP mouse sequence and returns via cdp',
     scripting: { executeScript: [{ result: 800 }] },
     dom: {
       101: {
+        VERIFY_CLICK_POINT: () => ({ success: true, what: 'button "Go"', hitTag: 'button', withinTarget: true }),
         RESOLVE_ELEMENT_POINT: (msg: any) => {
           sentMessages.push(msg);
           return {
@@ -100,6 +101,7 @@ test('InputDispatcher: click ensures mouseReleased if aborted after mousePressed
           tag: 'div',
           text: 'Box'
         }),
+        VERIFY_CLICK_POINT: () => ({ success: true, what: 'button "Go"', hitTag: 'button', withinTarget: true }),
         EFFECT_PROBE_BEGIN: () => ({ success: true }),
         EFFECT_PROBE_END: () => ({ success: true, effect: 'none' })
       }
@@ -168,10 +170,12 @@ test('InputDispatcher: click with a stale element fails loudly and never dispatc
     dom: {
       101: {
         RESOLVE_ELEMENT_POINT: () => ({
+        VERIFY_CLICK_POINT: () => ({ success: true, what: 'button "Go"', hitTag: 'button', withinTarget: true }),
           success: false,
           stale: true,
           error: 'Element [5] is no longer attached to the document.'
         }),
+        VERIFY_CLICK_POINT: () => ({ success: true, what: 'button "Go"', hitTag: 'button', withinTarget: true }),
         EFFECT_PROBE_BEGIN: () => ({ success: true }),
         EFFECT_PROBE_END: () => ({ success: true, effect: 'dom_changed' }),
         EXECUTE_ACTION: () => {
@@ -215,6 +219,7 @@ test('InputDispatcher: click on select element falls back to synthetic', async (
           tag: 'select',
           text: 'Country'
         }),
+        VERIFY_CLICK_POINT: () => ({ success: true, what: 'button "Go"', hitTag: 'button', withinTarget: true }),
         EFFECT_PROBE_BEGIN: () => ({ success: true }),
         EFFECT_PROBE_END: () => ({ success: true, effect: 'dom_changed' }),
         EXECUTE_ACTION: (msg: any) => {
@@ -262,6 +267,7 @@ test('InputDispatcher: type uses CDP focus, selectAll, insertText and Enter subm
           tag: 'input',
           text: 'Search box'
         }),
+        VERIFY_CLICK_POINT: () => ({ success: true, what: 'button "Go"', hitTag: 'button', withinTarget: true }),
         EFFECT_PROBE_BEGIN: () => ({ success: true }),
         EFFECT_PROBE_END: () => ({ success: true, effect: 'value_set' })
       }
@@ -394,6 +400,7 @@ test('InputDispatcher: click falls back to synthetic when CDP click throws', asy
           tag: 'button',
           text: 'Fallback Button'
         }),
+        VERIFY_CLICK_POINT: () => ({ success: true, what: 'button "Go"', hitTag: 'button', withinTarget: true }),
         EFFECT_PROBE_BEGIN: () => ({ success: true }),
         EFFECT_PROBE_END: () => ({ success: true, effect: 'dom_changed' }),
         EXECUTE_ACTION: () => {
@@ -486,6 +493,7 @@ test('InputDispatcher: click uses injected sleep for 300ms probe delay', async (
     dom: {
       101: {
         RESOLVE_ELEMENT_POINT: () => ({ success: true, point: { x: 50, y: 50 }, tag: 'button', text: 'Go' }),
+        VERIFY_CLICK_POINT: () => ({ success: true, what: 'button "Go"', hitTag: 'button', withinTarget: true }),
         EFFECT_PROBE_BEGIN: () => ({ success: true }),
         EFFECT_PROBE_END: () => ({ success: true, effect: 'dom_changed' })
       }
@@ -508,8 +516,10 @@ test('InputDispatcher: click uses injected sleep for 300ms probe delay', async (
   assert.equal(sleepDuration, 300);
 });
 
-test('InputDispatcher: click detects URL change even when initial URL was empty', async () => {
-  let currentUrl = '';
+test('InputDispatcher: click detects URL change even when the tab read starts bare', async () => {
+  // A tab whose URL the tabs API only fills in as it loads: the action starts on a real address
+  // and the click moves the tab to another one.
+  let currentUrl = 'https://example.com/start';
   const fc = fakeChrome({
     debugger: {
       commands: {
@@ -525,6 +535,7 @@ test('InputDispatcher: click detects URL change even when initial URL was empty'
     dom: {
       101: {
         RESOLVE_ELEMENT_POINT: () => ({ success: true, point: { x: 50, y: 50 }, tag: 'a', text: 'Link' }),
+        VERIFY_CLICK_POINT: () => ({ success: true, what: 'button "Go"', hitTag: 'button', withinTarget: true }),
         EFFECT_PROBE_BEGIN: () => ({ success: true }),
         EFFECT_PROBE_END: () => ({ success: true, effect: 'none' })
       }
@@ -545,4 +556,48 @@ test('InputDispatcher: click detects URL change even when initial URL was empty'
   assert.equal(res.success, true);
   assert.equal(res.effect, 'url_changed');
   assert.equal(res.urlAfter, 'https://example.com/target');
+});
+
+// W2-B2: a hidden or busy tab that takes the message but never answers must not freeze the run.
+// sendToTab races the answer with a timer, and the timeout is a normal action error the model can
+// act on (it learns the page did not answer, not that the action failed mysteriously).
+test('InputDispatcher: sendToTab gives up on a tab that never answers, with a page-did-not-answer error', async (t) => {
+  const fc = fakeChrome({
+    tabs: {
+      list: [{ id: 101, url: 'https://example.com' }],
+      methods: {
+        // The tab took the message but nothing will ever come back: the callback never runs.
+        sendMessage: () => new Promise(() => {}),
+      },
+    },
+  });
+  const restore = fc.install();
+  t.after(() => { restore(); });
+
+  const dispatcher = new InputDispatcher(new CDPManager(), { tabAnswerMs: 50 });
+  await assert.rejects(
+    (dispatcher as any).sendToTab(101, { action: 'EXECUTE_ACTION', payload: {} }),
+    /did not answer/
+  );
+});
+
+test('InputDispatcher: an action on a tab that never answers ends as an action error the model can act on', async (t) => {
+  const fc = fakeChrome({
+    debugger: { commands: { 'Emulation.setFocusEmulationEnabled': {} } },
+    tabs: {
+      list: [{ id: 101, url: 'https://example.com' }],
+      methods: {
+        sendMessage: () => new Promise(() => {}),
+      },
+    },
+    scripting: { executeScript: [{ result: 800 }] },
+  });
+  const restore = fc.install();
+  t.after(() => { restore(); });
+
+  const dispatcher = new InputDispatcher(new CDPManager(), { tabAnswerMs: 50 });
+  const res = await dispatcher.dispatchAction(101, { action: 'click', element_id: 1 }, { sleep: async () => {} });
+  assert.equal(res.success, false);
+  assert.match(res.error || '', /did not answer/, 'the model reads why: the page never answered');
+  assert.doesNotMatch(res.error || '', /Receiving end/, 'this is a timeout, not a missing content script');
 });

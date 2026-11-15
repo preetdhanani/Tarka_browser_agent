@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Tarka AI Agent</title>
   <link rel="stylesheet" href="sidepanel.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 </head>
 <body>
   <div class="app-container">
@@ -141,7 +138,7 @@
           </div>
 
           <div class="composer" id="composer">
-            <textarea id="taskInput" class="composer-input" placeholder="Ask Tarka to do something..." rows="2"></textarea>
+            <textarea id="taskInput" class="composer-input" placeholder="Ask Tarka to do something..." rows="2" aria-label="Task for Tarka"></textarea>
 
             <div class="composer-bar">
               <button type="button" class="composer-icon-btn" id="btnApprovalMode" aria-haspopup="menu" aria-expanded="false" title="Automatically approve" aria-label="Approval mode">
@@ -267,10 +264,10 @@
 
             <!-- Custom Searchable Dropdown Component -->
             <div class="custom-combobox" id="modelCombobox">
-              <div class="combobox-trigger" id="modelComboboxTrigger">
+              <button type="button" class="combobox-trigger" id="modelComboboxTrigger" aria-haspopup="listbox" aria-expanded="false">
                 <span id="modelSelectedLabel">Select a model...</span>
                 <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
-              </div>
+              </button>
               <div class="combobox-menu" id="modelComboboxMenu" style="display: none;">
                 <div class="combobox-search-box">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -400,10 +397,10 @@
           </div>
 
           <div class="log-toolbar">
-            <span class="log-filter-chip active" data-filter="all" title="The run: task, steps, model calls, and any warning">All</span>
-            <span class="log-filter-chip" data-filter="agent" title="What the agent did, step by step">Agent steps</span>
-            <span class="log-filter-chip" data-filter="llm" title="Each call to the model: what was sent and what came back">Model calls</span>
-            <span class="log-filter-chip" data-filter="system" title="The extension's own machinery: ports, worker, tabs">System</span>
+            <button type="button" class="log-filter-chip active" data-filter="all" title="The run: task, steps, model calls, and any warning">All</button>
+            <button type="button" class="log-filter-chip" data-filter="agent" title="What the agent did, step by step">Agent steps</button>
+            <button type="button" class="log-filter-chip" data-filter="llm" title="Each call to the model: what was sent and what came back">Model calls</button>
+            <button type="button" class="log-filter-chip" data-filter="system" title="The extension's own machinery: ports, worker, tabs">System</button>
           </div>
 
           <div class="log-output" id="logOutput"><div class="subtext-hint log-empty">Nothing logged yet. Start a task and every model call and step appears here.</div></div>
@@ -436,6 +433,10 @@
           <input type="text" id="cpBaseUrlInput" class="form-input" placeholder="https://gateway.example/v1" autocomplete="off" spellcheck="false">
           <div class="cp-preview" id="cpPreview"></div>
           <span class="cp-warning" id="cpHttpWarning" style="display:none;"></span>
+          <label class="cp-allow-http-row" id="cpAllowHttpRow" style="display:none;">
+            <input type="checkbox" id="cpAllowHttpInput">
+            <span>Allow insecure http for this server (the API key then travels unencrypted)</span>
+          </label>
         </div>
 
         <div class="form-group">

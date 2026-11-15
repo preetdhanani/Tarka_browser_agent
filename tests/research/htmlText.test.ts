@@ -19,6 +19,13 @@ test('htmlToText keeps the line breaks of <pre> and the cells of a table row apa
   assert.equal(htmlToText(html), 'curl -fsSL https://x/install.sh | sh\nlantern --version\nOS | File\nLinux | a.tar.zst');
 });
 
+test('htmlToText keeps an empty table cell as an empty slot, so the columns stay aligned', () => {
+  // The cell mark goes on enter only: with a leave mark too, the empty cell read as "a | b" and
+  // every value after it attached to the wrong header.
+  assert.equal(htmlToText('<table><tr><td>a</td><td></td><td>b</td></tr></table>'), 'a |  | b');
+  assert.equal(htmlToText('<table><tr><td></td><td>b</td></tr></table>'), ' | b');
+});
+
 test('htmlToText decodes entities after the tags are gone, so &lt;p&gt; stays text', () => {
   assert.equal(htmlToText('<p>a &lt;p&gt; tag &amp; &#39;quotes&#39; &#x2713; &nbsp;x&mdash;y</p>'), "a <p> tag & 'quotes' ✓ x-y");
 });

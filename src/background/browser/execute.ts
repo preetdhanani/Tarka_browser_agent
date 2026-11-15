@@ -16,8 +16,8 @@ export interface ExecuteActionDeps {
   tabInfo?: (tabId: number) => Promise<{ url: string; title: string; windowId: number; groupId: number; status: string } | null>;
   waitForTabComplete?: (tabId: number, ms: number, signal?: AbortSignal) => Promise<void>;
   /**
-   * Resolves true when the tab starts loading (or its URL changes) within `ms`, false when it does
-   * not. Defaults to chrome.tabs.onUpdated.
+   * Resolves true when the tab starts loading a document within `ms`, false when it does not.
+   * Defaults to chrome.tabs.onUpdated (a url-only event is not a load start; see W2-B3).
    */
   watchLoadStart?: (tabId: number, ms: number, signal?: AbortSignal) => Promise<boolean>;
   waitDomQuiet?: (tabId: number, quietMs: number, maxMs: number) => Promise<void>;
@@ -25,6 +25,8 @@ export interface ExecuteActionDeps {
   actionDelayMs?: number;
   /** Reads the effect probe again after the action settled. Defaults to the content script's probe. */
   readProbe?: (tabId: number) => Promise<EffectDetail | null>;
+  /** The tab-scope check (SEC-7). Defaults to the runtime's isTabInScope. Absent: no scope gate. */
+  isTabInScope?: (tabId: number) => Promise<boolean>;
 }
 
 /**
@@ -41,8 +43,10 @@ export const LOAD_COMPLETE_MAX_MS = 4000;
 export const SETTLE_QUIET_MAX_MS = 800;
 
 /**
- * Whether the tab starts loading, or changes its URL, within `ms`, read from chrome.tabs.onUpdated.
- * False when there is no tabs API to watch.
+ * Whether the tab starts loading a document within `ms`, read from chrome.tabs.onUpdated. Only a
+ * `status: 'loading'` event counts (W2-B3): a url-only event is an SPA pushState, not a document
+ * load, and counting it burned the whole complete timeout on a page that never loads. False when
+ * there is no tabs API to watch.
  */
 export function watchLoadStartWithChrome(tabId: number, ms: number, signal?: AbortSignal): Promise<boolean> {
   if (typeof chrome === 'undefined' || !chrome.tabs?.onUpdated) return Promise.resolve(false);
@@ -57,7 +61,7 @@ export function watchLoadStartWithChrome(tabId: number, ms: number, signal?: Abo
     };
     const listener = (updatedTabId: number, changeInfo: { status?: string; url?: string }) => {
       if (updatedTabId !== tabId) return;
-      if (changeInfo.status === 'loading' || typeof changeInfo.url === 'string') finish(true);
+      if (changeInfo.status === 'loading') finish(true);
     };
     const timer = setTimeout(() => finish(false), ms);
     chrome.tabs.onUpdated.addListener(listener);
@@ -67,6 +71,11 @@ export function watchLoadStartWithChrome(tabId: number, ms: number, signal?: Abo
 
 /** The actions whose result carries an observation: the probe is read again after they settled. */
 const OBSERVED_VERBS = new Set(['click', 'click_at', 'type', 'press_key', 'scroll']);
+
+/** The refusal for a tab that is gone (the same wording the snapshot path answers with). */
+export function tabGoneText(tabId: number): string {
+  return `The target tab [${tabId}] no longer exists (it was probably closed). Open the page you want automated and start the task again.`;
+}
 
 /**
  * Dispatches an action onto a tab with safety gates and proper execution routing.
@@ -87,6 +96,35 @@ export async function executeAction(
       via: verb === 'navigate' || verb === 'go_back' || verb === 'go_forward' ? 'background' : 'cdp',
       effect: 'none',
     };
+  }
+
+  // 1b. SEC-7: the tab itself is checked before anything is dispatched - a restricted page
+  // (chrome://, a file:, the Web Store) is never automated, and a tab outside this run's scope
+  // (the sandbox group) is not this run's to touch. The screenshot and snapshot paths have held
+  // this gate all along; the action path holds it here now, for every verb. The check runs when a
+  // tab reader exists (the tool path always has one); with none, the tab's URL is unknowable and
+  // the dispatch is not gated on it.
+  const readTab = deps.tabInfo ?? (deps.runRuntime ? deps.runRuntime.browser.tabInfo : null);
+  if (readTab) {
+    const tabInfo = await readTab(tabId).catch(() => null);
+    // W2-B6: a gone tab and a not-yet-loaded tab are different problems. A null tab read is a
+    // closed tab: answering "wait for it to load" would have the model wait forever.
+    if (!tabInfo) {
+      return { success: false, error: tabGoneText(tabId), via: 'background', effect: 'none' };
+    }
+    const restricted = describeRestrictedUrl(tabInfo.url ?? '');
+    if (restricted) {
+      return { success: false, error: `Refused by security policy: ${restricted}`, via: 'background', effect: 'none' };
+    }
+    const scopeCheck = deps.isTabInScope ?? deps.runRuntime?.browser.isTabInScope;
+    if (scopeCheck && !(await scopeCheck(tabId).catch(() => false))) {
+      return {
+        success: false,
+        error: 'Refused by security policy: that tab is outside this run\'s scope (it is not in the run\'s tab sandbox), so no action was sent to it.',
+        via: 'background',
+        effect: 'none',
+      };
+    }
   }
 
   // 2. Restricted gates on the navigate target URL
@@ -224,9 +262,12 @@ export async function executeAction(
     if (verb === 'find_element' || verb === 'read_page') effect = 'none';
     const isClick = verb === 'click' || verb === 'click_at';
     const isTypeSubmit = verb === 'type' && (res.submitted || Boolean(action?.submit));
+    // W2-B4: a press_key that navigated (its effect probe reported url_changed) gets the same
+    // load wait a submitting type gets, so the model never reads a half-loaded page.
+    const isPressNav = verb === 'press_key' && effect === 'url_changed';
 
     let urlAfter = '';
-    if (res.success && (isNav || isClick || isTypeSubmit)) {
+    if (res.success && (isNav || isClick || isTypeSubmit || isPressNav)) {
       if (!action?.expected_outcome && await loadStarted(tabId, urlBefore)) {
         await waitComplete(tabId, LOAD_COMPLETE_MAX_MS);
       }
@@ -288,6 +329,12 @@ export async function executeAction(
       urlAfter: urlAfter || res.urlAfter || undefined,
       syntheticReason: (res as any).syntheticReason,
       oneShot,
+      // W2-B5: the refusal facts of the dispatcher travel with the exec result, so a caller can
+      // tell a security refusal (never retried, never worked around) from an ordinary failure,
+      // and a stale or covered element from a broken one.
+      ...(res.stale ? { stale: res.stale } : {}),
+      ...(res.obscuredBy ? { obscuredBy: res.obscuredBy } : {}),
+      ...(res.securityRefusal ? { securityRefusal: res.securityRefusal } : {}),
       ...(effectDetail ? { effectDetail } : {}),
       ...(res.fieldText !== undefined ? { fieldText: res.fieldText } : {}),
     };

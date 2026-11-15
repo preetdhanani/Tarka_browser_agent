@@ -27,7 +27,7 @@ const MUST_REPORT = [
   ['globalThis.Function(x)', "globalThis.Function('return 1')"],
   ['window["eval"](x)', "window['eval']('1')"],
   ['self.eval?.(x)', "self.eval?.('1')"],
-  ['an alias, then new (zod 4)', "const F = Function; new F('return 1');"],
+  ['an alias, then new', "const F = Function; new F('return 1');"],
   ['an alias of eval', "const e = eval; e('1');"],
   ['Reflect.construct(Function)', "Reflect.construct(Function, ['return 1'])"],
   ['Function.call(...)', "Function.call(null, 'return 1')"],
@@ -106,16 +106,16 @@ test('importing the scanner does not start a scan of dist/', () => {
 /** A hit as evalscan builds it after the sourcemap lookup: the ORIGINAL file, the kind, and the trimmed source line. */
 const hitOf = (entry, patch = {}) => ({ kind: entry.kind, file: entry.file, text: entry.snippet, line: 1, column: 1, ...patch });
 
-// Files of ours, and a library that has no entry. A hit here must never be allowed, whatever it says.
+// Files of ours, and libraries that have no entry. A hit here must never be allowed, whatever it says.
 const NOT_ALLOWED_FILES = [
   'src/background/llm/factory.ts',
-  'src/background/agent/parse.ts',
+  'src/background/mcp/server.ts',
   'src/shared/storage.ts',
   'src/background/background.ts',
   'sidepanel/sidepanel.js',
   'content/content.js',
   'node_modules/some-other-library/index.js',
-  'node_modules/zod/v4/core/schemas.js'
+  'node_modules/some-lib/v4/core/schemas.js'
 ];
 
 test('every allowlist entry is narrow: a file, a kind, a snippet and a count', () => {
@@ -155,11 +155,10 @@ test('an entry does not take another kind of hit, or another line, in its own fi
   }
 });
 
-test('the zod probe entry is keyed by the zod source path, so another copy of zod is a new hit', () => {
-  const probe = ALLOWLIST.find((entry) => entry.snippet === 'new F("")');
-  assert.equal(probe.file, 'node_modules/zod/v4/core/util.js');
-  const nested = hitOf(probe, { file: 'node_modules/other-pkg/node_modules/zod/v4/core/util.js' });
-  assert.equal(classifyHits([nested]).results[0].entry, null);
+test('the allowlist is empty, and a hit under node_modules is still a hit', () => {
+  assert.deepEqual(ALLOWLIST, []);
+  const hit = { file: 'node_modules/some-lib/v4/core/util.js', line: 1, kind: 'new Function(', text: 'new F("")' };
+  assert.equal(classifyHits([hit]).results[0].entry, null);
 });
 
 // ---- the sourcemap of a built file --------------------------------------------------------------
@@ -176,7 +175,7 @@ function builtFile(t, code, { withMap = true } = {}) {
 
 /** A sourcemap as a data: URI comment that puts line 0 in a library file, where an allowlist entry would take it. */
 const FORGED_MAP_COMMENT = `//# sourceMappingURL=data:application/json;base64,${Buffer.from(JSON.stringify({
-  version: 3, sources: ['node_modules/zod/v4/core/util.js'], sourcesContent: ['new F("")'], mappings: 'AAAA'
+  version: 3, sources: ['node_modules/some-lib/v4/core/util.js'], sourcesContent: ['new F("")'], mappings: 'AAAA'
 })).toString('base64')}`;
 
 test('the map of a built file is its own .map, and null when there is none', (t) => {

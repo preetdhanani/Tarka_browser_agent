@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { executeAction } from '../../src/background/browser/execute.ts';
+import { executeAction, watchLoadStartWithChrome } from '../../src/background/browser/execute.ts';
+import { fakeChrome } from '../helpers/fakeChrome.ts';
 
 test('executeAction - rejects immediately when signal is already aborted', async () => {
   const controller = new AbortController();
@@ -272,4 +273,119 @@ test('executeAction - press_key and scroll never wait for a page load, only for 
     await executeAction(101, action, deps);
     assert.deepEqual(calls, ['quiet 300/800'], action.action);
   }
+});
+
+// W2-B4: a press_key that navigates (its probe reports url_changed before this branch) gets the
+// same load wait a submitting type gets, instead of the model reading a half-loaded page.
+test('executeAction - a press_key whose probe reports url_changed waits for the page to complete', async () => {
+  const nav = settleRig({ loadStarts: true });
+  nav.deps.dispatchAction = async () => ({ success: true, via: 'cdp', effect: 'url_changed', message: 'Pressed Enter' });
+  const res = await executeAction(101, { action: 'press_key', key: 'Enter' }, nav.deps);
+  assert.equal(res.success, true);
+  assert.equal(res.effect, 'url_changed');
+  assert.deepEqual(nav.calls, ['watch 500', 'complete 4000', 'quiet 300/800'], 'the load wait a submitting type gets');
+
+  // A press_key that changes nothing still waits only for a quiet DOM, even when a load starts.
+  const still = settleRig({ loadStarts: true });
+  await executeAction(101, { action: 'press_key', key: 'Enter' }, still.deps);
+  assert.deepEqual(still.calls, ['quiet 300/800'], 'no complete wait without a url change from the probe');
+
+  // scroll never waits for a page load, whatever it changed.
+  const scrolled = settleRig({ loadStarts: true });
+  scrolled.deps.dispatchAction = async () => ({ success: true, via: 'cdp', effect: 'url_changed', message: 'Scrolled' });
+  await executeAction(101, { action: 'scroll', direction: 'down' }, scrolled.deps);
+  assert.deepEqual(scrolled.calls, ['quiet 300/800'], 'scroll is not a navigation');
+});
+
+// W2-B3: only a real document load counts as a load start. A url-only tabs.onUpdated event (an
+// SPA pushState) must not finish the watch as a started load, or it burns the whole complete
+// timeout on a page that never loads.
+test('watchLoadStart - a url-only update is not a load start, a status loading event is', async (t) => {
+  const fc = fakeChrome({ tabs: { list: [{ id: 101, url: 'https://app.test/inbox' }] } });
+  const restore = fc.install();
+  t.after(() => { restore(); });
+
+  const watch = watchLoadStartWithChrome(101, 2000);
+  fc.tabs.patch(101, { url: 'https://app.test/inbox/2' });
+  const afterUrlOnly = await Promise.race([
+    watch.then(() => 'started'),
+    new Promise((r) => setTimeout(() => r('pending'), 100)),
+  ]);
+  assert.equal(afterUrlOnly, 'pending', 'a url-only update must not count as a load start');
+
+  // A real document load announces itself with status loading.
+  fc.tabs.patch(101, { status: 'loading' });
+  assert.equal(await watch, true, 'a status loading event counts as a load start');
+});
+
+test('watchLoadStart - the watch still gives up after its window when nothing loads', async (t) => {
+  const fc = fakeChrome({ tabs: { list: [{ id: 101, url: 'https://app.test/inbox' }] } });
+  const restore = fc.install();
+  t.after(() => { restore(); });
+  const startedAt = Date.now();
+  assert.equal(await watchLoadStartWithChrome(101, 80), false);
+  assert.ok(Date.now() - startedAt >= 70, 'the watch waited out its window');
+});
+
+// W2-B5: the refusal facts of the dispatcher travel with the exec result, so a caller can tell a
+// security refusal (never retried, never worked around) from an ordinary failure. The three fields
+// are read through a typed view here: declaring them on ExecResult itself is the runner owner's
+// file (runtimeRegistry.ts), so the carry is reported there instead of edited.
+interface RefusalFacts {
+  securityRefusal?: boolean;
+  stale?: boolean;
+  obscuredBy?: string;
+}
+const refusalFactsOf = (res: { success: boolean }): RefusalFacts => res as unknown as RefusalFacts;
+
+test('executeAction - a security refusal keeps securityRefusal on the exec result', async () => {
+  const res = await executeAction(101, { action: 'type', element_id: 5, text: '4111' }, {
+    dispatchAction: async () => ({
+      success: false,
+      error: 'Refused by security policy: cannot type into or read sensitive credential, payment card, or OTP fields. Ask the user to enter this field manually.',
+      via: 'cdp',
+      securityRefusal: true,
+    }),
+  } as any);
+  assert.equal(res.success, false);
+  assert.equal(refusalFactsOf(res).securityRefusal, true, 'the refusal must stay marked on the exec result');
+});
+
+test('executeAction - stale and obscuredBy travel from the dispatch result to the exec result', async () => {
+  const stale = await executeAction(101, { action: 'type', element_id: 5, text: 'x' }, {
+    dispatchAction: async () => ({ success: false, error: 'Element [5] is no longer attached to the document.', via: 'cdp', stale: true }),
+  } as any);
+  assert.equal(refusalFactsOf(stale).stale, true);
+  assert.equal(refusalFactsOf(stale).securityRefusal, undefined, 'a stale element is not a security refusal');
+
+  const covered = await executeAction(101, { action: 'click', element_id: 3 }, {
+    dispatchAction: async () => ({ success: false, error: 'Element [3] is covered by <div.modal>.', via: 'cdp', obscuredBy: 'div.modal' }),
+  } as any);
+  assert.equal(refusalFactsOf(covered).obscuredBy, 'div.modal');
+});
+
+// W2-B6: a closed tab and a not-yet-loaded tab are different problems with different answers. A
+// gone tab must not be answered with "wait for it to load": the model would wait forever.
+test('executeAction - a gone tab answers the tab-gone wording, not the loading wording', async () => {
+  let dispatched = false;
+  const res = await executeAction(101, { action: 'click', element_id: 1 }, {
+    tabInfo: async () => null,
+    dispatchAction: async () => { dispatched = true; return { success: true, via: 'cdp', effect: 'none' }; },
+  });
+  assert.equal(res.success, false);
+  assert.equal(dispatched, false, 'nothing is dispatched to a tab that is not there');
+  assert.match(res.error || '', /no longer exists/);
+  assert.doesNotMatch(res.error || '', /not finished loading/);
+});
+
+test('executeAction - an existing tab with no URL yet keeps the loading wording', async () => {
+  let dispatched = false;
+  const res = await executeAction(101, { action: 'click', element_id: 1 }, {
+    tabInfo: async () => ({ url: '', title: '', windowId: 1, groupId: -1, status: 'loading' }),
+    dispatchAction: async () => { dispatched = true; return { success: true, via: 'cdp', effect: 'none' }; },
+  });
+  assert.equal(res.success, false);
+  assert.equal(dispatched, false);
+  assert.match(res.error || '', /not finished loading/);
+  assert.doesNotMatch(res.error || '', /no longer exists/);
 });

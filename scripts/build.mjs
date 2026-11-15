@@ -228,76 +228,6 @@ function checkExecuteScriptFuncs({ manifest }) {
   return { detail: `${checked} func checked`, problems };
 }
 
-/** The module that sets zod's flag (src/background/boot/zodJitless.ts), as rolldown names it in its //#region comments. */
-const ZOD_JITLESS_REGION = 'src/background/boot/zodJitless.ts';
-/** Rolldown's own modules (its runtime helpers) are written in the comment as a backslash and a zero: `//#region \0rolldown/runtime.js`. */
-const ROLLDOWN_VIRTUAL = '\\0rolldown/';
-
-/** Is this top-level statement `globalThis.__zod_globalConfig = { jitless: true }` (other keys may be there too)? */
-function isZodJitlessStatement(statement) {
-  const e = statement.type === 'ExpressionStatement' && statement.expression;
-  if (!e || e.type !== 'AssignmentExpression' || e.operator !== '=') return false;
-  const { left, right } = e;
-  if (left.type !== 'MemberExpression' || left.computed || left.property.name !== '__zod_globalConfig') return false;
-  if (left.object.type !== 'Identifier' || left.object.name !== 'globalThis') return false;
-  return right.type === 'ObjectExpression' && right.properties.some((p) => p.type === 'Property' && !p.computed
-    && (p.key.name ?? p.key.value) === 'jitless' && p.value.type === 'Literal' && p.value.value === true);
-}
-
-/**
- * What is wrong with the way one built script sets zod's jitless flag, as a list of problems (empty
- * means fine). zod reads `globalThis.__zod_globalConfig` once, when its core module runs, and a flag set
- * later is ignored: then its `new Function` probe runs and the extension CSP reports a violation.
- * So the statement must be at the top level of the file, and must come before any library code.
- * Rolldown writes the modules of a bundle in the order they run, each after a `//#region <module>`
- * comment, so "first" means: the only regions above the statement are rolldown's own runtime helpers
- * and the zodJitless module itself. That reads comments, which is why it needs unminified output: with
- * none found the check says so, and does not pass. A file that imports another file is refused too,
- * because that file would run first and its position could not be judged from this one.
- */
-export function zodJitlessProblems(file, code, program, staticImports = 0) {
-  const at = program.body.find(isZodJitlessStatement);
-  if (!at) return [`${file}: no top-level "globalThis.__zod_globalConfig = { jitless: true }". zod would probe new Function, which the extension CSP reports as a violation. Import src/background/boot/zodJitless.ts first in the entry`];
-  const regions = [...code.matchAll(/^\/\/#region (.+)$/gm)].map((m) => ({ name: m[1], at: m.index }));
-  if (regions.length === 0) return [`${file}: has no //#region comments, so this check cannot see the order of the modules (is minify on? change the check first)`];
-  const problems = [];
-  if (staticImports) problems.push(`${file}: has ${staticImports} import statement(s), a file that runs before this one could load zod first`);
-  for (const region of regions) {
-    if (region.at > at.start) break;
-    if (region.name.startsWith(ROLLDOWN_VIRTUAL) || region.name === ZOD_JITLESS_REGION) continue;
-    problems.push(`${file}: "${region.name}" runs before zodJitless sets the flag. zodJitless must be the first import of the entry`);
-  }
-  return problems;
-}
-
-/** The worker and every script of the side panel page must set the flag before anything else runs. */
-function checkZodJitless({ manifest }) {
-  const files = [];
-  if (manifest.background?.service_worker) files.push(manifest.background.service_worker.replace(/^\/+/, ''));
-  // The panel page is not in the manifest any more (no global default_path: see background.ts),
-  // so it is named here. It is still the page Chrome loads through sidePanel.setOptions.
-  const page = (manifest.side_panel?.default_path || 'sidepanel/sidepanel.html').replace(/^\/+/, '');
-  if (page && fs.existsSync(distPath(page))) {
-    const html = fs.readFileSync(distPath(page), 'utf8');
-    for (const [, tag] of html.matchAll(/<script\b([^>]*)>/gi)) {
-      const src = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag);
-      const ref = src && (src[1] ?? src[2]).split('#')[0].split('?')[0];
-      if (!ref || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(ref)) continue;
-      const target = ref.startsWith('/') ? path.join(DIST, ref) : path.resolve(DIST, path.dirname(page), ref);
-      files.push(path.relative(DIST, target).split(path.sep).join('/'));
-    }
-  }
-  const problems = [];
-  let checked = 0;
-  for (const file of files) {
-    if (!fs.existsSync(distPath(file))) continue; // the paths check reports it
-    const { code, program, module } = parseBuilt(file, 'module');
-    problems.push(...zodJitlessProblems(file, code, program, module.staticImports.length));
-    checked++;
-  }
-  if (checked === 0) problems.push('no worker or side panel script found, so the zod jitless check is blind');
-  return { detail: `${checked} script(s)`, problems };
-}
 
 /**
  * Chrome refuses to load an extension that has a file or folder whose name starts with "_"
@@ -357,7 +287,6 @@ function verifyDist() {
     ['worker is one ES module', checkWorker],
     ['content scripts are classic', checkContentScripts],
     ['executeScript func is self-contained', checkExecuteScriptFuncs],
-    ['zod is jitless before any library code', checkZodJitless],
     ['no name starts with "_"', checkNames],
     ['html references resolve', checkHtml]
   ];

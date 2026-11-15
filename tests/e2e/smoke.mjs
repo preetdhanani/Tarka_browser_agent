@@ -29,15 +29,14 @@
  *
  * The run fails (exit code 1, every problem printed) when a task does not end the way it must, its answer is
  * wrong, the service worker logs an error or hits a CSP violation, the fixture page a task runs on shows a console error
- * or a page error, the page's content scripts are not there (the MAIN-world net recorder did not
- * run, or the isolated-world content script does not answer), or the side panel page loaded on
- * its own shows a console error, a page error or a CSP violation.
+ * or a page error, the page's isolated-world content script does not answer, or the side panel
+ * page loaded on its own shows a console error, a page error or a CSP violation.
  *
  * Setup:  cd tests/e2e && npm ci            (puppeteer-core only)
  *         npm run build                     from the repo root, or pass --build
  * Run:    node smoke.mjs                           the default tasks on LISA: the open-web tasks (a neutral
  *                                                  start page and only a question, the model picks every
- *                                                  site) and the three local fixture-page tasks (needs the key)
+ *                                                  site) and the local fixture-page tasks (needs the key)
  *         node smoke.mjs --build                   build first, then the same (npm run test:e2e)
  *         node smoke.mjs --held-out                the held-out open-web tasks (never tuned against; run them
  *                                                  after every change, to show it helps in general)
@@ -145,10 +144,6 @@ const SHOT_ROOT = path.join(HERE, 'screenshots', RUN_STAMP);
 
 /** A task's start address: the fixture server plus the page, or a real URL (an open-web task, --prompt) as it stands. */
 const absolute = (page, fixtures) => (/^https?:\/\//.test(page) ? page : `${fixtures.origin}/${page}`);
-
-// The side panel links Google Fonts. When the machine is offline those two requests fail, which
-// is a network fact and not an extension bug, so that one console line is not counted.
-const FONT_HOSTS = /^https:\/\/fonts\.(?:googleapis|gstatic)\.com\//;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fmtInt = (n) => (n === null || n === undefined ? '-' : Number(n).toLocaleString('en-US'));
@@ -547,8 +542,7 @@ async function snapshotOf(driver, tabId, tries = 50) {
 }
 
 /**
- * Errors of a fixture page (the page a task runs on), from before its first script runs, so an
- * error at document_start (where the MAIN-world net recorder runs) is seen too. Everything counts,
+ * Errors of a fixture page (the page a task runs on), from before its first script runs. Everything counts,
  * with one exception that was checked and is unrelated to the extension: the browser's own request
  * for /favicon.ico, which the fixture site does not have (a 404 "Failed to load resource" line).
  */
@@ -563,14 +557,11 @@ function watchFixturePage(page, errors) {
 }
 
 /**
- * Are the extension's scripts really on this page? Two facts, read the way each script can be
- * reached. The MAIN-world recorder (content/net-recorder.js) sets a flag on the page's own window,
- * so page.evaluate (which runs in the page's world) can read it. The isolated-world content script
- * is reached the way the engine reaches it: a GET_DOM_SNAPSHOT message to the tab. Never throws.
+ * Is the extension's content script really on this page? Reached the way the engine reaches it:
+ * a GET_DOM_SNAPSHOT message to the tab. Never throws.
  */
 async function probePage(ctx, page, tabId) {
-  const probe = { url: page.url(), recorderActive: false, contentScript: false, contentScriptError: null };
-  probe.recorderActive = (await page.evaluate(() => window.__tarka_net_recorder_active === true).catch(() => false)) === true;
+  const probe = { url: page.url(), contentScript: false, contentScriptError: null };
   try {
     await snapshotOf(ctx.driver, tabId, 15);
     probe.contentScript = true;
@@ -656,7 +647,6 @@ function newPanelSink() {
 async function watchPanelPage(page, sink) {
   page.on('console', (msg) => {
     if (msg.type() !== 'error') return;
-    if (/^Failed to load resource/.test(msg.text()) && FONT_HOSTS.test((msg.location() && msg.location().url) || '')) return;
     sink.consoleErrors.push(oneLine(msg.text(), 300));
   });
   page.on('pageerror', (err) => sink.pageErrors.push(oneLine(String(err), 300)));
@@ -1499,10 +1489,7 @@ async function unreachableTasks(names) {
 function holdsOf(state) {
   return [
     state.pendingApproval && 'plan',
-    state.pendingConfirm && 'confirm',
-    state.pendingQuestion && 'question',
-    state.pendingChallengeHelp && 'challenge',
-    state.pendingContinueBudget && 'budget'
+    state.pendingConfirm && 'confirm'
   ].filter(Boolean);
 }
 
@@ -1561,33 +1548,15 @@ async function answerHolds(ctx, run, task, tabId, state, hosts) {
 
   if (once('confirm', state.pendingConfirm)) {
     const c = state.pendingConfirm;
-    const target = String(c.targetDomain || '').toLowerCase().replace(/^www\./, '');
-    const approve = c.variant === 'navigate' && !!target && hosts.some((h) => target === h || target.endsWith(`.${h}`));
-    await decide('confirm', approve ? 'approve' : 'deny', `${c.variant}: ${c.actionSummary} (target ${c.targetDomain || 'none'}, page ${c.pageUrl})`,
+    // The gate's variants are 'purchase' and 'submit'. The harness approves a confirmation only
+    // when the page the run is on belongs to the task's own fixture site (the origin the card
+    // names is the tab's own origin then), and denies everything else.
+    const pageHost = String(c.pageUrl || '').toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^www\./, '');
+    const approve = hosts.some((h) => pageHost === h || pageHost.endsWith(`.${h}`));
+    await decide('confirm', approve ? 'approve' : 'reject', `${c.variant}: ${c.actionSummary} (page ${c.pageUrl || 'unknown'}, origin ${c.targetOrigin || 'unknown'})`,
       { action: 'CONFIRM_ACTION', payload: { decision: approve ? 'approve' : 'reject' } });
   }
 
-  if (once('question', state.pendingQuestion)) {
-    const question = String(state.pendingQuestion);
-    const known = (task.answers || []).find((a) => a.match.test(question));
-    if (known) {
-      await decide('question', 'answer', `"${oneLine(question, 120)}" -> "${known.answer}"`, { action: 'ANSWER_QUESTION', payload: { answer: known.answer } });
-    } else {
-      run.problems.push(`the run asked the user "${oneLine(question, 200)}" and the task defines no answer for it`);
-      run.stopped = 'unanswered question';
-      await decide('question', 'stop the run', `"${oneLine(question, 120)}" has no answer in the task`, { action: 'STOP_TASK' });
-    }
-  }
-
-  if (once('challenge', state.pendingChallengeHelp)) {
-    const c = state.pendingChallengeHelp;
-    await decide('challenge', 'skip the site', `${c.domain}: ${oneLine(c.reason, 120)}`, { action: 'RESOLVE_CHALLENGE', payload: { action: 'skip' } });
-  }
-
-  if (once('budget', state.pendingContinueBudget)) {
-    const b = state.pendingContinueBudget;
-    await decide('budget', 'finish the site', `${b.domain} used ${b.stepsUsed} steps`, { action: 'CONTINUE_BUDGET', payload: { action: 'finish' } });
-  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1629,7 +1598,7 @@ async function driveTask(ctx, llm, task, tabId, hosts, shot, opts = {}) {
         window.__states.push({
           status: p.status,
           pauseReason: p.pauseReason == null ? null : p.pauseReason,
-          hold: !!(p.pendingQuestion || p.pendingApproval || p.pendingConfirm || p.pendingChallengeHelp || p.pendingContinueBudget)
+          hold: !!(p.pendingApproval || p.pendingConfirm)
         });
       }
     });
@@ -2275,7 +2244,7 @@ function printReport(r) {
   for (const p of r.holdProblems) console.log(`hold:       ${oneLine(p, 300)}`);
   console.log(`states:     ${r.stateUpdates.count} state update(s) reached the panel port: ${countsText(r.stateUpdates.byStatus)}`);
   for (const e of r.errors) console.log(`error:      ${oneLine(e, 300)}`);
-  for (const p of r.probes) console.log(`page check: ${p.url.replace(/^https?:\/\/[^/]+/, '')} net recorder ${p.recorderActive ? 'active' : 'NOT ACTIVE'}, content script ${p.contentScript ? 'answers' : `DOES NOT ANSWER (${p.contentScriptError})`}`);
+  for (const p of r.probes) console.log(`page check: ${p.url.replace(/^https?:\/\/[^/]+/, '')} content script ${p.contentScript ? 'answers' : `DOES NOT ANSWER (${p.contentScriptError})`}`);
   for (const e of r.pageErrors) console.log(`page error: ${oneLine(e, 300)}`);
   console.log(`sites:      ${f.siteEnds.map((s) => `${s.siteId} ${s.status} (${s.findings} finding(s), ${s.stepsUsed} step(s))${s.reason ? `: ${oneLine(s.reason, 100)}` : ''}`).join(' | ') || 'no site ended'}`);
   console.log(`plan (${f.plan.length}): ${f.plan.map((s, i) => `${i + 1}. [${s.status}] ${s.text}`).join(' | ') || 'none'}`);
@@ -2341,7 +2310,6 @@ function judge(ctx, reports, gate) {
     for (const p of r.holdProblems) failures.push(`${r.task}: ${p}`);
     for (const p of r.probes) {
       const where = p.url.replace(/^https?:\/\/[^/]+/, '');
-      if (!p.recorderActive) failures.push(`${r.task}: the net recorder (content/net-recorder.js, MAIN world) did not run on ${where}: window.__tarka_net_recorder_active is not true`);
       if (!p.contentScript) failures.push(`${r.task}: the content script did not answer GET_DOM_SNAPSHOT on ${where} (${p.contentScriptError})`);
     }
     // On the open web a site's own errors (a 429 from a search engine, a broken analytics script)
@@ -2391,7 +2359,7 @@ function printFailureDetails(ctx, reports) {
 /** The options, for --help (the header of this file says more about each). */
 const HELP = `Usage: node tests/e2e/smoke.mjs [options]   (npm run test:e2e runs it with --build)
 
-  (no option)          the default tasks on LISA: the open-web tasks and the three local fixture-page tasks
+  (no option)          the default tasks on LISA: the open-web tasks and the local fixture-page tasks
   --held-out           the held-out open-web tasks
   --sealed             the sealed open-web tasks: only verdicts and numbers, never a trace
   --task=a,b           these tasks only
@@ -2426,7 +2394,7 @@ async function main() {
   }
   if (!REAL && PROVIDER !== 'ollama') throw new UserError(`--provider must be one of ${[...REAL_PROVIDER_NAMES, 'ollama'].join(', ')}, got ${PROVIDER}`);
   // The default set is every task that is neither held out nor sealed: the open-web tasks (the model picks every
-  // site itself) and the three local fixture-page tasks. --held-out runs only the held-out open-web tasks (heldOut),
+  // site itself) and the local fixture-page tasks. --held-out runs only the held-out open-web tasks (heldOut),
   // which a plain run leaves out. --sealed runs only the sealed tasks, and shows only their verdicts and numbers.
   const names = args.task
     ? String(args.task).split(',')
@@ -2525,7 +2493,7 @@ async function main() {
   console.log(`service worker errors (console, exceptions, CSP violations): ${ctx.workerErrors.length}`);
   if (reports.length) {
     const probes = reports.flatMap((r) => r.probes);
-    console.log(`fixture pages: ${probes.length} page check(s), ${probes.filter((p) => p.recorderActive).length} with the net recorder active, ${probes.filter((p) => p.contentScript).length} with the content script answering, ${reports.reduce((n, r) => n + r.pageErrors.length, 0)} console or page errors`);
+    console.log(`fixture pages: ${probes.length} page check(s), ${probes.filter((p) => p.contentScript).length} with the content script answering, ${reports.reduce((n, r) => n + r.pageErrors.length, 0)} console or page errors`);
   }
   if (gate) {
     const p = ctx.panel;

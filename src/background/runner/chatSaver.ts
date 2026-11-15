@@ -54,11 +54,4 @@ export class ChatSaver {
       Logger.warn('AgentRunner', `[CHAT_SAVE] Could not save the chat to Recent tasks: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-
-  /** Drops a pending write without making it. */
-  discard(): void {
-    if (this.timer) clearTimeout(this.timer);
-    this.timer = null;
-    this.pending = null;
-  }
 }

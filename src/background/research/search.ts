@@ -149,6 +149,11 @@ const SET_SEARXNG = 'Do not guess results. Tell the user that web search needs a
 
 /**
  * web_search {query, max_results?}. Never throws: every failure is an error result the model reads.
+ *
+ * Both backends are fetched with redirects followed, unlike fetch_url: the backend address is the
+ * user's own setting in Settings > Research, not an address the model chose, and search endpoints
+ * redirect routinely (an http URL upgraded to https, a load balancer). The model only writes the
+ * query, which cannot steer where a redirect goes.
  */
 export async function webSearch(args: { query?: unknown; max_results?: unknown }, research: ResearchSettings, deps: FetchDeps = {}): Promise<WebSearchOutcome> {
   const query = typeof args?.query === 'string' ? args.query.replace(/\s+/g, ' ').trim() : '';
@@ -162,7 +167,7 @@ export async function webSearch(args: { query?: unknown; max_results?: unknown }
     const target = searxngSearchUrl(research.searxngUrl, query);
     if ('error' in target) return { text: `Error: ${target.error}`, isError: true, results: [] };
     try {
-      const res = await fetchCapped(target.url, deps, 'application/json');
+      const res = await fetchCapped(target.url, { ...deps, redirects: 'follow' }, 'application/json');
       if (!res.ok) {
         const hint = res.status === 403 || res.status === 429 ? ' Many SearXNG servers refuse the JSON format or limit requests: check the server in Settings > Research.' : '';
         return { text: `Error: the SearXNG server answered HTTP ${res.status}, so there are no results.${hint}`, isError: true, results: [] };
@@ -177,7 +182,7 @@ export async function webSearch(args: { query?: unknown; max_results?: unknown }
 
   const url = `${DDG_HTML_ENDPOINT}?q=${encodeURIComponent(query)}`;
   try {
-    const res = await fetchCapped(url, deps, 'text/html');
+    const res = await fetchCapped(url, { ...deps, redirects: 'follow' }, 'text/html');
     if (!res.ok) {
       return { text: `Error: DuckDuckGo answered HTTP ${res.status} instead of results (it often does this to automated searches), so there are no results. ${SET_SEARXNG}`, isError: true, results: [] };
     }

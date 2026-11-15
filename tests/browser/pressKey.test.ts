@@ -41,6 +41,7 @@ function setup({ focus = { label: 'textbox "Code cell editor"', editable: true }
     dom: {
       101: {
         RESOLVE_ELEMENT_POINT: () => ({ success: true, point: { x: 10, y: 10 }, tag: 'input', text: 'Search' }),
+        VERIFY_CLICK_POINT: () => ({ success: true, what: 'textbox "Search"', hitTag: 'input', withinTarget: true }),
         EFFECT_PROBE_BEGIN: () => { pageMessages.push('EFFECT_PROBE_BEGIN'); return { success: true, baseline: { url: 'https://example.com', focus } }; },
         EFFECT_PROBE_END: () => { pageMessages.push('EFFECT_PROBE_END'); return { success: true, effect: 'dom_changed', detail: detail(fieldText) }; },
         EXECUTE_ACTION: () => { pageMessages.push('EXECUTE_ACTION'); return { success: true, message: 'synthetic' }; }

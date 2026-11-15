@@ -22,7 +22,8 @@ import {
   normalizeCustomAnthropicBase,
   normalizeCustomOpenaiBase,
   normalizeNvidiaBaseUrl,
-  withV1
+  withV1,
+  isLoopbackHost
 } from './settings.ts';
 import { usageOfOpenAI } from './usage.ts';
 import type { CustomProvider } from '../../shared/storage.ts';
@@ -33,16 +34,6 @@ const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const OPENROUTER_HEADERS = { 'HTTP-Referer': 'https://github.com/preetdhanani/Tarka_browser_agent', 'X-Title': 'Tarka AI Agent' };
 
-export const NULLED_HEADERS = [
-  'accept', 'user-agent',
-  'x-stainless-lang', 'x-stainless-package-version', 'x-stainless-os', 'x-stainless-arch', 'x-stainless-runtime',
-  'x-stainless-runtime-version', 'x-stainless-retry-count', 'x-stainless-timeout', 'x-stainless-helper-method'
-];
-export const NULL_HEADERS: Record<string, null> = Object.fromEntries(NULLED_HEADERS.map((name) => [name, null]));
-
-export function openaiRequestHeaders(apiKey: string): Record<string, null> {
-  return apiKey ? NULL_HEADERS : { ...NULL_HEADERS, authorization: null };
-}
 
 /** Lightweight message classes for backwards compatibility with tests and callers. */
 export class SystemMessage {
@@ -152,7 +143,7 @@ async function foreignRedirectOf(
       const probe = await fetch(requestUrl, { method: 'GET', redirect: 'follow' });
       destination = probe.url || null;
     } catch {
-      throw new Error('The endpoint redirected to another location. ScoutFox did not follow it and could not verify the destination.');
+      throw new Error('The endpoint redirected to another location. The request was not followed, so the destination could not be verified.');
     }
   } else {
     const location = response.headers.get('location');
@@ -165,16 +156,16 @@ async function foreignRedirectOf(
     }
   }
   if (!destination) {
-    throw new Error('The endpoint redirected to another location. ScoutFox did not follow it.');
+    throw new Error('The endpoint redirected to another location. The request was not followed.');
   }
   let destinationOrigin: string;
   try {
     destinationOrigin = new URL(destination).origin;
   } catch {
-    throw new Error('The endpoint redirected to an unreadable location. ScoutFox did not follow it.');
+    throw new Error('The endpoint redirected to an unreadable location. The request was not followed.');
   }
   if (destinationOrigin !== endpointOrigin) {
-    throw new Error(`The endpoint redirected to ${hostForErrorText(destination)}, which is not ${hostForErrorText(endpointOrigin)}. ScoutFox did not follow it.`);
+    throw new Error(`The endpoint redirected to ${hostForErrorText(destination)}, which is not ${hostForErrorText(endpointOrigin)}. The request was not followed.`);
   }
   return fetch(requestUrl, { ...requestInit, redirect: 'follow' });
 }
@@ -510,8 +501,11 @@ function geminiCall(settings: LlmSettings, apiKey: string, thinkingConfig?: Comp
           try {
             const chunk = JSON.parse(jsonStr);
             const candidate = chunk.candidates?.[0];
-            const partText = candidate?.content?.parts?.[0]?.text;
-            if (partText) fullText += partText;
+            // Every text part of the candidate is joined: Gemini splits one answer across parts
+            // (a part per segment), and only the first left the rest on the floor.
+            for (const part of candidate?.content?.parts ?? []) {
+              if (typeof part?.text === 'string' && part.text) fullText += part.text;
+            }
             if (chunk.usageMetadata) {
               usage = {
                 promptTokens: chunk.usageMetadata.promptTokenCount ?? 0,
@@ -559,6 +553,22 @@ const CUSTOM_LOG_TAG = 'CustomClient';
 const HTTP_NOTE_LOGGED = new Set<string>();
 const ENDPOINT_STRATEGY_LOG = new Map<string, 'chat/completions' | 'responses'>();
 
+/**
+ * SEC-9, at call time: a key over plain http to a host that is not the user's own machine is
+ * refused before any request, so a provider saved before the rule cannot quietly keep sending it
+ * in cleartext. The opt-in is the descriptor's own `allowInsecureHttp`, so it covers this server
+ * and no other. Both call paths run it - the completion call here, and the tool loop's own
+ * request building in index.ts - so the two cannot drift apart.
+ */
+export function assertSecureCustomTransport(descriptor: CustomProvider, apiKey: string): void {
+  const origin = endpointOriginOf(descriptor.baseUrl);
+  if (!origin || !origin.startsWith('http:')) return;
+  const host = endpointHostOf(descriptor.baseUrl) || '';
+  if (descriptor.keyMode !== 'none' && apiKey && !isLoopbackHost(host) && descriptor.allowInsecureHttp !== true) {
+    throw new Error(`${descriptor.displayName || descriptor.id} is called over plain HTTP, which would send the API key unencrypted. Use https://, or a loopback address (localhost, 127.0.0.1), or tick "Allow insecure http" in the provider dialog.`);
+  }
+}
+
 function isPrivateHost(host: string): boolean {
   return /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[::1\]|::1)/.test(host)
     || host === 'host.docker.internal'
@@ -583,7 +593,7 @@ function customOpenaiCall(descriptor: CustomProvider, settings: LlmSettings, api
     logTag: CUSTOM_LOG_TAG,
     logTarget: strategy === 'responses' ? `${baseURL}/responses` : `${baseURL}/chat/completions`,
     invoke: async (messages, options = {}) => {
-      notifyCallbacks(options.callbacks, 'GeminiClient');
+      notifyCallbacks(options.callbacks, CUSTOM_LOG_TAG);
       const plain = toPlainMessages(messages);
       const isDev = isDeveloperRoleModel(model);
       const plainMessages = plain.map((m) => (isDev && m.role === 'system' ? { ...m, role: 'developer' } : m));
@@ -626,7 +636,10 @@ function customOpenaiCall(descriptor: CustomProvider, settings: LlmSettings, api
             text = parsed.output?.[0]?.content?.[0]?.text || '';
           } catch {}
         }
-        return new AIMessage(text);
+        // The usage the server reported rides on the reply, so the context meter reads real
+        // numbers for a custom model as it does for a built-in.
+        const usage = usageOfOpenAI(data);
+        return new AIMessage(text, usage ? { usage } : undefined);
       };
 
       try {
@@ -671,7 +684,7 @@ function customAnthropicCall(descriptor: CustomProvider, settings: LlmSettings, 
     logTag: CUSTOM_LOG_TAG,
     logTarget: `${base}/v1/messages`,
     invoke: async (messages, options = {}) => {
-      notifyCallbacks(options.callbacks, 'GeminiClient');
+      notifyCallbacks(options.callbacks, CUSTOM_LOG_TAG);
       const plain = toPlainMessages(messages);
       const systemMessage = plain.find((m) => m.role === 'system');
       const turns = plain.filter((m) => m.role !== 'system').map((m) => ({
@@ -715,7 +728,8 @@ function customAnthropicCall(descriptor: CustomProvider, settings: LlmSettings, 
         }
 
         const text = data.content?.[0]?.text || '';
-        return new AIMessage(text);
+        const usage = data.usage ? { promptTokens: data.usage.input_tokens, outputTokens: data.usage.output_tokens } : undefined;
+        return new AIMessage(text, usage ? { usage } : undefined);
       } catch (error) {
         throw watch.asAnswered(error, options.signal);
       }
@@ -729,6 +743,8 @@ export function createCustomProviderCall(descriptor: CustomProvider, settings: L
   if (!origin) {
     throw new Error(`${descriptor.displayName || descriptor.id} has an unusable base URL (${descriptor.baseUrl || 'empty'}). Open Settings and correct it.`);
   }
+
+  assertSecureCustomTransport(descriptor, apiKey);
 
   if (origin.startsWith('http:')) {
     const host = endpointHostOf(descriptor.baseUrl) || '';

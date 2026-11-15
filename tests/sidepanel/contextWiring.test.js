@@ -67,6 +67,8 @@ test('the ring opens the card, and Compact sends COMPACT_CHAT once', async () =>
   const before = sent.filter((m) => m.action === 'COMPACT_CHAT').length;
   await getEl('contextMenu').dispatchEvent(cardClick('compact'));
   assert.equal(sent.filter((m) => m.action === 'COMPACT_CHAT').length, before + 1);
+  assert.equal(getEl('contextMenu').hidden, true, 'the card closes once its Compact was clicked, so it cannot cover the timeline');
+  assert.equal(getEl('btnContext').getAttribute('aria-expanded'), 'false');
   await getEl('contextMenu').dispatchEvent(cardClick('compact', true));
   assert.equal(sent.filter((m) => m.action === 'COMPACT_CHAT').length, before + 1, 'a disabled Compact sends nothing');
 });

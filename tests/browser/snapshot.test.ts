@@ -1,61 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { takeSnapshot, toPerceiveError, SnapshotError } from '../../src/background/browser/snapshot.ts';
-
-test('toPerceiveError - maps SnapshotError directly preserving attributes', () => {
-  const err = new SnapshotError('Out of scope', 'out_of_scope', true, true);
-  const perceived = toPerceiveError(err, 2);
-
-  assert.equal(perceived.message, 'Out of scope');
-  assert.equal(perceived.kind, 'out_of_scope');
-  assert.equal(perceived.terminal, true);
-  assert.equal(perceived.fatal, true);
-  assert.equal(perceived.tries, 2);
-});
-
-test('toPerceiveError - maps standard Error patterns to structured PerceiveError', () => {
-  const closedErr = toPerceiveError(new Error('Target tab was closed'));
-  assert.equal(closedErr.kind, 'tab_gone');
-  assert.equal(closedErr.fatal, true);
-
-  const scopeErr = toPerceiveError(new Error('outside this session tarka group'));
-  assert.equal(scopeErr.kind, 'out_of_scope');
-  assert.equal(scopeErr.fatal, true);
-
-  const restrErr = toPerceiveError(new Error('restricted url: chrome://settings blocks all extensions'));
-  assert.equal(restrErr.kind, 'restricted');
-  assert.equal(restrErr.fatal, false);
-
-  const genericErr = toPerceiveError(new Error('Unknown content script parse error'));
-  assert.equal(genericErr.kind, 'unreadable');
-  assert.equal(genericErr.fatal, false);
-});
-
-test('toPerceiveError - a tab_gone message must actually be about a tab', () => {
-  // The bare "closed" and "not found" alternatives made every unrelated failure
-  // ("connection closed", "element not found") a run-fatal tab_gone.
-  const elementErr = toPerceiveError(new Error('Element not found: [12]'));
-  assert.equal(elementErr.kind, 'unreadable');
-  assert.equal(elementErr.fatal, false);
-
-  const connErr = toPerceiveError(new Error('The connection was closed unexpectedly'));
-  assert.equal(connErr.kind, 'unreadable');
-  assert.equal(connErr.fatal, false);
-
-  // Real tab-loss messages still map, including Chrome's own "No tab with id".
-  const chromeErr = toPerceiveError(new Error('No tab with id: 700.'));
-  assert.equal(chromeErr.kind, 'tab_gone');
-  assert.equal(chromeErr.fatal, true);
-
-  const goneErr = toPerceiveError(new Error('Tab 101 no longer exists'));
-  assert.equal(goneErr.kind, 'tab_gone');
-  assert.equal(goneErr.fatal, true);
-});
+import { takeSnapshot, SnapshotError } from '../../src/background/browser/snapshot.ts';
 
 test('takeSnapshot - throws tab_gone on invalid or missing tabId', async () => {
   await assert.rejects(
     async () => takeSnapshot(0 as any, {}, { isTabInScope: async () => true }),
-    (err: any) => err instanceof SnapshotError && err.kind === 'tab_gone' && err.fatal === true
+    (err: any) => err instanceof SnapshotError && /No target tab/.test(err.message)
   );
 });
 
@@ -71,7 +21,7 @@ test('takeSnapshot - throws out_of_scope when tab is outside Tarka group', async
   try {
     await assert.rejects(
       async () => takeSnapshot(101, {}, { isTabInScope: async () => false }),
-      (err: any) => err instanceof SnapshotError && err.kind === 'out_of_scope' && err.fatal === true
+      (err: any) => err instanceof SnapshotError && /outside this session's Tarka group/.test(err.message)
     );
   } finally {
     (globalThis as any).chrome = prevChrome;
@@ -90,7 +40,7 @@ test('takeSnapshot - throws restricted when tab is on a restricted URL', async (
   try {
     await assert.rejects(
       async () => takeSnapshot(101, {}, { isTabInScope: async () => true }),
-      (err: any) => err instanceof SnapshotError && err.kind === 'restricted' && err.fatal === false
+      (err: any) => err instanceof SnapshotError && /Tarka cannot read/.test(err.message)
     );
   } finally {
     (globalThis as any).chrome = prevChrome;
@@ -156,8 +106,8 @@ test('takeSnapshot - performs injection fallback when primary attempt fails', as
   try {
     const snap = await takeSnapshot(101, {}, { isTabInScope: async () => true, sleep: async () => {} });
     assert.equal(attempts, 2);
-    assert.equal(injectedFiles.length, 3); // isolated files, then net-recorder, then the per-frame scripts
-    assert.deepEqual(injectedFiles[2], ['content/netRelay.js', 'content/frameAgent.js'], 'the third injection is the all-frames relay (BUG-45) and the frame agent');
+    assert.equal(injectedFiles.length, 1); // the isolated content scripts, and nothing else
+    assert.deepEqual(injectedFiles[0], ['content/domCompressor.js', 'content/actionExecutor.js', 'content/content.js'], 'the fallback injects the isolated content scripts');
     assert.equal(snap.docId, 'doc-99');
     assert.equal(snap.title, 'Example (Injected)');
   } finally {

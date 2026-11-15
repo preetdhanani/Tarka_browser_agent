@@ -104,6 +104,11 @@ test('the plan is a list of steps, and the steps can be marked done without send
   assert.equal(tool.inputSchema.properties.plan.items.type, 'string');
 });
 
+test('update_plan carries no requires_approval property: approval is the user\'s setting, not the model\'s', () => {
+  const tool = TOOL_MAP.get('update_plan')!;
+  assert.equal(tool.inputSchema.properties.requires_approval, undefined, 'the dead requires_approval argument stays deleted');
+});
+
 test('the amount of a wait is between one and five seconds', () => {
   const property = TOOL_MAP.get('wait')!.inputSchema.properties.amount;
   assert.equal(property.type, 'number');

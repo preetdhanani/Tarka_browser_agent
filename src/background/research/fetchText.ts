@@ -4,15 +4,18 @@
 // The request carries no cookies or credentials (credentials: 'omit'), so it reads what an
 // anonymous visitor reads and can never act as the user. It gives up after FETCH_TIMEOUT_MS and
 // reads at most FETCH_MAX_BYTES (the body is streamed and the read stops there). Redirects are
-// followed and the final address is reported. HTML is parsed like a browser parses it and becomes text (htmlText.ts); JSON, plain text
-// and scripts (install.sh) pass through. A long text comes in parts, like read_page, and a query
-// keeps only the lines that name one of its words.
+// NOT followed (SEC-4): the fetch API cannot show the intermediate hops of a followed chain, so
+// following one would contact addresses nobody checked. A redirecting address is refused with a
+// sentence that names the way out (the tab, or the direct address). HTML is parsed like a browser
+// parses it and becomes text (htmlText.ts); JSON, plain text and scripts (install.sh) pass
+// through. A long text comes in parts, like read_page, and a query keeps only the lines that name
+// one of its words.
 //
 // Pure apart from the fetch it is handed, so the tests stub the network.
 import { pageTextPart } from '../../shared/textPaging.ts';
 import { wrapUntrusted, sourceOf } from '../mcp/untrusted.ts';
 import { readHtml } from './htmlText.ts';
-import { checkWebUrl } from './urlPolicy.ts';
+import { checkWorkerFetchUrl } from './urlPolicy.ts';
 
 export const FETCH_TIMEOUT_MS = 15000;
 export const FETCH_MAX_BYTES = 2 * 1024 * 1024;
@@ -22,6 +25,12 @@ export interface FetchDeps {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   maxBytes?: number;
+  /**
+   * What to do with a redirect. 'refuse' (the default) never follows one: the worker then
+   * contacts only addresses that passed the URL check. 'follow' is for the search backends, whose
+   * address is the user's own setting in Settings > Research and not one the model chose.
+   */
+  redirects?: 'refuse' | 'follow';
   /** The run's own signal: a Stop cancels the request. */
   signal?: AbortSignal;
 }
@@ -31,7 +40,7 @@ export interface Fetched {
   status: number;
   statusText: string;
   ok: boolean;
-  /** The address the response came from, after redirects. */
+  /** The address the response reports. With redirects refused, always the address that was asked. */
   finalUrl: string;
   contentType: string;
   text: string;
@@ -96,13 +105,14 @@ async function readCapped(response: Response, maxBytes: number): Promise<{ bytes
 }
 
 /**
- * One GET with the caps: no credentials, redirects followed, a timeout, a byte limit. Throws a
- * FetchFailure with a sentence for the model when nothing usable came back.
+ * One GET with the caps: no credentials, redirects refused unless the caller opted in, a timeout,
+ * a byte limit. Throws a FetchFailure with a sentence for the model when nothing usable came back.
  */
 export async function fetchCapped(url: string, deps: FetchDeps = {}, accept = '*/*'): Promise<Fetched> {
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const timeoutMs = deps.timeoutMs ?? FETCH_TIMEOUT_MS;
   const maxBytes = deps.maxBytes ?? FETCH_MAX_BYTES;
+  const followRedirects = deps.redirects === 'follow';
   const controller = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
@@ -113,12 +123,22 @@ export async function fetchCapped(url: string, deps: FetchDeps = {}, accept = '*
     const response = await fetchImpl(url, {
       method: 'GET',
       credentials: 'omit',
-      redirect: 'follow',
+      // 'manual' never contacts a redirect's target: the answer comes back as an opaqueredirect
+      // (status 0, no body, no headers), which is detected below and refused with a sentence the
+      // model can act on. 'error' would hide the reason behind a generic fetch failure.
+      redirect: followRedirects ? 'follow' : 'manual',
       referrerPolicy: 'no-referrer',
       cache: 'no-store',
       headers: { Accept: accept },
       signal: controller.signal
     });
+    // SEC-4: with redirects refused, an opaqueredirect is the whole answer: the redirect's target
+    // was never contacted, and there is nothing to read. The refusal names the gated ways in.
+    if (!followRedirects && response.type === 'opaqueredirect') {
+      await response.body?.cancel().catch(() => {});
+      throw new FetchFailure(`${url} answered a redirect, and fetch_url does not follow redirects: the worker only calls addresses it has checked. Open the address in the tab with navigate, or find the direct address of the document and fetch that.`);
+    }
+    const finalUrl = response.url || url;
     const contentType = response.headers.get('content-type') || '';
     const { bytes, truncated } = await readCapped(response, maxBytes);
     const sniff = bytes.subarray(0, Math.min(bytes.length, 4096));
@@ -129,7 +149,7 @@ export async function fetchCapped(url: string, deps: FetchDeps = {}, accept = '*
       status: response.status,
       statusText: response.statusText || '',
       ok: response.ok,
-      finalUrl: response.url || url,
+      finalUrl,
       contentType,
       text: binary ? '' : decode(bytes, contentType),
       bytes: bytes.length,
@@ -137,6 +157,9 @@ export async function fetchCapped(url: string, deps: FetchDeps = {}, accept = '*
       binary
     };
   } catch (err: any) {
+    // A FetchFailure is already worded for the model (the redirect refusal above): it goes out as
+    // it is, not re-wrapped as a generic "could not be fetched" that buries the actual reason.
+    if (err instanceof FetchFailure) throw err;
     if (timedOut) throw new FetchFailure(`${url} did not answer within ${timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)} s` : `${timeoutMs} ms`}.`);
     if (deps.signal?.aborted) throw new FetchFailure('the fetch was stopped.');
     throw new FetchFailure(`${url} could not be fetched (${String(err?.message || err).slice(0, 160)}). Check the address, or search for the right one with web_search.`);
@@ -214,7 +237,9 @@ export interface FetchUrlOutcome {
  * fetch_url {url, part?, query?}. Never throws: every failure is an error result the model reads.
  */
 export async function fetchUrl(args: { url?: unknown; part?: unknown; query?: unknown }, deps: FetchDeps = {}): Promise<FetchUrlOutcome> {
-  const checked = checkWebUrl(args?.url);
+  // SEC-4: the worker-fetch rule (no loopback, no private ranges, no metadata endpoints) - the
+  // tab's navigate keeps the wider rule, this background fetch does not.
+  const checked = checkWorkerFetchUrl(args?.url);
   if (!checked.ok) return { text: `Error: fetch_url refused: ${checked.error}`, isError: true };
   const part = args?.part === undefined || args?.part === null ? 1 : Number(args.part);
   if (!Number.isInteger(part) || part < 1) return { text: `Error: part must be a whole number from 1 up, got ${JSON.stringify(args.part)}.`, isError: true };
@@ -229,19 +254,18 @@ export async function fetchUrl(args: { url?: unknown; part?: unknown; query?: un
   }
 
   const finalUrl = fetched.finalUrl;
-  const moved = finalUrl !== url ? `, redirected from ${url}` : '';
   const type = fetched.contentType.split(';')[0].trim() || 'no content type';
   const file = fileNameOf(finalUrl);
   if (!fetched.ok) {
     return {
-      text: `Error: ${finalUrl} answered HTTP ${fetched.status}${fetched.statusText ? ` ${fetched.statusText}` : ''}${moved}. The address may be wrong or gone: do not guess another one, find it with web_search or on the site's own pages.`,
+      text: `Error: ${finalUrl} answered HTTP ${fetched.status}${fetched.statusText ? ` ${fetched.statusText}` : ''}. The address may be wrong or gone: do not guess another one, find it with web_search or on the site's own pages.`,
       isError: true,
       label: file || undefined
     };
   }
   if (fetched.binary) {
     return {
-      text: `Fetched ${finalUrl} (HTTP ${fetched.status}, ${type}${moved}): it exists, but it is a binary file, not text, so it cannot be read. ${fetched.truncated ? `It is larger than ${sizeText(fetched.bytes)}; the download was stopped there.` : `Size: ${sizeText(fetched.bytes)}.`}`,
+      text: `Fetched ${finalUrl} (HTTP ${fetched.status}, ${type}): it exists, but it is a binary file, not text, so it cannot be read. ${fetched.truncated ? `It is larger than ${sizeText(fetched.bytes)}; the download was stopped there.` : `Size: ${sizeText(fetched.bytes)}.`}`,
       label: file || undefined
     };
   }
@@ -259,7 +283,7 @@ export async function fetchUrl(args: { url?: unknown; part?: unknown; query?: un
     if (!words.length) return { text: `Error: the query "${query}" has no word to look for. Leave it out to read the whole text in parts.`, isError: true, label };
     if (!lines.length) {
       return {
-        text: `Fetched ${finalUrl} (HTTP ${fetched.status}, ${type}${moved}). No line of its ${total} lines matches any of: ${words.join(', ')}. Read it in parts without query, or try other words.`,
+        text: `Fetched ${finalUrl} (HTTP ${fetched.status}, ${type}). No line of its ${total} lines matches any of: ${words.join(', ')}. Read it in parts without query, or try other words.`,
         label
       };
     }
@@ -272,6 +296,6 @@ export async function fetchUrl(args: { url?: unknown; part?: unknown; query?: un
     return { text: `Error: this text has only ${paged.count} part${paged.count === 1 ? '' : 's'}, so there is no part ${part}. Read part 1 to ${paged.count}.`, isError: true, label };
   }
   const cut = fetched.truncated ? ` The document is longer than ${sizeText(fetched.bytes)}; only that much was read.` : '';
-  const head = `Fetched ${finalUrl} (HTTP ${fetched.status}, ${type}, ${sizeText(fetched.bytes)}${moved}).${cut}${title ? `\nTitle: ${title}` : ''}${matchNote}\nText (${paged.note}):`;
+  const head = `Fetched ${finalUrl} (HTTP ${fetched.status}, ${type}, ${sizeText(fetched.bytes)}).${cut}${title ? `\nTitle: ${title}` : ''}${matchNote}\nText (${paged.note}):`;
   return { text: `${head}\n${wrapUntrusted(sourceOf(finalUrl), paged.text || '(no text)')}`, label };
 }

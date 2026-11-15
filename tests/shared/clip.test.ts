@@ -68,3 +68,25 @@ test('cutPoint and splitIntoParts: the parts cover the whole text at line bounda
   assert.equal(parts[parts.length - 1].end, text.length);
   assert.deepEqual(splitIntoParts('', 3000), [{ start: 0, end: 0 }]);
 });
+
+test('a cut never lands between the halves of a surrogate pair: an emoji at the boundary stays intact', () => {
+  // 'a' * 9 + one emoji (2 code units) + 'b' * 30, cut at 10: the cut would fall between the
+  // emoji's two halves, putting a lone half at the end of one part and the other at the start
+  // of the next.
+  const emoji = '\u{1F600}';
+  const text = 'a'.repeat(9) + emoji + 'b'.repeat(30);
+  const cut = cutPoint(text, 10);
+  const parts = splitIntoParts(text, 10);
+  // A lone half: a low surrogate with no high before it, or a high with no low after it.
+  const loneSurrogate = /(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u;
+  assert.equal(text.slice(0, cut).includes(emoji) || text.slice(cut).startsWith(emoji), true, 'the emoji sits whole on one side of the cut');
+  for (const [i, p] of parts.entries()) {
+    const part = text.slice(p.start, p.end);
+    assert.doesNotMatch(part, loneSurrogate, `part ${i + 1} carries no lone surrogate half: ${JSON.stringify(part)}`);
+  }
+  assert.equal(parts.map((p) => text.slice(p.start, p.end)).join(''), text, 'the parts still cover the whole text');
+
+  // clipWithNote cuts through the same helper: its kept text carries no lone half either.
+  const clipped = clipWithNote(text, 10);
+  assert.doesNotMatch(clipped.split('\n[')[0], loneSurrogate);
+});

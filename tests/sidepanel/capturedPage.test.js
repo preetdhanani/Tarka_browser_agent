@@ -40,7 +40,7 @@ function history({ finished = true, first = 'shot-1', last = 'shot-2' } = {}) {
   return rows;
 }
 
-const render = (rows, status) => renderTurns(rows, status, '', null, null, null, null, null, null, null);
+const render = (rows, status) => renderTurns(rows, status, '', null, null, null);
 const count = (html, re) => (html.match(re) || []).length;
 
 test('the last picture of a turn is its captured page', () => {

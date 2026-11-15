@@ -10,7 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ProviderError, classifyProviderFailure } from '../../src/background/llm/errors.ts';
-import { generateCompletion } from '../../src/background/llm/index.ts';
+import { callProviderWithTools, generateCompletion } from '../../src/background/llm/index.ts';
 import { callAgentRouter } from '../../src/background/llm/agentRouter.ts';
 import { callOllama } from '../../src/background/llm/ollama.ts';
 import type { LlmSettings } from '../../src/background/llm/types.ts';
@@ -18,6 +18,7 @@ import { jsonResponse, spyFetch, textReply } from '../helpers/llmWire.ts';
 import type { CustomProvider } from '../../src/shared/storage.ts';
 
 const MESSAGES = [{ role: 'user', content: 'hi' }];
+const TOOLS = [{ name: 'navigate', description: 'Go to a URL', inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } }];
 const KEY = 'sk-test-1234567890';
 
 const SETTINGS: Record<string, LlmSettings> = {
@@ -156,4 +157,39 @@ test('agent_router: a 401 on the first endpoint ends the call as an auth Provide
   assert.equal(providerError.status, 401);
   assert.equal(providerError.kind, 'auth');
   assert.match(providerError.message, /^AgentRouter API connection error: AgentRouter Authentication Error \(401\)/);
+});
+
+// -----------------------------------------------------------------------------------------
+// A 200 reply that carries an error must fail (W2-L2): Ollama answers 200 with {"error": ...}
+// when a runner dies mid-answer, and the old code read it as an empty success.
+// -----------------------------------------------------------------------------------------
+
+test('ollama: a 200 body that carries an error string rejects with that error, worded like a streamed error', async (t) => {
+  spyFetch(t, () => jsonResponse({ error: 'runner died' }));
+  const error = await failureOf(callOllama(SETTINGS.ollama, MESSAGES, 'SYS'));
+  assert.match(error.message, /runner died/, 'the server\'s own error text reaches the caller');
+  assert.match(error.message, /Ollama API error: runner died/, 'worded by describeOllamaFailure (isStreamedError), not an empty success');
+});
+
+test('ollama: a streamed 200 line that carries an error rejects with it', async (t) => {
+  const lines = [
+    JSON.stringify({ model: 'm', created_at: 'x', message: { role: 'assistant', content: 'partial' }, done: false }),
+    JSON.stringify({ error: 'runner died halfway' })
+  ].join('\n');
+  spyFetch(t, () => new Response(`${lines}\n`, { status: 200, headers: { 'content-type': 'application/x-ndjson' } }));
+  const error = await failureOf(callOllama(SETTINGS.ollama, MESSAGES, 'SYS'));
+  assert.match(error.message, /runner died halfway/, 'the error line fails the call, the partial text is not returned as success');
+});
+
+test('ollama: a multi-line 200 where no line parses is a foreign reply, not an empty success', async (t) => {
+  spyFetch(t, () => new Response('<html>gateway error page</html>\n<script>1</script>\n', { status: 200, headers: { 'content-type': 'text/html' } }));
+  const error = await failureOf(callOllama(SETTINGS.ollama, MESSAGES, 'SYS'));
+  assert.match(error.message, /answered, but not with a chat reply/, 'the foreign-reply wording of describeOllamaFailure');
+  assert.match(error.message, /Check that the base URL is an Ollama server/);
+});
+
+test('ollama tool path: a 200 body that carries an error string rejects too', async (t) => {
+  spyFetch(t, () => jsonResponse({ error: 'runner died' }));
+  const error = await failureOf(callProviderWithTools('ollama', { provider: 'ollama', model: 'qwen2.5:7b', baseUrl: 'http://localhost:11434' }, MESSAGES, '', { tools: TOOLS }));
+  assert.match(error.message, /runner died/, 'the tool path fails on the same server condition');
 });

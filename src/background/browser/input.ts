@@ -6,16 +6,137 @@
  */
 
 import { cdp as defaultCdp, CDPManager } from './cdp.ts';
+import { describeRestrictedUrl } from './tabs.ts';
 import type { ResolvePointResponse } from '../../content/types.ts';
 import { Logger } from '../../shared/logger.ts';
+import { MASKED_CLICK_REFUSAL, MASKED_TYPE_REFUSAL, BOT_CHECK_PATTERN, HIGH_RISK_ACTION_PATTERN } from '../../shared/safetyPatterns.ts';
+import { MASKED_FIELD_KINDS } from '../../shared/maskedFields.ts';
 import { TOP_FRAME, FRAME_ANSWER_MS, chromeFramePort, frameIdAtPath, type FramePort } from './frames.ts';
 import type { EffectDetail, KeyModifier } from '../types.ts';
+
+/**
+ * A refusal that comes from a security rule (a masked field, a bot check, a point that moved, a
+ * page that navigated mid-action), not from a broken page or a lost connection. The callers must
+ * return it as a failure and must NEVER fall back to the synthetic DOM path for it: the synthetic
+ * path would bypass the refusal.
+ */
+export class SecurityRefusalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SecurityRefusal';
+  }
+}
+
+/**
+ * The refusal of a key press that would submit a risky form (CONTRACT-PROBE-FOCUS): the focused
+ * control submits a form that holds masked fields, one that sends its data to another host, or
+ * one whose submit control carries a high-risk label (a payment, an order, a deletion). The
+ * gated way in is the submit button's click, which is checked and asks the user first.
+ */
+export function pressKeySubmitRefusal(keyLabel: string): string {
+  return `Refused by security policy: pressing ${keyLabel} here would submit a form that holds masked fields, sends the form to another site, or has a submit button whose action needs your confirmation (a payment, an order or an account change). Click the submit button instead: that click is checked and asks the user before anything is submitted.`;
+}
+
+/**
+ * The refusal of a type with submit whose Enter would submit a risky form: the text itself is
+ * harmless, so the gated way in is to type it without submitting and then click the submit button,
+ * whose click is checked and asks the user first.
+ */
+export function typeSubmitRefusal(): string {
+  return 'Refused by security policy: pressing Enter after this type would submit a form that holds masked fields, sends the form to another site, or has a submit button whose action needs your confirmation (a payment, an order or an account change). Type the text without submitting, then click the submit button instead: that click is checked and asks the user before anything is submitted.';
+}
+
+/**
+ * The refusal of an Enter (a press, or the one a type with submit adds) while the focus is inside
+ * an embedded frame: the frame's document is not ours to read, so its form cannot be checked for
+ * masked fields or a cross-origin target, and the key event would submit it unchecked. There is
+ * no gated way in from here (the frame's elements carry no element ids), so the user finishes
+ * that part of the page.
+ */
+export function frameSubmitRefusal(): string {
+  return 'Refused by security policy: the focus is inside an embedded frame, and a form inside it cannot be checked from here (it may hold masked fields or send the data to another site). Enter is not pressed: ask the user to finish this part of the page, and go on outside the frame.';
+}
+
+/** Whether the focused element is an embedded frame: its document is not ours to read. */
+function isFrameFocus(focus: { tag?: string } | null | undefined): boolean {
+  const tag = String(focus?.tag || '').toLowerCase();
+  return tag === 'iframe' || tag === 'frame';
+}
+
+/** Input types whose Enter never submits a form (a newline, a toggle, a picker, a button). */
+const NON_SUBMITTING_INPUT_TYPES = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'image', 'range', 'color', 'hidden']);
+
+/**
+ * Whether a press of Enter on the focused element would submit its form. The submit control itself
+ * does, and so does any single-line text input: the browser's implicit submission fires from the
+ * field the model typed into, not only from the button. A textarea and a contenteditable take
+ * Enter as a newline. An older content script that answers without the element's tag stays
+ * allowed: no false refusal is built on facts we do not have.
+ */
+function enterSubmitsImplicitly(
+  focus: { isSubmitControl?: boolean; tag?: string; inputType?: string } | null | undefined
+): boolean {
+  if (!focus) return false;
+  if (focus.isSubmitControl === true) return true;
+  if (focus.tag === 'input') {
+    return !NON_SUBMITTING_INPUT_TYPES.has(String(focus.inputType || 'text').toLowerCase());
+  }
+  return false;
+}
+
+/**
+ * Whether the form around the focused element is one whose submission must go through the gated
+ * click: it holds a masked field, it sends its data to another host, or its submit control
+ * carries a high-risk label (a payment, an order, a deletion) - the Enter would do what that
+ * button's click would do, so it is judged the same way.
+ */
+function focusFormIsRisky(
+  focus: { formHasMaskedField?: boolean; formTarget?: { formActionHost?: string }; formSubmitLabel?: string } | null | undefined,
+  pageUrl: string | undefined
+): boolean {
+  if (!focus) return false;
+  if (focus.formHasMaskedField === true) return true;
+  if (formTargetsOtherHost(focus.formTarget, pageUrl)) return true;
+  const submitLabel = String(focus.formSubmitLabel || '');
+  return Boolean(submitLabel) && HIGH_RISK_ACTION_PATTERN.test(submitLabel);
+}
+
+/**
+ * Whether a form's target host is not the page's own host. A page whose address cannot be read
+ * counts as another host (fail closed): the form's destination cannot be confirmed same-origin.
+ */
+function formTargetsOtherHost(formTarget: { formActionHost?: string } | undefined | null, pageUrl: string | undefined): boolean {
+  const targetHost = String(formTarget?.formActionHost || '').toLowerCase();
+  if (!targetHost) return false;
+  let pageHost = '';
+  try {
+    pageHost = new URL(String(pageUrl || '')).host.toLowerCase();
+  } catch (_) {
+    return true;
+  }
+  return targetHost !== pageHost;
+}
+
+/** The origin of a URL, or '' when it has none (an empty tab read, an unparseable address). */
+function originOf(url: string | undefined | null): string {
+  if (!url) return '';
+  try { return new URL(url).origin; } catch (_) { return ''; }
+}
 
 export interface DispatchOptions {
   docId?: string;
   signal?: AbortSignal;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   control?: { stopRequested?: boolean; pauseRequested?: boolean; signal?: AbortSignal };
+}
+
+/** How long a tab may take to answer one message before the request is given up. */
+export const TAB_ANSWER_TIMEOUT_MS = 8000;
+
+/** One wait for a page answer, worded the way the model reads it (fetchText uses the same shape). */
+function answerDeadlineText(ms: number): string {
+  const wait = ms >= 1000 ? `${Math.round(ms / 1000)} s` : `${ms} ms`;
+  return `The page did not answer within ${wait}, so the request was given up. The tab may be busy, hidden or gone: wait a moment, take the page in again (a fresh snapshot) if it stays silent, and then try the action once more.`;
 }
 
 export interface DispatchResult {
@@ -37,6 +158,8 @@ export interface DispatchResult {
   effectDetail?: EffectDetail;
   /** The field text a type left behind, read right after typing; null when it could not be read. */
   fieldText?: string | null;
+  /** True when the failure is a security refusal (a masked field, a moved point, a bot check): never retried, never worked around. */
+  securityRefusal?: boolean;
 }
 
 /** A scroll box's position as the content script reports it. */
@@ -228,6 +351,8 @@ export class InputDispatcher {
   private mac: boolean;
   /** The embedded frames' agents, for a scroll that goes into a frame. A test stands in for it. */
   private frames: FramePort;
+  /** How long a tab may take to answer one message (W2-B2). A test shortens it. */
+  private tabAnswerMs: number;
   /**
    * The embedded frame the last scroll moved, per tab, and where it was before. The effect probe
    * runs in the top page, which cannot see inside the frame, so the probe's reading is completed
@@ -235,10 +360,11 @@ export class InputDispatcher {
    */
   private frameScroll = new Map<number, { frameId: number; label: string; top: number }>();
 
-  constructor(cdp: CDPManager = defaultCdp, { mac, frames }: { mac?: boolean; frames?: FramePort } = {}) {
+  constructor(cdp: CDPManager = defaultCdp, { mac, frames, tabAnswerMs }: { mac?: boolean; frames?: FramePort; tabAnswerMs?: number } = {}) {
     this.cdp = cdp;
     this.mac = mac ?? isMacPlatform();
     this.frames = frames ?? chromeFramePort();
+    this.tabAnswerMs = tabAnswerMs ?? TAB_ANSWER_TIMEOUT_MS;
   }
 
   /**
@@ -258,6 +384,29 @@ export class InputDispatcher {
         error: 'Action aborted before execution.',
         via: 'synthetic'
       };
+    }
+
+    // SEC-7: a restricted tab is never dispatched to, on this direct path either (the executeAction
+    // gate covers the tool path; this covers a direct dispatcher call). No synthetic fallback: a
+    // restricted page has no content script to receive one anyway.
+    try {
+      const tab = await this.getTab(tabId);
+      // W2-B6: a tab that cannot be read at all is a closed tab, and it gets the tab-gone answer:
+      // the loading wording would have the model wait for a tab that will never load.
+      if (!tab) {
+        return {
+          success: false,
+          error: `The target tab [${tabId}] no longer exists (it was probably closed). Open the page you want automated and start the task again.`,
+          via: 'synthetic'
+        };
+      }
+      const restricted = describeRestrictedUrl(tab.url ?? '');
+      if (restricted) {
+        return { success: false, error: `Refused by security policy: ${restricted}`, via: 'synthetic' };
+      }
+    } catch (_) {
+      // A tab that cannot be read is refused too: an unverifiable target is not dispatched to.
+      return { success: false, error: 'Refused by security policy: the tab could not be read, so no action was sent to it.', via: 'synthetic' };
     }
 
     const action = actionPayload.action;
@@ -346,11 +495,23 @@ export class InputDispatcher {
       return await this.syntheticWithUrlChange(tabId, payload, 'native select element', urlBefore);
     }
 
+    // SEC-2: a masked field (password, card, one-time code) is never clicked or focused, on the
+    // element's classification as it is NOW, not as the snapshot saw it.
+    if (resolveRes.fieldKind && MASKED_FIELD_KINDS.has(resolveRes.fieldKind)) {
+      return { success: false, error: MASKED_CLICK_REFUSAL, via: 'cdp', securityRefusal: true };
+    }
+
     await this.probeBegin(tabId);
 
     try {
-      await this.clickCoordinates(tabId, resolveRes.point.x, resolveRes.point.y, signal, sleep, control);
+      await this.clickCoordinates(tabId, resolveRes.point.x, resolveRes.point.y, signal, sleep, control, {
+        elementId: Number(targetId),
+        expectedOrigin: originOf(urlBefore)
+      });
     } catch (err: any) {
+      if (err instanceof SecurityRefusalError) {
+        return { success: false, error: err.message, via: 'cdp', securityRefusal: true };
+      }
       if (signal?.aborted || control?.stopRequested || control?.pauseRequested) {
         return {
           success: false,
@@ -430,8 +591,11 @@ export class InputDispatcher {
 
     await this.probeBegin(tabId);
     try {
-      await this.clickCoordinates(tabId, x, y, signal, sleep, control);
+      await this.clickCoordinates(tabId, x, y, signal, sleep, control, { expectedOrigin: originOf(urlBefore) });
     } catch (err: any) {
+      if (err instanceof SecurityRefusalError) {
+        return { success: false, error: err.message, via: 'cdp', securityRefusal: true };
+      }
       return { success: false, error: err.message || 'The coordinate click failed.', via: 'cdp' };
     }
 
@@ -537,6 +701,10 @@ export class InputDispatcher {
           via: 'cdp'
         };
       }
+      // SEC-2: a masked field is never typed into, on the element's classification as it is NOW.
+      if (resolveRes.fieldKind && MASKED_FIELD_KINDS.has(resolveRes.fieldKind)) {
+        return { success: false, error: MASKED_TYPE_REFUSAL, via: 'cdp', securityRefusal: true };
+      }
       // Native select tags receiving a type command must use synthetic setter
       if (resolveRes.tag === 'select') {
         return await this.syntheticWithUrlChange(tabId, payload, 'native select element', urlBefore);
@@ -557,13 +725,35 @@ export class InputDispatcher {
           via: 'cdp'
         };
       }
+      // SEC-2: whatever has focus now is a masked field, typing is refused: the characters would
+      // go into a password, card or one-time code field.
+      if (focus?.fieldKind && MASKED_FIELD_KINDS.has(String(focus.fieldKind))) {
+        return { success: false, error: MASKED_TYPE_REFUSAL, via: 'cdp', securityRefusal: true };
+      }
+      // CONTRACT-PROBE-FOCUS on the type path: a type with submit presses Enter into the focused
+      // element, and a single-line field submits its form with that Enter. When that form holds
+      // masked fields or aims at another host, the press is refused before anything is typed: the
+      // model types without submitting and clicks the gated submit button instead. With no
+      // element_id the server's gate has no element to ask about, so this check is the only one
+      // on the path.
+      if (submit && enterSubmitsImplicitly(focus) && focusFormIsRisky(focus, baseline?.url)) {
+        return { success: false, error: typeSubmitRefusal(), via: 'cdp', securityRefusal: true };
+      }
+      // The same Enter, focused into an embedded frame: the form inside it cannot be checked, so
+      // the submit is refused whatever the frame holds. A type without submit stays allowed.
+      if (submit && isFrameFocus(focus)) {
+        return { success: false, error: frameSubmitRefusal(), via: 'cdp', securityRefusal: true };
+      }
       label = focus?.label || null;
     }
 
     let fieldText: string | null = null;
     try {
       // 1. Focus the element by clicking it (only with an element_id: without one, focus is already there).
-      if (point) await this.clickCoordinates(tabId, point.x, point.y, signal, sleep, control);
+      if (point) await this.clickCoordinates(tabId, point.x, point.y, signal, sleep, control, {
+        elementId: hasTarget ? Number(targetId) : undefined,
+        expectedOrigin: originOf(urlBefore)
+      });
 
       if (signal?.aborted || control?.stopRequested || control?.pauseRequested) throw new Error('Action aborted');
 
@@ -625,6 +815,12 @@ export class InputDispatcher {
         }
       }
     } catch (err: any) {
+      // A security refusal (the point turned into a masked field, the page navigated or swapped
+      // content while the type was being prepared) is returned as the refusal it is, never as a
+      // plain failure: the model must not retry it or work around it.
+      if (err instanceof SecurityRefusalError) {
+        return { success: false, error: err.message, via: 'cdp', securityRefusal: true };
+      }
       return {
         success: false,
         error: err.message || 'CDP type failed.',
@@ -700,7 +896,33 @@ export class InputDispatcher {
       };
     }
 
-    await this.probeBegin(tabId);
+    const baseline = await this.probeBegin(tabId);
+    const focus = baseline?.focus ?? null;
+
+    // SEC-2 on the key path, the same rule the type path holds: a masked field never takes the
+    // characters a key press would insert. A key that carries no text inserts nothing (Tab,
+    // arrows, Escape, and every Ctrl/Meta/Alt shortcut), and Enter stays allowed here too: its
+    // carriage return submits rather than writes a chosen character, and submitting a masked form
+    // is decided by the form rule right below.
+    const insertsCharacter = resolved.text !== undefined && resolved.key !== 'Enter';
+    if (focus?.fieldKind && MASKED_FIELD_KINDS.has(String(focus.fieldKind)) && insertsCharacter) {
+      return { success: false, error: MASKED_TYPE_REFUSAL, via: 'cdp', securityRefusal: true };
+    }
+
+    // CONTRACT-PROBE-FOCUS: Enter is the one submit key press_key takes. When the press would
+    // submit a form that holds masked fields, or one aimed at another host, it must go through
+    // the gated click on the submit button instead (that click is checked and asks the user
+    // first). The press submits from any single-line field the focus sits in, not only from the
+    // submit control itself. The form facts are optional: an older content script answers without
+    // them and the press stays allowed.
+    if (resolved.key === 'Enter' && enterSubmitsImplicitly(focus) && focusFormIsRisky(focus, baseline?.url)) {
+      return { success: false, error: pressKeySubmitRefusal(resolved.label), via: 'cdp', securityRefusal: true };
+    }
+    // Enter pressed while the focus sits in an embedded frame: the frame's form cannot be checked
+    // (its document is not ours to read), so the submit is refused instead of flying unchecked.
+    if (resolved.key === 'Enter' && isFrameFocus(focus)) {
+      return { success: false, error: frameSubmitRefusal(), via: 'cdp', securityRefusal: true };
+    }
 
     try {
       await this.sendResolvedKey(tabId, resolved, signal, control);
@@ -765,6 +987,9 @@ export class InputDispatcher {
     // names that frame: the same question goes to the frame's agent, and its point is moved into
     // the top page's viewport, where the wheel goes (Chrome routes it into the frame under it).
     const offset = { left: 0, top: 0 };
+    // The top page's own answer (hop 0): the honest fallback when a deeper frame never answers,
+    // because its reading and its point are the top page's own (W2-B7).
+    const topAnswer = target;
     for (let hops = 0; target?.success && target.result?.frame && hops < 8; hops++) {
       const route = target.result.frame;
       const before = target;
@@ -774,10 +999,12 @@ export class InputDispatcher {
       target = frameId > 0 ? await ask({ action: 'scroll_target', direction, ...(route.point ? { x: route.point.x, y: route.point.y } : {}) }) : null;
       if (!target?.success || !target.result) {
         // A frame that cannot answer: the top page's own answer stands (it says it cannot move).
+        // The previous inner-frame hop's reading and point must not stand in: its point is in that
+        // frame's coordinates and its box is not the box the wheel would move.
         frameId = 0;
         offset.left = 0;
         offset.top = 0;
-        target = { ...before, result: { ...before.result, frame: undefined } };
+        target = { ...topAnswer, result: { ...topAnswer.result, frame: undefined } };
         break;
       }
     }
@@ -847,10 +1074,61 @@ export class InputDispatcher {
   }
 
   /**
+   * SEC-6: the pre-press verification of one click point. Asks the page (VERIFY_CLICK_POINT) what
+   * sits at the point NOW and whether it is still the element the click was resolved for, and
+   * compares the tab's origin with the one the action began on. Throws SecurityRefusalError on
+   * any mismatch, on a masked field, on a bot check, or when the page cannot answer at all
+   * (fail closed: an unverifiable point is not pressed).
+   */
+  private async verifyClickPoint(
+    tabId: number,
+    x: number,
+    y: number,
+    verify?: { elementId?: number; expectedOrigin?: string }
+  ): Promise<void> {
+    // The point check first, the origin check last: the origin read is the closest look before
+    // the press, so a navigation that happens during the verify is still caught.
+    let check: any = null;
+    try {
+      check = await this.sendToTab(tabId, {
+        action: 'VERIFY_CLICK_POINT',
+        payload: { x, y, ...(verify?.elementId !== undefined ? { element_id: verify.elementId } : {}) }
+      });
+    } catch (_) {
+      check = null;
+    }
+    if (!check || check.success !== true) {
+      throw new SecurityRefusalError('Refused by security policy: the click point could not be re-verified right before the press, so the click was not sent.');
+    }
+    if (check.fieldKind && MASKED_FIELD_KINDS.has(String(check.fieldKind))) {
+      throw new SecurityRefusalError(MASKED_CLICK_REFUSAL);
+    }
+    const what = String(check.what || '');
+    if (what && BOT_CHECK_PATTERN.test(what)) {
+      throw new SecurityRefusalError(`Refused by security policy: the point now sits on a bot check (${what.trim().slice(0, 80)}). Tarka never clicks or solves bot checks or CAPTCHAs.`);
+    }
+    if (verify?.elementId !== undefined && check.withinTarget === false) {
+      throw new SecurityRefusalError('Refused by security policy: the point no longer hits the element it was aimed at (the page changed under it), so the click was not sent.');
+    }
+    if (verify?.expectedOrigin) {
+      const tab = await this.getTab(tabId).catch(() => null);
+      const now = originOf(tab?.url || '');
+      if (now && now !== verify.expectedOrigin) {
+        throw new SecurityRefusalError('Refused by security policy: the page navigated while the click was being prepared, so the click was not sent.');
+      }
+    }
+  }
+
+  /**
    * Dispatches mouseMoved, mousePressed, and mouseReleased events at {x, y}.
    * Triggers visual click ripple in content script and holds mouse button briefly
    * so event listeners in modern frameworks process the interaction reliably.
    * Ensures mouseReleased is dispatched in a finally block if mousePressed succeeded.
+   *
+   * SEC-6: immediately before the press, the point is verified again (VERIFY_CLICK_POINT) and the
+   * tab's origin is compared with the one the action began on. A page that moved, covered or
+   * swapped its content between the resolve and the press, or navigated away, aborts the click
+   * with a SecurityRefusalError instead of pressing into whatever is there now.
    */
   async clickCoordinates(
     tabId: number,
@@ -858,7 +1136,8 @@ export class InputDispatcher {
     y: number,
     signal?: AbortSignal,
     sleep?: (ms: number, signal?: AbortSignal) => Promise<void>,
-    control?: { stopRequested?: boolean; pauseRequested?: boolean; signal?: AbortSignal }
+    control?: { stopRequested?: boolean; pauseRequested?: boolean; signal?: AbortSignal },
+    verify?: { elementId?: number; expectedOrigin?: string }
   ): Promise<void> {
     if (signal?.aborted || control?.stopRequested || control?.pauseRequested) throw new Error('Action aborted');
 
@@ -882,6 +1161,10 @@ export class InputDispatcher {
     // Realistic hover settle delay (30ms)
     await doSleep(30);
     if (signal?.aborted || control?.stopRequested || control?.pauseRequested) throw new Error('Action aborted');
+
+    // SEC-6: the last look before the press. Runs after the user's approval resolved (when there
+    // was one), so an approval of an action the page has since changed cannot dispatch.
+    await this.verifyClickPoint(tabId, x, y, verify);
 
     let mousePressed = false;
     try {
@@ -1019,9 +1302,23 @@ export class InputDispatcher {
 
   /**
    * Safe execution of EFFECT_PROBE_BEGIN. Returns the page's baseline (url and focus), or null
-   * when the page did not answer.
+   * when the page did not answer. The focus's form facts (isSubmitControl, formHasMaskedField,
+   * formTarget) are optional: an older content script answers without them.
    */
-  private async probeBegin(tabId: number): Promise<{ url?: string; focus?: { label: string; editable: boolean } | null } | null> {
+  private async probeBegin(tabId: number): Promise<{
+    url?: string;
+    focus?: {
+      label: string;
+      editable: boolean;
+      fieldKind?: string;
+      tag?: string;
+      inputType?: string;
+      isSubmitControl?: boolean;
+      formHasMaskedField?: boolean;
+      formTarget?: { formActionHost?: string; formMethod?: string };
+      formSubmitLabel?: string;
+    } | null;
+  } | null> {
     try {
       const res = await this.sendToTab<{ success: boolean; baseline?: any }>(tabId, { action: 'EFFECT_PROBE_BEGIN' });
       return res?.success && res.baseline && typeof res.baseline === 'object' ? res.baseline : null;
@@ -1122,13 +1419,19 @@ export class InputDispatcher {
 
   /**
    * Helper to send a message to a tab's content script with a Promise.
+   *
+   * W2-B2: the answer is raced against a timer, so a hidden or busy tab that takes the message
+   * but never answers cannot freeze the run. The timeout rejects with a normal action error the
+   * model can act on: it says the page did not answer, not that the action failed mysteriously.
    */
   private sendToTab<T = any>(tabId: number, message: unknown): Promise<T> {
     return new Promise((resolve, reject) => {
       if (typeof chrome === 'undefined' || !chrome.tabs || !chrome.tabs.sendMessage) {
         return reject(new Error('chrome.tabs.sendMessage is not available.'));
       }
+      const timer = setTimeout(() => reject(new Error(answerDeadlineText(this.tabAnswerMs))), this.tabAnswerMs);
       chrome.tabs.sendMessage(tabId, message, TOP_FRAME, (response) => {
+        clearTimeout(timer);
         if (chrome.runtime.lastError) {
           return reject(new Error(chrome.runtime.lastError.message));
         }

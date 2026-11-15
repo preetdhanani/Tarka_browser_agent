@@ -2,11 +2,9 @@
  * The API key never leaves the llm layer except on the wire to its own provider.
  *
  * The error texts of errors.ts are scrubbed since P2-2, and the Logger lines are made of those texts. What this file
- * adds is the other exit: the callbacks. `config.callbacks` goes into model.invoke for opt-in tracing (LangSmith), and
- * LangChain hands the callbacks the whole model (`handleChatModelStart`: its kwargs, its call options), every
- * message and every error, unchanged. A tracer posts all of that to a server. So a key must not be in the options of a
- * model (AgentRouter's wire image, which carries the key, used to be in defaultHeaders and in the call's headers), and
- * an error must not carry a key that the server echoed back in its body (the SDK builds its message from that body).
+ * adds is the other exit: the callbacks. `config.callbacks` goes into every provider call for opt-in tracing, and
+ * `notifyCallbacks` hands a tracer the provider name and every error, unchanged. So an error must not carry a key
+ * that the server echoed back in its body, and the key must not leak into a log line built from such an error.
  *
  * The server here echoes the headers it got, which is the worst case, on every provider and for every kind of answer.
  */

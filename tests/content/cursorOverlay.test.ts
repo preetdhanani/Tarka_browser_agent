@@ -105,16 +105,6 @@ test('showClickEffect creates expanding ripple ring and animates pointer press d
   assert.equal(ripple.style.borderRadius, '50%');
 });
 
-test('removeCursorOverlay cleans up container and resets state', () => {
-  const { executor, elements } = createFakeDOM();
-
-  executor.ensureCursorOverlay();
-  assert.ok(elements.get('tarka-cursor-container'));
-
-  executor.removeCursorOverlay();
-  assert.equal(elements.get('tarka-cursor-container'), undefined);
-});
-
 test('highlightElement applies outline and outlineOffset to target', () => {
   const { executor } = createFakeDOM();
   const el: any = { style: {} };

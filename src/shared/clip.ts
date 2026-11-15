@@ -25,10 +25,21 @@ const BLOCK_NOTE = /\n\[([^\]\n]*?) truncated: showing (\d+) of (\d+) characters
 /** A cut is moved back to a line break, else a space, if one lies in the last half of the allowed length. */
 const MIN_CUT_SHARE = 0.5;
 
+/** True when a cut at `at` would separate the two halves of a surrogate pair (an emoji, any astral character). */
+function splitsSurrogatePair(text: string, at: number): boolean {
+  if (at <= 0 || at >= text.length) return false;
+  const high = text.charCodeAt(at - 1);
+  const low = text.charCodeAt(at);
+  return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
+}
+
 /**
  * Where to cut a text to at most cap characters: just before the last line break that fits, else the last space,
  * else at the cap itself. A boundary in the first half of the cap is not used, so a cut never wastes most of it.
  * With from, the cut is of the text from that index on, and the index returned is in the whole text.
+ * A cut that would land between the halves of a surrogate pair steps back one code unit, so the
+ * pair stays whole in the part that follows (never attempted at the part's very start, where
+ * stepping back would make the part empty).
  */
 export function cutPoint(text: string, cap: number, from = 0): number {
   if (text.length - from <= cap) return text.length;
@@ -38,6 +49,7 @@ export function cutPoint(text: string, cap: number, from = 0): number {
   if (newline >= floor) return newline;
   const space = text.lastIndexOf(' ', limit);
   if (space >= floor) return space;
+  if (limit > from + 1 && splitsSurrogatePair(text, limit)) return limit - 1;
   return limit;
 }
 

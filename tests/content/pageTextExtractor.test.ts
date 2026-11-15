@@ -145,7 +145,9 @@ test('whitespace is normalised: one space inside a line, no blank lines, no spac
 
 test('the cells of a table row stay apart (innerText puts a tab between them)', () => {
   const body = el('body', {}, el('main', {}, el('div', {}, 'Shop\tPreis\tVersand\nNotebookWelt\t1.379,00 EUR\t\t9,90 EUR')));
-  assert.equal(extract(body), 'Shop | Preis | Versand\nNotebookWelt | 1.379,00 EUR | 9,90 EUR');
+  // W2-L13: an empty cell stays an empty slot, so the columns after it keep their headers
+  // (9,90 EUR stays under Versand instead of shifting under Preis).
+  assert.equal(extract(body), 'Shop | Preis | Versand\nNotebookWelt | 1.379,00 EUR |  | 9,90 EUR');
 });
 
 test('a page with fewer than 10 characters of visible text says so with a marker', () => {

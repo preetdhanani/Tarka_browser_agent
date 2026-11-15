@@ -114,12 +114,19 @@ export function collapseRepeatedRuns(text: string): string {
 
 /**
  * The visible text with its whitespace normalised: one space inside a line, no blank lines, nothing at the ends.
- * innerText separates table cells with a tab; they are kept apart as " | ", so a row still shows its columns.
+ * Table cells are kept apart as " | ", and an empty slot between two tabs is a real empty cell
+ * that stays, so the columns after it keep their headers ("a |  | b" is three cells, not two
+ * values under the wrong headers). One leading tab is dropped first: the research read
+ * (htmlText.ts) marks where a cell starts, so its row text begins with a tab that separates
+ * nothing; a further leading tab is an empty first cell and stays.
  */
 export function normalizePageText(text: string): string {
   return text
     .split(/\r?\n|\r/)
-    .map((line) => line.split('\t').map((cell) => cell.replace(/[\s\u00a0]+/g, ' ').trim()).filter(Boolean).join(' | '))
+    .map((line) => {
+      const cells = line.replace(/^\t/, '').split('\t').map((cell) => cell.replace(/[\s\u00a0]+/g, ' ').trim());
+      return cells.some(Boolean) ? cells.join(' | ') : '';
+    })
     .filter(Boolean)
     .join('\n');
 }

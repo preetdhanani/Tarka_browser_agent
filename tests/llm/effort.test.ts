@@ -221,7 +221,8 @@ test('wire: a 400 that refuses the field sends the round again without it, and t
 
 test('wire: a 400 about something else is not taken for a refused effort', async (t) => {
   const sent = spyFetch(t, () => jsonResponse({ message: 'Invalid image', code: 400 }, 400));
-  await assert.rejects(callProviderWithTools('nvidia', NEMOTRON, HISTORY, '', { tools: TOOLS, effort: 'high' }), /API error: 400/);
+  // The tool path words a failure like the chat path does (W2-L4): the curated provider text.
+  await assert.rejects(callProviderWithTools('nvidia', NEMOTRON, HISTORY, '', { tools: TOOLS, effort: 'high' }), /NVIDIA API Error \(400\): .*Invalid image/s);
   assert.equal(sent.length, 1);
   assert.equal(effortSupportOf(NEMOTRON).source, 'registry');
 });
@@ -384,4 +385,19 @@ test('a level that thinks is never sent as Off: Low on an on/off model is Medium
   assert.equal(nearestSupportedLevel('off', ['auto', 'low', 'medium', 'high']), 'low', 'Off on a model that cannot stop thinking is its lowest level');
   assert.equal(nearestSupportedLevel('high', ['auto', 'off']), 'auto', 'a thinking level is never Off: with nothing else, nothing is sent');
   assert.equal(nearestSupportedLevel('high', ['auto']), 'auto');
+});
+
+test('wire: built-in Anthropic on the tool path sends no Messages-shaped effort field (NO_PATCH)', async (t) => {
+  // The tool path posts an OpenAI-shaped /chat/completions body to Anthropic's compatible
+  // endpoint. The anthropic dialects speak the Messages wire (thinking, output_config), which
+  // that body must not carry. The chat path sends no anthropic effort field either (anthropicCall
+  // ignores the thinking config), so this is consistency, not a loss.
+  const sent = spyFetch(t, () => openaiReply());
+  const reply = await callProviderWithTools('anthropic', { provider: 'anthropic', apiKey: 'sk', model: 'claude-sonnet-4-5-20250929' }, HISTORY, '', { tools: TOOLS, effort: 'high' });
+  for (const field of ['thinking', 'output_config']) {
+    assert.equal(field in sent[0].body, false, `no ${field} on the OpenAI-shaped wire`);
+  }
+  assert.equal(sent[0].body.temperature, 0.1, 'the body keeps its temperature');
+  assert.equal(sent[0].body.max_tokens, 8192, 'and its own token limit, not the budget-raised one');
+  assert.equal(reply.effortSent, null, 'nothing was sent, so the log says so too');
 });

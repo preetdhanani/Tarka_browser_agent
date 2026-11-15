@@ -1,17 +1,34 @@
 /**
  * Chrome DevTools Protocol (CDP) client and debugger lifecycle manager.
  * Handles chrome.debugger attachment, focus emulation, yellow-bar resize detection,
- * idle timeout detach (30 min), and attachment reconciliation.
+ * and attachment reconciliation (the leak sweep).
  */
+
+import { describeRestrictedUrl } from './tabs.ts';
+
+/** The restricted-page reason for a tab, read from the tabs API; null when the tab can be debugged. */
+async function restrictedReasonFor(tabId: number): Promise<string | null> {
+  if (typeof chrome === 'undefined' || !chrome.tabs?.get) return null;
+  return new Promise((resolve) => {
+    try {
+      const maybe = (chrome.tabs.get as any)(tabId, (tab: any) => {
+        void chrome.runtime.lastError;
+        resolve(tab ? describeRestrictedUrl(tab.url ?? '') : null);
+      });
+      if (maybe && typeof maybe.then === 'function') {
+        maybe.then((tab: any) => resolve(tab ? describeRestrictedUrl(tab.url ?? '') : null), () => resolve(null));
+      }
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
 
 export interface AttachedTabInfo {
   attachedAt: number;
   /** The last attach or CDP command on this tab; the leak sweep leaves a recently used tab alone. */
   lastUsedAt?: number;
-  pauseTimer?: ReturnType<typeof setTimeout>;
   userDetached?: boolean;
-  /** Whether Page.enable was already sent for this attachment, so it stays off the hot path. */
-  pageEnabled?: boolean;
 }
 
 export interface CDPManagerOptions {
@@ -21,6 +38,11 @@ export interface CDPManagerOptions {
   commandTimeoutMs?: number;
   /** The leak sweep does not detach a tab that ran an attach or a command within this window. */
   recentUseGraceMs?: number;
+  /**
+   * The clock the backoff and settle waits sleep on. Production leaves it unset (a real
+   * timer); tests gate real attach races with a promise that only a release opens.
+   */
+  clockSleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 /** Which tabs the leak sweep keeps: a set of ids, or a predicate for callers whose set is large or dynamic. */
@@ -48,6 +70,7 @@ export class CDPManager {
   private attachTimeoutMs: number;
   private commandTimeoutMs: number;
   private recentUseGraceMs: number;
+  private clockSleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Tabs whose debugger session ended while their attach round was still running, with the reason. */
   private detachedMidAttach = new Map<number, string>();
   /** In-flight attach per tab, so concurrent callers share one debugger.attach round. */
@@ -59,6 +82,7 @@ export class CDPManager {
     this.attachTimeoutMs = options.attachTimeoutMs ?? DEFAULT_ATTACH_TIMEOUT_MS;
     this.commandTimeoutMs = options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
     this.recentUseGraceMs = options.recentUseGraceMs ?? DEFAULT_RECENT_USE_GRACE_MS;
+    this.clockSleep = options.clockSleep;
     this.setupListeners();
   }
 
@@ -78,9 +102,6 @@ export class CDPManager {
           }
           const info = this.attachedTabs.get(source.tabId);
           if (info) {
-            if (info.pauseTimer) {
-              clearTimeout(info.pauseTimer);
-            }
             if (reason === 'canceled_by_user') {
               info.userDetached = true;
             } else {
@@ -122,6 +143,14 @@ export class CDPManager {
       throw new Error('chrome.debugger API is not available in this environment.');
     }
 
+    // SEC-7: a restricted tab (chrome://, a file:, the Web Store) is never attached to and never
+    // debugged, whatever caller asked for it. The check reads the tab's URL itself, so every
+    // attach path is covered, not only the ones that remembered to ask.
+    const restricted = await restrictedReasonFor(tabId);
+    if (restricted) {
+      throw new Error(`Refused by security policy: the debugger is not attached to a restricted page (${restricted})`);
+    }
+
     this.setupListeners();
 
     // If user explicitly dismissed the yellow bar, do not re-attach; synthetic fallback is used
@@ -151,9 +180,6 @@ export class CDPManager {
   }
 
   private async attachRound(tabId: number): Promise<void> {
-    // Cancel any pending pause detach timer
-    this.clearPauseTimer(tabId);
-
     const target = { tabId };
     let lastForeignError: Error | undefined;
 
@@ -203,11 +229,9 @@ export class CDPManager {
 
       // Enable the Page domain once per attachment. chrome.debugger.attach does not reliably
       // enable it, and a Page.captureScreenshot that fails with "wasn't found" is a confusing
-      // first-run surprise. Page.enable is idempotent; the flag keeps it off the hot path.
-      let pageEnabled = false;
+      // first-run surprise. Page.enable is idempotent, so the send stays on every attach round.
       try {
         await this.sendCommand(tabId, 'Page.enable', {});
-        pageEnabled = true;
       } catch (_) {
         // A target without the Page domain still takes every other command.
       }
@@ -227,7 +251,7 @@ export class CDPManager {
         throw new Error(`Debugger detached from the tab while attaching (${endedReason}).`);
       }
       const now = Date.now();
-      this.attachedTabs.set(tabId, { attachedAt: now, lastUsedAt: now, pageEnabled });
+      this.attachedTabs.set(tabId, { attachedAt: now, lastUsedAt: now });
       return;
     }
   }
@@ -257,7 +281,6 @@ export class CDPManager {
    * Detach debugger from tabId idempotently.
    */
   async detach(tabId: number): Promise<void> {
-    this.clearPauseTimer(tabId);
     this.attachedTabs.delete(tabId);
 
     if (!this.hasDebugger()) {
@@ -282,12 +305,6 @@ export class CDPManager {
     await Promise.allSettled(tabIds.map((tabId) => this.detach(tabId)));
   }
 
-  private activeControl?: { signal?: AbortSignal; stopRequested?: boolean; pauseRequested?: boolean };
-
-  setActiveControl(control?: { signal?: AbortSignal; stopRequested?: boolean; pauseRequested?: boolean }): void {
-    this.activeControl = control;
-  }
-
   /**
    * Send a CDP command to the attached tab. The command runs under a timer,
    * and a not-attached or detached-while-handling error re-attaches once and
@@ -308,13 +325,11 @@ export class CDPManager {
       (method === 'Input.dispatchMouseEvent' && params?.type === 'mouseReleased') ||
       (method === 'Input.dispatchKeyEvent' && params?.type === 'keyUp');
 
-    const effectiveControl = control ?? this.activeControl;
-
     const used = this.attachedTabs.get(tabId);
     if (used) used.lastUsedAt = Date.now();
 
     if (!isExempt) {
-      if (effectiveControl?.signal?.aborted || effectiveControl?.stopRequested || effectiveControl?.pauseRequested) {
+      if (control?.signal?.aborted || control?.stopRequested || control?.pauseRequested) {
         throw new Error(`CDP command ${method} aborted: stop or pause requested.`);
       }
     }
@@ -332,7 +347,7 @@ export class CDPManager {
         retried ||
         !detached ||
         this.inAttach.has(tabId) ||
-        (effectiveControl?.signal?.aborted || effectiveControl?.stopRequested || effectiveControl?.pauseRequested)
+        (control?.signal?.aborted || control?.stopRequested || control?.pauseRequested)
       ) {
         throw err;
       }
@@ -342,50 +357,11 @@ export class CDPManager {
     }
   }
 
-  private clockSleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
-
-  setClockSleep(fn: (ms: number, signal?: AbortSignal) => Promise<void>): void {
-    this.clockSleep = fn;
-  }
-
   private async sleepDelay(ms: number, signal?: AbortSignal): Promise<void> {
     if (this.clockSleep) {
       await this.clockSleep(ms, signal);
     } else {
       await new Promise((r) => setTimeout(r, ms));
-    }
-  }
-
-  /**
-   * Pause handler: starts a 30-minute timer to detach the debugger if still paused.
-   */
-  startPauseTimer(tabId: number, onDetachCallback?: () => void, timeoutMs = 30 * 60 * 1000): void {
-    const info = this.attachedTabs.get(tabId);
-    if (!info) return;
-
-    if (info.pauseTimer) {
-      clearTimeout(info.pauseTimer);
-    }
-
-    info.pauseTimer = setTimeout(async () => {
-      await this.detach(tabId);
-      if (onDetachCallback) {
-        onDetachCallback();
-      }
-    }, timeoutMs);
-    if (typeof (info.pauseTimer as any)?.unref === 'function') {
-      (info.pauseTimer as any).unref();
-    }
-  }
-
-  /**
-   * Resume handler: clears any pause timer and re-attaches if needed.
-   */
-  clearPauseTimer(tabId: number): void {
-    const info = this.attachedTabs.get(tabId);
-    if (info && info.pauseTimer) {
-      clearTimeout(info.pauseTimer);
-      info.pauseTimer = undefined;
     }
   }
 

@@ -255,11 +255,6 @@ export function shapeMatches(image: ImageSize, viewport: { width: number; height
   return Math.abs(imageRatio - viewportRatio) / viewportRatio <= ASPECT_TOLERANCE;
 }
 
-/** The media type a capture format maps to. */
-function mediaTypeFor(format: 'jpeg' | 'png'): 'image/jpeg' | 'image/png' {
-  return format === 'png' ? 'image/png' : 'image/jpeg';
-}
-
 /** One capture, at the given scale, with the viewport as the clip. Returns the bytes and the measured size. */
 async function captureOnce(
   tabId: number,

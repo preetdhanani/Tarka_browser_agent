@@ -13,6 +13,11 @@ export interface ResolvePointSuccess {
   tag: string;
   role?: string;
   text?: string;
+  /** The risk facts of the element as it is now (SEC-2): the dispatcher refuses a masked field with them. */
+  fieldKind?: string;
+  isSubmitControl?: boolean;
+  formTarget?: { formActionHost?: string; formMethod?: 'get' };
+  formHasMaskedField?: boolean;
 }
 
 export interface ResolvePointFailure {

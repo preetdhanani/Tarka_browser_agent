@@ -10,7 +10,6 @@
     "tabs",
     "tabGroups",
     "alarms",
-    "declarativeNetRequest",
     "debugger"
   ],
   "host_permissions": [
@@ -21,7 +20,12 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Open Tarka AI Agent"
+    "default_title": "Open Tarka AI Agent",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "content_scripts": [
     {
@@ -36,16 +40,6 @@
     {
       "matches": ["<all_urls>"],
       "js": [
-        "content/net-recorder.js"
-      ],
-      "run_at": "document_start",
-      "world": "MAIN",
-      "all_frames": true
-    },
-    {
-      "matches": ["<all_urls>"],
-      "js": [
-        "content/netRelay.js",
         "content/frameAgent.js"
       ],
       "run_at": "document_start",

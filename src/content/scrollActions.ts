@@ -9,6 +9,8 @@
  */
 
 import { pickScrollTarget, positionOf, scrollInstantly, settledPosition, stepOf, visibleRect, type ScrollBox, type ScrollPosition } from './scrollMeasure.ts';
+import { isAttached } from './refMap.ts';
+import { deepHit } from './screenshotPrivacy.ts';
 
 /** An iframe that is smaller than this share of the viewport is not scrolled in place of the page. */
 const FRAME_MIN_SHARE = 0.3;
@@ -35,7 +37,9 @@ export interface ScrollEnv {
 let scrollBox: ScrollBox = null;
 
 function liveScrollBox(doc: Document): ScrollBox {
-  return scrollBox && (scrollBox as Element).isConnected !== false && doc.contains(scrollBox) ? scrollBox : null;
+  // isAttached (refMap.ts) crosses shadow roots: a panel inside a web component is not
+  // document.contains()'d, but it is still on the page and still the box to measure and move.
+  return scrollBox && isAttached(scrollBox, doc) ? scrollBox : null;
 }
 
 function positionPayload(position: ScrollPosition) {
@@ -133,7 +137,9 @@ export async function runScrollAction(payload: any, doc: Document | null | undef
       }
       const hasPoint = Number.isFinite(Number(payload.x)) && Number.isFinite(Number(payload.y)) && payload.x !== null && payload.y !== null && payload.x !== undefined && payload.y !== undefined;
       const point = hasPoint ? { x: Number(payload.x), y: Number(payload.y) } : null;
-      const hit = point && typeof doc.elementFromPoint === 'function' ? doc.elementFromPoint(point.x, point.y) : null;
+      // The deep hit-test (screenshotPrivacy.ts): elementFromPoint stops at a shadow host, and the
+      // box a point scroll moves is the panel INSIDE the host, never the host itself.
+      const hit = point ? deepHit(doc, point.x, point.y) : null;
       const picked = pickScrollTarget(doc, win, { element, point, hit });
       scrollBox = picked.box;
       const before = positionOf(picked.box, doc, win);

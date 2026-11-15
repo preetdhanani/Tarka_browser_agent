@@ -1,7 +1,6 @@
 /**
  * Content Script Entry Point for Tarka AI Agent
- * Listens for background agent execution messages, relays network recordings from MAIN world,
- * and executes actions or returns DOM snapshot state.
+ * Listens for background agent execution messages and executes actions or returns DOM snapshot state.
  */
 
 (function init() {
@@ -12,22 +11,6 @@
     return;
   }
   window.__tarka_listener_registered = true;
-
-  // Relay network requests from MAIN world net-recorder.js to Background Service Worker
-  window.addEventListener('message', (event) => {
-    if (event.source === window && event.data && event.data.source === 'tarka-net') {
-      try {
-        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-          chrome.runtime.sendMessage({
-            action: 'NET_REQUEST_RECORDED',
-            payload: event.data.payload
-          });
-        }
-      } catch (_) {
-        // Service worker might be sleeping/restarting — ignore
-      }
-    }
-  });
 
   // Forward anything that fails in this page context to the central log
   const reportContentError = (source, err) => {
@@ -246,6 +229,159 @@
 
   const NOT_TEXT_INPUTS = ['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'image', 'range', 'color', 'hidden'];
 
+  /**
+   * The field kinds whose value must never be read as text and never shown as pixels: the same
+   * classification perception.ts's computeFieldKind gives, mirrored here because this file is a
+   * standalone classic script with no imports. A parity test holds the two together.
+   */
+  function computeFieldKindOf(el) {
+    if (!el) return undefined;
+    const tag = String(el.tagName || '').toLowerCase();
+    if (tag !== 'input' && tag !== 'textarea') return undefined;
+    const lowerType = String((el.getAttribute && el.getAttribute('type')) || el.type || '').toLowerCase();
+    const attr = (name) => String((el.getAttribute && el.getAttribute(name)) || '').toLowerCase();
+    const combined = `${attr('name')} ${String(el.id || '').toLowerCase()} ${attr('autocomplete')}`;
+    if (lowerType === 'password' || combined.includes('password') || combined.includes('passwort')) return 'password';
+    // A code or token the user receives by email is still a one-time secret: the code signal
+    // decides before the email kind does.
+    if (/(?:e-?mail|mail)[-_ ]?(?:code|otp|token)/i.test(combined)) return 'otp';
+    if (lowerType === 'email' || combined.includes('email') || combined.includes('e-mail')) return 'email';
+    if (/card|cc-number|cvv|cvc|cardnumber|kreditkarte/i.test(combined) || (lowerType === 'tel' && combined.includes('cc'))) return 'cc';
+    // A "code" or "token" name is masked only when the field can hold a secret the user must type
+    // in: a one-time code, a verification code, an API or session token. Names that contain "code"
+    // for other reasons (postal code, promo code, country code) stay fillable, so an ordinary
+    // address or checkout form is not refused wholesale. An unknown "code" field stays masked.
+    // otp, 2fa and mfa match as substrings on purpose: camelCase names like otpCode carry no
+    // separator, and they are unambiguous enough to mask on sight.
+    if (/(?:postal|zip|post|area|country|currency|sort|qr|bar|promo|coupon|voucher|discount)[-_ ]?code/i.test(combined)) {
+      // Falls through: the address and text kinds below decide.
+    } else if (
+      /otp|2fa|mfa/i.test(combined) ||
+      /(?:^|[^a-z0-9])tan(?:[^a-z0-9]|$)/i.test(combined) ||
+      /one[-_ ]?time|verification|authenticator/i.test(combined) ||
+      /(?:verification|verify|confirm(?:ation)?|security|auth|login|signin|sms|mobile|phone|pass)[-_ ]?code/i.test(combined) ||
+      /(?:csrf|auth|access|session|bearer|refresh)[-_ ]?tokens?/i.test(combined) ||
+      /(?:^|[^a-z0-9])tokens?(?:[^a-z0-9]|$)/i.test(combined) ||
+      /(?:^|[^a-z0-9])code(?:[^a-z0-9]|$)/i.test(combined)
+    ) return 'otp';
+    if (lowerType === 'search' || /search|suche|query/i.test(combined)) return 'search';
+    if (/address|street|city|zip|postal|postcode|plz|strasse|(?:^|[^a-z0-9])(?:wohn|geburts|arbeits)?orts?(?:[^a-z0-9]|$)/i.test(combined)) return 'address';
+    return 'text';
+  }
+
+  /** The kinds whose value never leaves the page: password, payment card, one-time code. */
+  const MASKED_FIELD_KINDS = ['password', 'cc', 'otp'];
+
+  /** Whether this element's value is one the text path refuses to read. */
+  function isMaskedField(el) {
+    const kind = computeFieldKindOf(el);
+    return kind !== undefined && MASKED_FIELD_KINDS.includes(kind);
+  }
+
+  /** The marker a masked field answers with instead of its content: only whether it holds anything. */
+  const REDACTED_MARKER = '[REDACTED: populated]';
+
+  /** Whether clicking this element submits its form (a button without a type, type submit, or an input submit/image). */
+  function isSubmitControlOf(el) {
+    if (!el || typeof el.closest !== 'function' || !el.closest('form')) return false;
+    const tag = String(el.tagName || '').toLowerCase();
+    const type = String((el.getAttribute && el.getAttribute('type')) || el.type || '').toLowerCase();
+    if (tag === 'button') return type === '' || type === 'submit';
+    return tag === 'input' && (type === 'submit' || type === 'image');
+  }
+
+  /** Where the element's form sends: a host only when the action is an http(s) URL on another host than the page's,
+   * and formMethod 'get' only when "get" is written explicitly (the control's formmethod, else the form's method).
+   * Mirrors perception.ts's computeFormTarget, so both risk-fact paths answer the same. */
+  function formTargetOf(el) {
+    const form = el && typeof el.closest === 'function' ? el.closest('form') : null;
+    if (!form) return {};
+    const out = {};
+    const attr = (node, name) => String((node && node.getAttribute && node.getAttribute(name)) || '').trim();
+    const action = attr(el, 'formaction') || attr(form, 'action');
+    if (action) {
+      try {
+        const base = new URL(window.location.href);
+        const url = new URL(action, base);
+        if ((url.protocol === 'http:' || url.protocol === 'https:') && url.hostname.toLowerCase() !== base.hostname.toLowerCase()) {
+          out.formActionHost = url.hostname.toLowerCase();
+        }
+      } catch (_) {
+        // An action that is no URL sends nowhere else.
+      }
+    }
+    const method = (attr(el, 'formmethod') || attr(form, 'method')).toLowerCase();
+    if (method === 'get') out.formMethod = 'get';
+    return out;
+  }
+
+  /** Whether the form around this element holds a masked field (a password, card or one-time code input). */
+  function formHasMaskedFieldOf(el) {
+    const form = el && typeof el.closest === 'function' ? el.closest('form') : null;
+    if (!form || typeof form.querySelectorAll !== 'function') return false;
+    let fields;
+    try { fields = form.querySelectorAll('input, textarea'); } catch (_) { return false; }
+    for (const field of Array.from(fields || [])) {
+      if (isMaskedField(field)) return true;
+    }
+    return false;
+  }
+
+  /** Whether a submit control can actually be pressed: not disabled, and not in a disabled fieldset. */
+  function submitControlPressable(control) {
+    if (control.disabled) return false;
+    try {
+      if (typeof control.closest === 'function' && control.closest('fieldset[disabled]')) return false;
+    } catch (_) {}
+    return true;
+  }
+
+  /** How a submit control reads to a person: its aria-label, then its text (a button) or its value or alt (an input). */
+  function submitControlLabel(control) {
+    const tag = String(control.tagName || '').toLowerCase();
+    const attr = (name) => String((control.getAttribute && control.getAttribute(name)) || '').trim();
+    const text = tag === 'input'
+      ? attr('alt') || String(control.value == null ? '' : control.value)
+      : String((typeof control.innerText === 'string' ? control.innerText : (control.textContent || '')) || '');
+    return (attr('aria-label') || text).replace(/\s+/g, ' ').trim().slice(0, 60);
+  }
+
+  /**
+   * The label of the form's default button: the first submit control in tree order, the one the
+   * browser's implicit submission (Enter in a single-line field) would press. A disabled first
+   * control means Enter submits nothing, so the answer is ''. Controls associated only through
+   * the form= attribute from outside the form element are not seen here, the same known gap
+   * formTargetOf and formHasMaskedFieldOf have.
+   */
+  function formSubmitLabelOf(el) {
+    const form = el && typeof el.closest === 'function' ? el.closest('form') : null;
+    if (!form || typeof form.querySelectorAll !== 'function') return '';
+    let controls;
+    try { controls = form.querySelectorAll('button, input'); } catch (_) { return ''; }
+    for (const control of Array.from(controls || [])) {
+      if (!isSubmitControlOf(control)) continue;
+      return submitControlPressable(control) ? submitControlLabel(control) : '';
+    }
+    return '';
+  }
+
+  /** The risk facts of one element, for the gate and the dispatch-time checks. Pure reads, no page changes. */
+  function securityFactsOf(el) {
+    const tag = el && el.tagName ? String(el.tagName).toLowerCase() : '';
+    const type = tag === 'input' ? String((el.getAttribute && el.getAttribute('type')) || el.type || '') : '';
+    return {
+      tag,
+      type,
+      fieldKind: computeFieldKindOf(el),
+      isSubmitControl: isSubmitControlOf(el),
+      formTarget: formTargetOf(el),
+      formHasMaskedField: formHasMaskedFieldOf(el),
+      formSubmitLabel: formSubmitLabelOf(el),
+      label: el ? labelOfElement(el) : '',
+      text: el ? String((typeof el.innerText === 'string' ? el.innerText : (el.textContent || '')) || '').trim().replace(/\s+/g, ' ').slice(0, 60) : '',
+    };
+  }
+
   /** Whether typing into this element writes text. A focused frame is unknown (null): its document is not ours to read. */
   function isEditableElement(el) {
     if (!el) return false;
@@ -262,9 +398,16 @@
     return host;
   }
 
-  /** The text a field holds: an input's value, or the text of the editor (a CodeMirror .cm-content, or the editing host). */
+  /** The text a field holds: an input's value, or the text of the editor (a CodeMirror .cm-content, or the editing host).
+   * A masked field (password, card, one-time code) never gives its characters: only whether it holds anything. */
   function fieldTextOf(el) {
     if (!el) return null;
+    if (isMaskedField(el)) {
+      const filled = el.tagName === 'TEXTAREA' || el.tagName === 'INPUT'
+        ? String(el.value == null ? '' : el.value).length > 0
+        : String(typeof el.innerText === 'string' ? el.innerText : (el.textContent || '')).trim().length > 0;
+      return filled ? REDACTED_MARKER : null;
+    }
     if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') return String(el.value == null ? '' : el.value);
     const cm = typeof el.closest === 'function' ? el.closest('.cm-content') : null;
     const host = cm || (el.isContentEditable ? editingHost(el) : null);
@@ -289,9 +432,11 @@
     return name ? `${role} "${name}"` : describeElement(el);
   }
 
-  /** The line of text the caret is on, in a text field or an editor; null when there is none. */
+  /** The line of text the caret is on, in a text field or an editor; null when there is none.
+   * A masked field answers null whatever its caret does: its characters never leave the page. */
   function caretLineOf(el) {
     if (!el) return null;
+    if (isMaskedField(el)) return null;
     if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
       const value = String(el.value == null ? '' : el.value);
       let pos = value.length;
@@ -398,6 +543,7 @@
       focus: focused ? {
         label: labelOfElement(focused),
         editable: editable === null ? null : !!editable,
+        fieldKind: computeFieldKindOf(focused),
         caretLine: editable ? caretLineOf(focused) : null,
         text: fieldText === null ? null : fieldText.slice(0, 2000)
       } : null,
@@ -562,7 +708,16 @@
               }
             }
 
-            sendResponse({ success: true, point: { x, y }, tag, role, text });
+            sendResponse({
+              success: true,
+              point: { x, y },
+              tag,
+              role,
+              text,
+              // The risk facts of the element as it is NOW (not as the snapshot saw it), so the
+              // dispatcher can refuse a masked field or ask the user even at dispatch time.
+              ...securityFactsOf(el)
+            });
           } catch (e) {
             sendResponse({ success: false, error: e.message });
           }
@@ -590,11 +745,41 @@
         activeId: document.activeElement ? (document.activeElement.id || '') : '',
         state
       };
+      // CONTRACT-PROBE-FOCUS: the baseline focus carries the risk facts of the focused element
+      // (the ones securityFactsOf computes for the element paths), so the background can refuse
+      // a press that would submit a form with masked fields, one that targets another host, or
+      // one whose submit control asks for confirmation (a payment, an order, a deletion). The
+      // tag and input type come along too: Enter submits from any single-line input, so the
+      // background must be able to tell it from a textarea (where Enter is only a newline).
+      // When the facts cannot be read, they are left out: no false "clean" is claimed.
+      let focusFacts = null;
+      if (state && state.focusEl) {
+        try {
+          const facts = securityFactsOf(state.focusEl);
+          focusFacts = {
+            tag: facts.tag,
+            inputType: facts.type,
+            isSubmitControl: facts.isSubmitControl,
+            formHasMaskedField: facts.formHasMaskedField,
+            formTarget: facts.formTarget,
+            formSubmitLabel: facts.formSubmitLabel
+          };
+        } catch (_) {
+          focusFacts = null;
+        }
+      }
       sendResponse({
         success: true,
         baseline: {
           url: window.location.href,
-          focus: state && state.focus ? { label: state.focus.label, editable: state.focus.editable } : null
+          focus: state && state.focus
+            ? {
+                label: state.focus.label,
+                editable: state.focus.editable,
+                fieldKind: state.focus.fieldKind,
+                ...(focusFacts || {})
+              }
+            : null
         }
       });
       return true;
@@ -734,7 +919,85 @@
             error: window.actionExecutor.maskedFieldRefusal(point.fieldKind)
           });
         }
-        sendResponse({ success: true, what: point && point.what, interactive: !!(point && point.interactive), ...(snap ? { snapped: snap } : {}) });
+        sendResponse({
+          success: true,
+          what: point && point.what,
+          interactive: !!(point && point.interactive),
+          ...(point && point.isSubmitControl ? { isSubmitControl: true } : {}),
+          ...(point && point.formTarget ? { formTarget: point.formTarget } : {}),
+          ...(point && point.formHasMaskedField ? { formHasMaskedField: true } : {}),
+          ...(snap ? { snapped: snap } : {})
+        });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+      return true;
+    }
+
+    if (action === 'ELEMENT_SECURITY') {
+      // The risk facts of one element, before anything is dispatched: the gate asks this before a
+      // click or a type the user may have to approve. It must not scroll, animate or otherwise
+      // touch the page: nothing here may happen before the user has decided.
+      try {
+        if (!window.domCompressor) {
+          return sendResponse({ success: false, error: 'DOMCompressor engine not initialized on page.' });
+        }
+        const resolved = window.domCompressor.resolveElementWithStatus
+          ? window.domCompressor.resolveElementWithStatus(payload?.element_id, payload?.docId)
+          : { success: !!window.domCompressor.getElement(payload?.element_id), element: window.domCompressor.getElement(payload?.element_id) };
+        if (!resolved.success || !resolved.element) {
+          return sendResponse({
+            success: false,
+            stale: resolved.stale || false,
+            error: resolved.error || `Element [${payload?.element_id}] not found.`
+          });
+        }
+        const facts = securityFactsOf(resolved.element);
+        sendResponse({ success: true, ...facts });
+      } catch (err) {
+        sendResponse({ success: false, error: err.message });
+      }
+      return true;
+    }
+
+    if (action === 'VERIFY_CLICK_POINT') {
+      // The last look before a click is dispatched: what is at the point NOW, and whether it is
+      // still the element the click was resolved for. A page that moved, covered or swapped its
+      // content between the resolve and the press is caught here, before the press.
+      try {
+        const x = Number(payload && payload.x);
+        const y = Number(payload && payload.y);
+        const hit = deepElementFromPoint(x, y);
+        const targetId = payload ? payload.element_id : undefined;
+        const target = targetId !== undefined && targetId !== null && window.domCompressor && typeof window.domCompressor.getElement === 'function'
+          ? window.domCompressor.getElement(targetId)
+          : null;
+        const facts = securityFactsOf(hit);
+        const askedForElement = targetId !== undefined && targetId !== null;
+        let withinTarget = true;
+        if (askedForElement && !target) {
+          // CONTRACT-TARGETGONE: the element the click was resolved for no longer resolves (it left
+          // the document, or the page navigated). Fail closed: the press must not go into whatever
+          // sits at the point now. targetGone stays as the information.
+          withinTarget = false;
+        } else if (target) {
+          withinTarget = !!hit && (hit === target
+            || (typeof target.contains === 'function' && target.contains(hit))
+            || composedContains(target, hit)
+            || composedContains(hit, target));
+        }
+        sendResponse({
+          success: true,
+          what: describeElement(hit),
+          hitTag: facts.tag,
+          fieldKind: facts.fieldKind,
+          isSubmitControl: facts.isSubmitControl,
+          formTarget: facts.formTarget,
+          formHasMaskedField: facts.formHasMaskedField,
+          formSubmitLabel: facts.formSubmitLabel,
+          withinTarget,
+          ...(askedForElement && !target ? { targetGone: true } : {})
+        });
       } catch (err) {
         sendResponse({ success: false, error: err.message });
       }

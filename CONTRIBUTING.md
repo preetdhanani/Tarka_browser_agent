@@ -26,7 +26,7 @@ Run `npm run build` after each code change, and load the `dist/` folder in Chrom
 Once it's loaded, open any webpage, open the Tarka Side Panel, and test your changes there before opening a PR.
 
 ## Code Guidelines
-* Keep DOM distillation light (<2,500 tokens).
+* Keep the page snapshot light: the element list is capped at 120 elements and the page text at 4,500 characters (`src/content/domCompressor.ts`, `src/content/pageText.ts`), so a change that grows what is sent to the model needs a reason.
 * Run `npm run check` (syntax of the plain JS files) and `npm run typecheck` (the TypeScript files) before submitting PRs.
 * Follow standard ES6 module imports, and write every relative import with the file's extension (`./parse.ts`).
   Node runs the TypeScript files without a build step, so it cannot guess an extension.
@@ -34,15 +34,10 @@ Once it's loaded, open any webpage, open the Tarka Side Panel, and test your cha
 * Run `npm test` before submitting a PR (see [DEVELOPMENT.md](DEVELOPMENT.md) for details).
 * For bug-fix PRs specifically, it is recommended practice (not a hard requirement for every PR - a new feature test does not need this) to write a regression test, then briefly `git stash` the fix and confirm the new test actually fails, before finalizing.
 
-## Next version (planned, decided 2026-09-28)
+## Architecture today
 
-A LangGraph + TypeScript + Vite rework of the agent is underway.
-It is decided.
-Phases P0 through P7b (including Long-Horizon Worker, Risk Gate backend, SidePanel UI overhaul, default graph engine, and interactive holds) are built (see section 3 of [PRD.md](PRD.md) for roadmap details).
-Today the shared core, provider integration, input dispatcher, and graph engine in `src/` are TypeScript (phases P1-P5d), with their tests.
-The legacy engine, content scripts, and side panel are still plain JavaScript ES modules, and the extension is built with Vite (`npm run build`).
-The background worker defaults to graph `AgentRunner` (phase P7) while preserving legacy `AgentEngine` behind `settings.engine`.
-During the rework, put new agent logic into graph nodes.
-Do not grow `background/agentEngine.js` with new logic.
-The `node --check` guideline above will change once the rest of the code is TypeScript.
-See section 3 of [PRD.md](PRD.md) for the full plan.
+The agent is the MCP tool loop: `AgentRunner` (one per tab) drives `TarkaMCPClient`, which calls the model and executes the chosen tools through `TarkaMCPServer` and the browser layer (`chrome.debugger` CDP for trusted input, content scripts for reading).
+The shared core, provider integration, input dispatcher, and runner in `src/` are TypeScript, with their tests.
+The content scripts and the side panel are plain JavaScript ES modules, and the extension is built with Vite (`npm run build`).
+Put new agent logic into the MCP client and server, not into a graph engine: there is no LangGraph or `AgentEngine` any more.
+The `node --check` guideline above covers the plain-JavaScript files; the TypeScript sources are covered by `npm run typecheck`.

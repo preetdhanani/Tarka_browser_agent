@@ -1,10 +1,10 @@
 /**
- * AgentRouter (llm/agentRouter.ts): ChatAnthropic first, ChatOpenAICompletions as the fallback, joined by hand.
+ * AgentRouter (llm/agentRouter.ts): an Anthropic-protocol call first, an OpenAI-protocol call as the fallback, joined by hand.
  *
- * The requests are built by the real clients and captured with a fetch spy. What is pinned:
- *   - both requests carry exactly the headers the old hand-written fetch sent, the Claude CLI wire image: nothing
- *     the SDKs add on their own (accept, x-stainless-*) gets through. The URLs and the bodies are the old ones
- *     plus the harmless stream:false, and the fallback has no max tokens.
+ * The requests are built by the real provider calls and captured with a fetch spy. What is pinned:
+ *   - both requests carry exactly the hand-written headers, with nothing added on top (no accept,
+ *     no telemetry headers). The URLs and the bodies are the ones the first release sent, plus the
+ *     harmless stream:false, and the fallback has no max tokens.
  *   - the rules of the old code: a 401, or a body that says unauthorized_client_error, an abort and a network
  *     error end the call with no second request; any other HTTP error, an empty 200 and a 200 that is not an
  *     Anthropic reply go on to the fallback; the fallback throws its own error; the first error is logged
@@ -36,8 +36,6 @@ const WIRE_HEADERS = {
   'content-type': 'application/json',
   authorization: `Bearer ${KEY}`,
   'x-api-key': KEY,
-  'user-agent': 'claude-cli/2.1.158 (external, sdk-cli)',
-  'x-app': 'cli',
   'anthropic-version': '2023-06-01',
   'anthropic-beta': 'claude-code-20250219,interleaved-thinking-2025-05-14',
   'anthropic-dangerous-direct-browser-access': 'true'
@@ -72,12 +70,12 @@ test('the wire image in models.ts is the one this file pins', () => {
   assert.deepEqual(agentRouterHeaders(KEY), {
     Authorization: WIRE_HEADERS.authorization,
     'x-api-key': KEY,
-    'User-Agent': WIRE_HEADERS['user-agent'],
-    'x-app': 'cli',
     'anthropic-version': '2023-06-01',
     'anthropic-beta': WIRE_HEADERS['anthropic-beta'],
     'anthropic-dangerous-direct-browser-access': 'true'
   });
+  assert.equal((agentRouterHeaders(KEY) as Record<string, unknown>)['User-Agent'], undefined, 'no other client is impersonated (SEC-8)');
+  assert.equal((agentRouterHeaders(KEY) as Record<string, unknown>)['x-app'], undefined);
 });
 
 test('the Messages request goes to <base>/v1/messages with exactly the old headers, and the old body plus stream:false', async (t) => {

@@ -111,7 +111,7 @@ type Verdict = 'progress' | 'none' | 'pending';
 /** Whether an action's result says the page did not change. */
 export function actionChangedNothing(tool: string, result: string): boolean {
   const text = String(result || '');
-  if (tool === 'scroll' && DID_NOT_MOVE.test(text)) return true;
+  if ((tool === 'scroll' || tool === 'go_back' || tool === 'go_forward') && DID_NOT_MOVE.test(text)) return true;
   return QUIET_OBSERVATION.test(text);
 }
 
@@ -201,7 +201,9 @@ export class ProgressTracker {
     // already done, the same plan again, or records already saved do not.
     if (NOT_COUNTED.has(tool)) return false;
     if (/^Error:/.test(text) || /^Refused:/.test(text)) return false;
-    if (tool === 'navigate' || tool === 'go_back' || tool === 'go_forward') return true;
+    // A move in history counts as progress only when the tab really moved: a go_back that answered
+    // "Did not move" is a repeat that must feed the stall and repeat machinery like any other.
+    if (tool === 'navigate' || tool === 'go_back' || tool === 'go_forward') return verdict !== 'none';
     if (!READ_TOOLS.has(tool)) return tool !== 'wait' && verdict === 'progress';
     const place = (key: string) => {
       if (this.readPlaces.has(key)) return false;

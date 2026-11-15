@@ -549,7 +549,8 @@ export interface EffortPatch {
   maxTokensField?: 'max_completion_tokens';
 }
 
-const NO_PATCH: EffortPatch = { set: {}, remove: [] };
+/** The patch that changes nothing: what a level or dialect that sends no field resolves to. */
+export const NO_PATCH: EffortPatch = { set: {}, remove: [] };
 
 /** The fields every patch may set, for the run-time fallback that strips them after a refusal. */
 export const EFFORT_FIELDS = ['reasoning_effort', 'reasoning_budget', 'chat_template_kwargs', 'thinking', 'output_config', 'reasoning'];

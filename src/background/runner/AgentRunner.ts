@@ -4,7 +4,6 @@
 import { Storage, type SavedSession, type Settings } from '../../shared/storage.ts';
 import { Logger } from '../../shared/logger.ts';
 import { BUILD_STAMP } from '../../shared/build.ts';
-import { SessionActionJournal } from './actionJournal.ts';
 import { SessionRunnerMeta } from './runnerMeta.ts';
 import { CLOSED_TEXT, RunSnapshotStore, fitSnapshot, restoredRun, runSnapshotKey, withRunData, type RunSnapshot } from './runSnapshot.ts';
 import { CHAT_MAX_CHARS, ChatSaver } from './chatSaver.ts';
@@ -14,7 +13,6 @@ import { inputDispatcher } from '../browser/input.ts';
 import { cdp } from '../browser/cdp.ts';
 import { lastRuntimeError } from '../browser/tabs.ts';
 import { TOP_FRAME } from '../browser/frames.ts';
-import { NetworkBuffers } from '../browser/network.ts';
 import { ensureTarkaGroup, isTabInScope, groupIdForWindow } from '../browser/groups.ts';
 import { takeSnapshot } from '../browser/snapshot.ts';
 import { TarkaMCPClient, idleRequestTokens, type CallUsage } from '../mcp/client.ts';
@@ -23,6 +21,7 @@ import { CHAIN_WINDOW_SHARE, COMPACT_PROMPT, COMPACT_SYSTEM, chainTokens, chainT
 import { normalizeEffort } from '../llm/effort.ts';
 import { DEFAULT_CONTEXT_WINDOW, getEffectiveContextWindow, type ContextWindow, type ContextWindowSource } from '../llm/models.ts';
 import { CHARS_PER_TOKEN } from '../../shared/tokens.ts';
+import type { ActionConfirmationRequest } from './runtimeRegistry.ts';
 import type { RunStatus, HistoryEntry, Limits, EffortChoice, EffortProfile, RunStats, Level } from '../types.ts';
 
 /**
@@ -53,6 +52,21 @@ export interface CompactResult {
   summary?: string;
 }
 
+/**
+ * The steps of the current turn: the agent_response rows after the LAST user_goal row. Counting
+ * the whole history would resurrect the earlier turns' steps into every later turn's counter
+ * (W2-R2): a follow-up task in the same chat would start at the previous turn's count.
+ */
+function stepCountOf(history: HistoryEntry[]): number {
+  let count = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const type = history[i]?.type;
+    if (type === 'agent_response') count += 1;
+    else if (type === 'user_goal') break;
+  }
+  return count;
+}
+
 export class AgentRunner {
   public threadId: string;
   public ownerTabId: number;
@@ -69,17 +83,12 @@ export class AgentRunner {
   public history: HistoryEntry[] = [];
   public planSteps: any[] = [];
   public currentPhase = '';
-  public pendingQuestion: string | null = null;
   public pendingApproval: any | null = null;
   public pendingConfirm: any | null = null;
-  public pendingChallengeHelp: any | null = null;
-  public pendingContinueBudget: any | null = null;
-  public pauseReason: 'user' | 'llm_failure' | 'worker_restart' | null = null;
-  public budget: any | null = null;
+  public pauseReason: 'user' | null = null;
   public effort: EffortChoice | null = null;
   public effortProfile: EffortProfile | null = null;
   public runStats: RunStats | null = null;
-  public findings: any[] = [];
 
   /** The context window of the chosen model, resolved by refreshContext (never per call). */
   public contextWindow: ContextWindow = { tokens: DEFAULT_CONTEXT_WINDOW, source: 'default' };
@@ -113,16 +122,25 @@ export class AgentRunner {
   private chatSaver = new ChatSaver();
 
   public tarkaGroupIds = new Map<number, number>();
-  public networkBuffers = new NetworkBuffers(100);
   public autoApprovePlan = true;
 
   private taskClaimed = false;
   private stopDuringClaim = false;
   private pauseDuringClaim = false;
+  // A Pause that landed while a confirmation card was up: it takes effect when the card is
+  // answered, so the run does not carry on after a pause the user asked for.
+  private pauseAfterConfirm = false;
+  /** The open confirmation holds, by the card id each was published with (SEC-2). */
+  private confirmResolvers = new Map<string, (approved: boolean) => void>();
+  /**
+   * CONTRACT-REMEMBER: the origins the user approved with "remember for this run" ticked. The
+   * confirmation gate raises no further card for them until the run (or the chat) ends. Cleared
+   * in startTask, clearHistory and loadChat, so a trust never outlives the run it was given in.
+   */
+  private approvedOrigins = new Set<string>();
   private _activeTabId: number | null = null;
   private onStateChangeCb: ((state: Record<string, any>) => void) | null = null;
 
-  private journal: SessionActionJournal;
   private meta: SessionRunnerMeta;
   /** The panel-visible run, kept across worker restarts (see runSnapshot.ts). */
   private snapshots: RunSnapshotStore;
@@ -142,7 +160,6 @@ export class AgentRunner {
       ? crypto.randomUUID()
       : `boot_${Date.now()}_${Math.floor(Math.random() * 1e9)}`;
 
-    this.journal = new SessionActionJournal(this.threadId, this.bootId);
     this.meta = new SessionRunnerMeta(this.threadId);
     this.snapshots = new RunSnapshotStore(this.threadId);
 
@@ -276,10 +293,6 @@ export class AgentRunner {
           } catch (err: any) {
             return { mode: 'synthetic' as const, reason: err.message };
           }
-        },
-        detachAll: async () => {
-          const ids = Array.from(this.runtime.attachedTabIds ?? []);
-          await Promise.allSettled(ids.map((tabId) => cdp.detach(tabId)));
         }
       },
       clearBadges: async (tabId: number) => {
@@ -308,17 +321,12 @@ export class AgentRunner {
       tabs: { activeTabId: this._activeTabId, ownerTabId: this.ownerTabId },
       windowId: this.windowId,
       tarkaGroupIds: this.tarkaGroupIds,
-      attachedTabIds: new Set(),
       resumedAfterRestart: false,
       settings: () => Storage.getSettings(),
       llm,
       browser,
-      journal: this.journal,
-      net: {
-        marker: () => `${this.bootId}:${this.stepCount}`,
-        read: (tabId: number, filter: any, includeBody: boolean, limit: number) =>
-          this.networkBuffers.read(tabId, filter, includeBody, limit)
-      },
+      requestActionConfirmation: (req) => this.requestActionConfirmation(req),
+      isOriginApproved: (origin: string) => Boolean(origin) && this.approvedOrigins.has(origin),
       emit: {
         enterNode: (name: string) => {
           this.currentPhase = name;
@@ -357,12 +365,12 @@ export class AgentRunner {
   recordEntry(entry: HistoryEntry): void {
     this.dirty = true;
     this.history.push(entry);
-    this.stepCount = this.history.reduce((n, h) => (h.type === 'agent_response' ? n + 1 : n), 0);
+    this.stepCount = stepCountOf(this.history);
     this.notifyStateChange();
   }
 
   /** The run's status as the panel sees it ('idle' and 'error' are terminal; 'paused' carries its reason). */
-  setRunStatus(status: RunStatus, pauseReason: 'user' | 'llm_failure' | 'worker_restart' | null = null): void {
+  setRunStatus(status: RunStatus, pauseReason: 'user' | null = null): void {
     this.dirty = true;
     this.status = status;
     this.pauseReason = status === 'paused' ? pauseReason : null;
@@ -398,7 +406,7 @@ export class AgentRunner {
    * Ends the manual-approve hold. The card and the status change in one broadcast: clearing the
    * card while still "paused" would flash a Resume button with nothing to resume.
    */
-  resolvePendingApproval(status: RunStatus, pauseReason: 'user' | 'llm_failure' | 'worker_restart' | null = null): void {
+  resolvePendingApproval(status: RunStatus, pauseReason: 'user' | null = null): void {
     this.dirty = true;
     this.pendingApproval = null;
     this.status = status;
@@ -414,12 +422,17 @@ export class AgentRunner {
     this.taskClaimed = true;
     this.stopDuringClaim = false;
     this.pauseDuringClaim = false;
+    this.pauseAfterConfirm = false;
     return { success: true };
   }
 
+  /**
+   * Releases the task claim. stopDuringClaim is deliberately NOT cleared here: a Stop that lands
+   * after startTask's own stop check (during the settings read, W2-R5) must still be visible to
+   * the re-check that follows. claimForTask resets it at the start of the next claim.
+   */
   releaseTaskClaim() {
     this.taskClaimed = false;
-    this.stopDuringClaim = false;
     this.pauseDuringClaim = false;
   }
 
@@ -479,6 +492,16 @@ export class AgentRunner {
       // The effort is the model's reasoning level (llm/effort.ts). A start without one (a caller
       // other than the composer) takes the default of Settings.
       const settings = await Storage.getSettings();
+      // W2-R5, the stop-during-startup race: the status went live before this read, so a Stop
+      // that landed during it went through endRun (terminal status, closing row already in).
+      // Re-check here, before the client exists, or the client would run on into a dead run.
+      if (this.stopDuringClaim || (this.status !== 'running' && this.status !== 'paused')) {
+        // The status is already what the ender left (stopped, or idle after a New chat); drop
+        // the task text and answer the start as not taken.
+        this.currentTask = '';
+        this.notifyStateChange({ stopped: true });
+        return { success: false, error: 'Task stopped before it started.' };
+      }
       this.runModel = { provider: String(settings.provider || ''), model: String(settings.providerConfigs?.[settings.provider]?.model || settings.model || '') };
       this.runRecords = [];
       this.runPageUrl = '';
@@ -486,9 +509,13 @@ export class AgentRunner {
       this.effort = { requested: level, level, suggestedBy: requestedEffort ? 'user' : 'default' };
       // The meter shows this task's own calls from its first one on; its token counts start at zero.
       this.lastCall = null;
-      this.runStats = { level: level as Level, modelCalls: 0, stepsUsed: 0, tokensIn: 0, tokensOut: 0, sitesDone: 0, sitesPartial: 0, elapsedMs: 0 };
+      // A new run starts with no remembered origin: a trust the user gave lasts one run.
+      this.approvedOrigins.clear();
+      this.runStats = { level: level as Level, modelCalls: 0, stepsUsed: 0, tokensIn: 0, tokensOut: 0 };
       this.mcpClient = new TarkaMCPClient(this.runtime, this);
-      await this.mcpClient.startTask(userPrompt, { startPaused: pauseLanded, effort: level });
+      // A Pause that landed during the settings read left the run 'paused': set the turn up and
+      // wait for Resume, like a pause that landed during the claim does.
+      await this.mcpClient.startTask(userPrompt, { startPaused: this.status === 'paused', effort: level });
 
       return { success: true };
     } finally {
@@ -512,6 +539,17 @@ export class AgentRunner {
 
   pause(): { success: boolean; error?: string } {
     if (this.status !== 'running') {
+      // A Pause while a confirmation card is up: the card keeps the run suspended, and the
+      // decision on it still belongs to the user. The pause is accepted now and takes effect
+      // when the card is answered: the run stays paused and the answered action is not
+      // dispatched (the task claim is still held for the whole run, so the claim branch below
+      // would silently swallow this pause).
+      if (this.confirmResolvers.size > 0) {
+        this.pauseAfterConfirm = true;
+        this.dirty = true;
+        this.notifyStateChange({ paused: true });
+        return { success: true };
+      }
       if (this.taskClaimed) {
         this.pauseDuringClaim = true;
         this.notifyStateChange({ paused: true });
@@ -531,6 +569,9 @@ export class AgentRunner {
   resume(): { success: boolean; error?: string } {
     if (this.status !== 'paused') {
       return { success: false, error: `Cannot resume when status is "${this.status}".` };
+    }
+    if (this.confirmResolvers.size > 0) {
+      return { success: false, error: 'A confirmation card is waiting. Approve or decline it first.' };
     }
     this.dirty = true;
     this.status = 'running';
@@ -561,7 +602,7 @@ export class AgentRunner {
     return { success: true };
   }
 
-  answerQuestion(answerText: string): { success: boolean; error?: string } {
+  answerQuestion(_answerText: string): { success: boolean; error?: string } {
     return { success: false, error: 'Not supported in MCP mode' };
   }
 
@@ -572,16 +613,117 @@ export class AgentRunner {
     }
   }
 
-  async confirmAction(decision: 'approve' | 'reject', remember?: 'site') {
-    // Not used in MCP loop
+  /**
+   * SEC-2: publishes the confirmation card for one exact action and waits for the user's
+   * decision. The request is bound to the action (tool, serialized arguments, tab, frame, origin,
+   * element), so an approval approves this call and nothing else. Resolves true only on an
+   * explicit approve of THIS id; a reject, a Stop, a New chat or an opened other chat resolve
+   * false, and the caller refuses the action.
+   */
+  async requestActionConfirmation(req: ActionConfirmationRequest): Promise<boolean> {
+    if (this.status !== 'running') return false;
+    // CONTRACT-REMEMBER: the user already approved an action on this origin with "remember for
+    // this run" ticked. The card is skipped and the action may go on; the gate can also ask
+    // isOriginApproved() itself before it even prepares a card.
+    if (req.targetOrigin && this.approvedOrigins.has(req.targetOrigin)) return true;
+    const id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `confirm_${Date.now()}_${Math.floor(Math.random() * 1e9)}`;
+    this.pendingConfirm = {
+      id,
+      toolName: req.toolName,
+      actionSummary: req.actionSummary,
+      elementLabel: req.elementLabel || '',
+      variant: req.variant,
+      reason: req.reason,
+      pageUrl: req.pageUrl,
+      detail: req.detail || {},
+      tabId: req.tabId,
+      targetOrigin: req.targetOrigin,
+      elementId: req.elementId,
+    };
+    this.dirty = true;
+    this.status = 'paused';
+    this.pauseReason = null;
+    this.notifyStateChange();
+    const approved = await new Promise<boolean>((resolve) => {
+      this.confirmResolvers.set(id, resolve);
+    });
+    this.confirmResolvers.delete(id);
+    if (this.pendingConfirm && (this.pendingConfirm as any).id === id) {
+      this.pendingConfirm = null;
+    }
+    if (!this.isRunLive()) return false;
+    // Only a run still resting on THIS card goes on: the card held it in 'paused'. A Stop, a New
+    // chat or any other end that landed while the card was up has already set a terminal status
+    // here, and the answer of the card must not resurrect the run as 'running'. (The task claim
+    // is still held at this point - it is released only when the loop above unwinds - so
+    // isRunLive() alone cannot tell "ended" from "live" here.)
+    if (this.status !== 'paused') return false;
+    // A Pause that landed while this card was up takes effect now: the run stays paused, the
+    // answered action is not dispatched, and the loop is stopped so it does not carry on. Resume
+    // re-enters it from the message history it still holds.
+    if (this.pauseAfterConfirm) {
+      this.pauseAfterConfirm = false;
+      this.dirty = true;
+      this.status = 'paused';
+      this.pauseReason = 'user';
+      this.mcpClient?.stop();
+      this.notifyStateChange({ paused: true });
+      return false;
+    }
+    // The card held the run in 'paused'; the decision is in, so the run goes on either way
+    // (W2-R1). A decline must not leave the run paused: the model is told of the refusal and
+    // acts on it, and a later gated action raises its own new card.
+    this.status = 'running';
+    this.pauseReason = null;
+    this.notifyStateChange();
+    return approved;
   }
 
-  async resolveChallenge(action: 'resolved' | 'skip') {
-    // Not used in MCP loop
+  /** Whether the run is live enough for an approved action to dispatch: not stopped, not ended. */
+  private isRunLive(): boolean {
+    return this.status === 'running' || this.status === 'paused' || this.taskClaimed;
   }
 
-  async continueBudget(action: 'continue' | 'finish', additionalSteps?: number) {
-    // Not used in MCP loop
+  /**
+   * The user's decision on the confirmation card. An approve resolves the hold of the card that
+   * is up (the newest one); anything else resolves it as a refusal. A decision for a card that is
+   * no longer up does nothing. An approve with the remember checkbox ticked ('site') adds the
+   * card's targetOrigin to the run's approvedOrigins (CONTRACT-REMEMBER), and the decision is
+   * kept as a confirm_review row, with remembered: true when the checkbox was ticked.
+   */
+  confirmAction(decision: 'approve' | 'reject', remember?: 'site'): { success: boolean; error?: string } {
+    const ids = Array.from(this.confirmResolvers.keys());
+    const id = ids.at(-1);
+    if (!id) return { success: false, error: 'There is no action waiting for a confirmation.' };
+    const resolve = this.confirmResolvers.get(id)!;
+    this.confirmResolvers.delete(id);
+    const card = this.pendingConfirm && (this.pendingConfirm as any).id === id ? this.pendingConfirm : null;
+    if (decision === 'approve' && remember === 'site' && card?.targetOrigin) {
+      this.approvedOrigins.add(String(card.targetOrigin));
+    }
+    if (card) {
+      this.recordEntry({
+        type: 'confirm_review',
+        variant: String(card.variant || ''),
+        actionSummary: String(card.actionSummary || ''),
+        decision: decision === 'approve' ? 'approved' : 'denied',
+        ...(decision === 'approve' && remember === 'site' ? { remembered: true } : {})
+      });
+    }
+    resolve(decision === 'approve');
+    return { success: true };
+  }
+
+  /** Resolves every confirmation hold as a refusal: the run is ending or the chat is going away. */
+  private releasePendingConfirms(): void {
+    for (const [, resolve] of Array.from(this.confirmResolvers.entries())) {
+      resolve(false);
+    }
+    this.confirmResolvers.clear();
+    this.pendingConfirm = null;
+    this.pauseAfterConfirm = false;
   }
 
   /**
@@ -596,9 +738,11 @@ export class AgentRunner {
     if (this.status !== 'running' && this.status !== 'paused') return false;
     this.runtime.control.abortStep('user_stop');
     this.mcpClient?.stop();
+    this.releasePendingConfirms();
     this.dirty = true;
-    // The closing row keeps what the run collected, so the chat can go on from it later.
-    if (row) this.history.push(withRunData(row, { records: this.runRecords, planSteps: this.planSteps, pageUrl: this.runPageUrl }));
+    // The closing row keeps what the run collected, so the chat can go on from it later, and the
+    // run's counts (W2-R4): the panel's stats card reads them from the finish or partial row.
+    if (row) this.history.push(withRunData(row, { records: this.runRecords, planSteps: this.planSteps, pageUrl: this.runPageUrl, runStats: this.runStats }));
     this.runRecords = [];
     this.status = status;
     this.pauseReason = null;
@@ -639,7 +783,6 @@ export class AgentRunner {
     runtimeRegistry.set(this.runtime);
     // A debounced write of the old store must not land under the old key after it was dropped.
     this.snapshots.discard();
-    this.journal = new SessionActionJournal(next, this.bootId);
     this.meta = new SessionRunnerMeta(next);
     this.snapshots = new RunSnapshotStore(next);
     this.snapshots.save(this.runSnapshot(), true);
@@ -649,13 +792,18 @@ export class AgentRunner {
 
   clearHistory() {
     // New chat ends a live run first: its loop must not go on into the cleared thread.
-    this.endRun('idle', null);
+    const ended = this.endRun('idle', null);
+    this.releasePendingConfirms();
+    // endRun stops the client when it ended the run; when the run was already over (a second New
+    // chat, a stopped run) the client is left as it is, so stop it here before the reference goes.
+    if (!ended) this.mcpClient?.stop();
     this.mcpClient = null;
     this.dirty = true;
     // A Compact still in flight belongs to the chat that is gone: its summary is dropped.
     this.chatGeneration += 1;
     this.lastCall = null;
     this.runStats = null;
+    this.approvedOrigins.clear();
     // The chat that ends here was saved by the endRun above (or by its last resting state); the
     // new chat has its own id, so nothing more is written to the old entry.
     void this.chatSaver.flush();
@@ -668,7 +816,6 @@ export class AgentRunner {
     this.currentTask = '';
     this.planSteps = [];
     this.pendingApproval = null;
-    this.findings = [];
     this.status = 'idle';
     this.pauseReason = null;
     this.stepCount = 0;
@@ -689,19 +836,14 @@ export class AgentRunner {
       planSteps: this.planSteps,
       currentPhase: this.currentPhase,
       pauseReason: this.pauseReason,
-      budget: this.budget,
-      pendingQuestion: this.pendingQuestion,
       pendingApproval: this.pendingApproval,
       pendingConfirm: this.pendingConfirm,
-      pendingChallengeHelp: this.pendingChallengeHelp,
-      pendingContinueBudget: this.pendingContinueBudget,
       stateVersion: this.stateVersion,
       bootId: this.bootId,
       tarkaGroupId: this.tarkaGroupId,
       effort: this.effort,
       effortProfile: this.effortProfile,
       runStats: this.runStats,
-      findings: this.findings,
       chatId: this.chatId,
       context: this.contextState()
     };
@@ -732,16 +874,14 @@ export class AgentRunner {
     if (busy()) return { success: false, error: 'Stop the task before you open another chat.' };
 
     // Whatever belonged to the chat on screen goes: a Compact in flight, a client, the holds.
+    this.releasePendingConfirms();
     this.chatGeneration += 1;
     this.mcpClient = null;
-    this.pendingQuestion = null;
     this.pendingApproval = null;
     this.pendingConfirm = null;
-    this.pendingChallengeHelp = null;
-    this.pendingContinueBudget = null;
-    this.findings = [];
     this.lastCall = null;
     this.runStats = null;
+    this.approvedOrigins.clear();
     this.runtime.typedTexts = [];
     this.runtime.navigatedFrom = null;
 
@@ -760,7 +900,7 @@ export class AgentRunner {
     this.currentTask = saved.task || '';
     this.status = 'idle';
     this.pauseReason = null;
-    this.stepCount = this.history.reduce((n, h) => (h.type === 'agent_response' ? n + 1 : n), 0);
+    this.stepCount = stepCountOf(this.history);
     this.dirty = true;
     Logger.event('agent', 'AgentRunner', `Opened the saved chat "${this.chatTitle}" on tab [${this.ownerTabId}]`, { chatId: this.chatId, rows: this.history.length, cutOff: saved.status === 'running' || saved.status === 'paused' });
     this.notifyStateChange();
@@ -895,7 +1035,6 @@ export class AgentRunner {
       stateVersion: this.stateVersion,
       tarkaGroupIds: Array.from(this.tarkaGroupIds.entries()) as [number, number][],
       aliases: [],
-      attachedTabIds: Array.from(this.runtime.attachedTabIds),
       pauseDetach: null,
       lastBeatAt: Date.now()
     });
@@ -979,12 +1118,6 @@ export class AgentRunner {
       { windowId: this.windowId, groupIds: this.tarkaGroupIds, persist: () => this.persistState() },
       windowId
     );
-  }
-
-  // recordNetworkRequest: record a network request for a tab
-  recordNetworkRequest(tabId: number, payload: any): void {
-    // The content scripts' net recorder feeds this buffer.
-    this.networkBuffers.record(tabId, payload, this.runtime.net.marker());
   }
 
   private notifyStateChange(extra?: Record<string, any>) {

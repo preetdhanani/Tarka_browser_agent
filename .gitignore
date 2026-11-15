@@ -36,3 +36,6 @@ Bugs/
 featere/
 .kilo/
 tests/e2e/verification-runs/
+
+# LinkedIn promo material (video, previews, render script), kept on disk only
+linkedin-promo/

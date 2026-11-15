@@ -237,7 +237,7 @@ export async function routerRig(options: RouterRigOptions = {}): Promise<RouterR
   const settingsKey = 'agent_settings';
   if ((await store.connect().local.get(settingsKey))[settingsKey] === undefined) {
     await store.connect().local.set({
-      [settingsKey]: { provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'test-model', maxSteps: 20, actionDelayMs: 1, ...options.settings },
+      [settingsKey]: { provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'test-model', apiKey: 'test-key', maxSteps: 20, actionDelayMs: 1, ...options.settings },
     });
   }
 

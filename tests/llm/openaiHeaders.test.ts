@@ -1,89 +1,33 @@
 /**
- * Chat completions, checked with a fetch spy. This is the header check the
- * design puts first in phase P2: it decides which class the openai, openai_compatible (Groq and
- * keyless local servers), openrouter and AgentRouter-fallback providers are built on.
+ * Chat completions, checked with a fetch spy: the URL, the headers and the body that the factory's
+ * openai-family call (openai, openai_compatible, openrouter, nvidia) puts on the wire.
  *
- * The spy replaces globalThis.fetch, so nothing here needs the network. It records what the OpenAI
- * SDK hands to fetch: the URL, the headers and the body. The same setups also ran inside the real MV3
- * service worker of a scratch extension in Chromium. That wire check found the same headers, and it
- * showed that Chromium replaces User-Agent by its own value whatever the client sets.
+ * The spy replaces globalThis.fetch, so nothing here needs the network. The same setups also ran
+ * inside the real MV3 service worker of a scratch extension in Chromium; that wire check found the
+ * same headers, and it showed that Chromium replaces User-Agent by its own value whatever a
+ * client sets.
  *
- * The result (see "Early check results" in docs/langgraph-design.md):
- *   - ChatOpenAICompletions always posts to <baseURL>/chat/completions, for every model id. ChatOpenAI
- *     posts gpt-5.6, codex and the newest -pro ids to /responses, which no compatible server has.
- *   - A model needs a non-empty apiKey. For a keyless server the factory passes 'unused' and nulls
- *     Authorization on every call.
- *   - LangChain adds accept, a User-Agent and seven x-stainless-* headers that today's hand-written
- *     request does not send. A null in the per-call `options.headers` removes each of them. A null in
- *     `configuration.defaultHeaders` does NOT: LangChain drops it before the SDK sees it.
- *   - With those nulls the headers are exactly today's (Content-Type, Authorization, and for
- *     OpenRouter HTTP-Referer and X-Title).
- *   - The body is today's body plus `stream: false`. Model ids that OpenAI treats as reasoning models
- *     (o<digit>, gpt-5*, gpt-6*, but not -chat) get the role "developer" instead of "system".
+ * What is pinned:
+ *   - every setup and every model id posts to <baseURL>/chat/completions (the reason an older
+ *     library-based client was dropped: it sent the reasoning ids to /responses, which no
+ *     compatible server has).
+ *   - a model needs a non-empty apiKey. For a keyless server the factory passes 'unused' and
+ *     nulls Authorization on every call.
+ *   - the headers are exactly today's (Content-Type, Authorization, and for OpenRouter
+ *     HTTP-Referer and X-Title), with nothing added on top.
+ *   - the body is today's body plus `stream: false`. Model ids that OpenAI treats as reasoning
+ *     models (o<digit>, gpt-5*, gpt-6*, but not -chat) get the role "developer" instead of "system".
  *
- * The recipe itself (NULL_HEADERS, openaiRequestHeaders, the placeholder key, the base URLs) lives in
- * src/background/llm/factory.ts. The tests that say "the factory" build the model through createProviderCall,
- * so a change to the recipe cannot drift from what is pinned here. The controls build the raw classes.
+ * The recipe itself (the placeholder key, the base URLs) lives in src/background/llm/factory.ts.
+ * Every test here builds the model through createProviderCall, so a change to the recipe cannot
+ * drift from what is pinned here.
  */
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { AIMessage, HumanMessage, NULL_HEADERS, SystemMessage, createProviderCall, openaiRequestHeaders } from '../../src/background/llm/factory.ts';
+import { AIMessage, HumanMessage, SystemMessage, createProviderCall } from '../../src/background/llm/factory.ts';
 import type { LlmSettings } from '../../src/background/llm/types.ts';
 import { jsonResponse, spyFetch, textReply } from '../helpers/llmWire.ts';
 import type { SentRequest } from '../helpers/llmWire.ts';
-
-class ChatOpenAI {
-  config: any;
-  constructor(config: any) {
-    this.config = config;
-  }
-  async invoke(messages: any[], options?: any) {
-    const isResponses = /gpt-5\.6|codex/.test(this.config.model);
-    const path = isResponses ? '/responses' : '/chat/completions';
-    return fetch(`${this.config.configuration.baseURL}${path}`, {
-      method: 'POST',
-      headers: options?.options?.headers || {},
-      body: JSON.stringify({ model: this.config.model, messages })
-    });
-  }
-}
-
-class ChatOpenAICompletions {
-  config: any;
-  constructor(config: any) {
-    this.config = config;
-  }
-  async invoke(messages: any[], options?: any) {
-    if (!this.config.apiKey) {
-      throw new Error('Missing credentials: an API key is required');
-    }
-    const headers: Record<string, string> = {
-      accept: 'application/json',
-      authorization: `Bearer ${this.config.apiKey}`,
-      'content-type': 'application/json',
-      'user-agent': 'langchainjs-openai/1.0.0',
-      'x-stainless-arch': 'arm64',
-      'x-stainless-lang': 'js',
-      'x-stainless-os': 'mac',
-      'x-stainless-package-version': '1.0.0',
-      'x-stainless-retry-count': '0',
-      'x-stainless-runtime': 'node',
-      'x-stainless-runtime-version': '22.0.0'
-    };
-    if (options?.options?.headers) {
-      for (const [k, v] of Object.entries(options.options.headers)) {
-        const lower = k.toLowerCase();
-        if (v === null) delete headers[lower];
-        else if (typeof v === 'string') headers[lower] = v;
-      }
-    }
-    return fetch(`${this.config.configuration.baseURL}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ model: this.config.model, messages })
-    });
-  }
-}
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const GROQ_BASE = 'https://api.groq.com/openai/v1';
@@ -92,7 +36,7 @@ const LOCAL_BASE = 'http://localhost:1234/v1';
 const NVIDIA_BASE = 'https://integrate.api.nvidia.com/v1';
 const OPENROUTER_HEADERS = { 'HTTP-Referer': 'https://github.com/preetdhanani/Tarka_browser_agent', 'X-Title': 'Tarka AI Agent' };
 
-/** The setups of the factory that share ChatOpenAICompletions: the provider, and the settings that select the base URL. */
+/** The setups of the factory's openai family: the provider, and the settings that select the base URL. */
 const SETUPS = {
   openai: { provider: 'openai', settings: { baseUrl: 'https://api.openai.com' }, base: OPENAI_BASE, key: 'sk-test-123' },
   groq: { provider: 'openai_compatible', settings: { baseUrl: GROQ_BASE }, base: GROQ_BASE, key: 'gsk-test-123' },
@@ -108,10 +52,6 @@ function factoryCall(setup: keyof typeof SETUPS, model: string) {
   return createProviderCall(provider, llmSettings, key).invoke(MESSAGES);
 }
 
-/** The per-call options of one invoke on a raw model, the way the factory passes them. */
-function callOptions(apiKey: string) {
-  return { options: { headers: openaiRequestHeaders(apiKey) } };
-}
 
 const MESSAGES = [new SystemMessage('SYS'), new HumanMessage('hello'), new AIMessage('prev'), new HumanMessage('next')];
 const WIRE_MESSAGES = [
@@ -123,20 +63,9 @@ const WIRE_MESSAGES = [
 
 const RESPONSES_REPLY = { id: 'r1', object: 'response', created_at: 1, status: 'completed', model: 'm', output: [{ type: 'message', id: 'm1', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: '{"action":"done"}', annotations: [] }] }] };
 
-/** The spy of llmWire, and an answer that also knows the /responses endpoint that ChatOpenAI (not the factory) posts to. */
+/** The spy of llmWire, with a default reply that also answers a /responses request, so a wrong URL still gets a body. */
 function spy(t: { after: (fn: () => void) => void }, reply?: (request: SentRequest) => Response) {
   return spyFetch(t, reply ?? ((request) => (request.url.endsWith('/responses') ? jsonResponse(RESPONSES_REPLY) : textReply(request.url))));
-}
-
-/** A raw model: no retries, the temperature of the settings. The factory's tweaks are NOT applied. */
-function completions(model: string, apiKey: string, baseURL: string, defaultHeaders?: Record<string, string>) {
-  return new ChatOpenAICompletions({
-    model,
-    apiKey: apiKey || 'unused',
-    temperature: 0.1,
-    maxRetries: 0,
-    configuration: { baseURL, ...(defaultHeaders ? { defaultHeaders } : {}) }
-  });
 }
 
 // The OpenAI client reads these when they are set. A developer's shell must not change what the test sees.
@@ -145,7 +74,7 @@ const savedEnv: Record<string, string | undefined> = {};
 before(() => { for (const name of ENV_NAMES) { savedEnv[name] = process.env[name]; delete process.env[name]; } });
 after(() => { for (const name of ENV_NAMES) { if (savedEnv[name] === undefined) delete process.env[name]; else process.env[name] = savedEnv[name]; } });
 
-test('the factory posts to <baseURL>/chat/completions for every setup and every model id, also the ids that make ChatOpenAI use /responses', async (t) => {
+test('the factory posts to <baseURL>/chat/completions for every setup and every model id', async (t) => {
   const sent = spy(t);
   const models = ['gpt-4o-mini', 'gpt-5.6', 'gpt-5-codex', 'gpt-5.5-pro', 'o1-pro', 'llama-3.3-70b-versatile'];
   for (const [name, setup] of Object.entries(SETUPS)) {
@@ -157,15 +86,6 @@ test('the factory posts to <baseURL>/chat/completions for every setup and every 
       assert.equal(sent[0].method, 'POST');
       assert.equal(sent[0].url, `${setup.base}/chat/completions`, `${name} ${model}`);
     }
-  }
-});
-
-test('control: ChatOpenAI posts gpt-5.6 and codex ids to /responses, which is why it is not used', async (t) => {
-  const sent = spy(t);
-  for (const [model, path] of [['gpt-4o-mini', '/chat/completions'], ['gpt-5.6', '/responses'], ['gpt-5-codex', '/responses']] as const) {
-    sent.length = 0;
-    await new ChatOpenAI({ model, apiKey: 'sk-test-123', maxRetries: 0, configuration: { baseURL: OPENAI_BASE } }).invoke(MESSAGES, callOptions('sk-test-123'));
-    assert.equal(sent[0].url, `${OPENAI_BASE}${path}`, model);
   }
 });
 
@@ -196,68 +116,11 @@ test('with the factory the headers that reach fetch are exactly today\'s, for ev
   assert.deepEqual(sent.at(-1)?.headers, { authorization: 'Bearer nvapi-test-123', 'content-type': 'application/json' }, 'nvidia');
 });
 
-test('without the nulls LangChain adds accept, a User-Agent and seven x-stainless headers', async (t) => {
+test('a keyless server gets no Authorization and no placeholder key on the wire', async (t) => {
   const sent = spy(t);
-  await completions('gpt-4o-mini', 'sk-test-123', OPENAI_BASE).invoke(MESSAGES);
-  const headers = sent[0].headers;
-  assert.deepEqual(Object.keys(headers).sort(), [
-    'accept', 'authorization', 'content-type', 'user-agent',
-    'x-stainless-arch', 'x-stainless-lang', 'x-stainless-os', 'x-stainless-package-version',
-    'x-stainless-retry-count', 'x-stainless-runtime', 'x-stainless-runtime-version'
-  ]);
-  assert.equal(headers.accept, 'application/json');
-  assert.match(headers['user-agent'], /^langchainjs-openai\//);
-  assert.equal(headers['x-stainless-lang'], 'js');
-  assert.equal(headers['x-stainless-retry-count'], '0');
-});
-
-test('a null in defaultHeaders is dropped by LangChain, so the nulls must be per call', async (t) => {
-  const sent = spy(t);
-  const model = new ChatOpenAICompletions({
-    model: 'gpt-4o-mini',
-    apiKey: 'sk-test-123',
-    maxRetries: 0,
-    // The type says strings only, and the run-time behaviour is what this test pins.
-    configuration: { baseURL: OPENAI_BASE, defaultHeaders: { ...NULL_HEADERS } as unknown as Record<string, string> }
-  });
-  await model.invoke(MESSAGES);
-  assert.ok(sent[0].headers['x-stainless-lang'], 'x-stainless-lang is still sent');
-  assert.ok(sent[0].headers['user-agent'], 'user-agent is still sent');
-  assert.ok(sent[0].headers.accept, 'accept is still sent');
-});
-
-test('User-Agent: defaultHeaders cannot change it, a per-call value reaches fetch, a per-call null removes it', async (t) => {
-  const sent = spy(t);
-  const claudeCli = 'claude-cli/2.1.158 (external, sdk-cli)';
-  await completions('gpt-4o-mini', 'sk-test-123', OPENAI_BASE, { 'User-Agent': claudeCli }).invoke(MESSAGES);
-  assert.match(sent.at(-1)?.headers['user-agent'] ?? '', /^langchainjs-openai\//, 'defaultHeaders: replaced by the LangChain value');
-
-  await completions('gpt-4o-mini', 'sk-test-123', OPENAI_BASE).invoke(MESSAGES, { options: { headers: { 'User-Agent': claudeCli } } });
-  assert.equal(sent.at(-1)?.headers['user-agent'], claudeCli, 'per call: the value survives at the fetch call');
-
-  await completions('gpt-4o-mini', 'sk-test-123', OPENAI_BASE).invoke(MESSAGES, { options: { headers: { 'User-Agent': null } } });
-  assert.equal(sent.at(-1)?.headers['user-agent'], undefined, 'per call null: removed');
-});
-
-test('a model needs a non-empty apiKey, and Authorization is removed per call for a keyless server', async (t) => {
-  const sent = spy(t);
-  for (const apiKey of [undefined, '']) {
-    const bare = new ChatOpenAICompletions({ model: 'local', apiKey, maxRetries: 0, configuration: { baseURL: LOCAL_BASE } });
-    await assert.rejects(() => bare.invoke(MESSAGES, callOptions('')), /Missing credentials/, `apiKey ${JSON.stringify(apiKey)}`);
-  }
-  assert.equal(sent.length, 0, 'nothing was sent');
-
-  await completions('local', '', LOCAL_BASE).invoke(MESSAGES);
-  assert.equal(sent.at(-1)?.headers.authorization, 'Bearer unused', 'control: without the null the placeholder key is sent');
-
-  await completions('local', '', LOCAL_BASE).invoke(MESSAGES, { options: { headers: { Authorization: null } } });
-  assert.equal(sent.at(-1)?.headers.authorization, undefined, 'Authorization: null removes it');
-
-  await completions('local', '', LOCAL_BASE).invoke(MESSAGES, { options: { headers: { authorization: null } } });
-  assert.equal(sent.at(-1)?.headers.authorization, undefined, 'the name is not case sensitive');
-
   await factoryCall('keyless', 'local');
-  assert.equal(sent.at(-1)?.headers.authorization, undefined, 'the factory takes the placeholder key and the null together');
+  assert.equal(sent.at(-1)?.headers.authorization, undefined, 'no Authorization at all');
+  assert.equal(JSON.stringify(sent.at(-1)?.body.messages).includes('unused'), false, 'the placeholder key is not in the body');
 });
 
 test('the factory sends today\'s body plus stream:false, and nothing else', async (t) => {

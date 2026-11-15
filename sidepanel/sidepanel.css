@@ -23,11 +23,15 @@
      colour a one-word label as well as an icon or a border. */
   --warning: #946f0c;
   --warning-soft: rgba(148, 111, 12, 0.12);
+  /* The blue of an informational hold (the navigate variant of the confirmation card). Same bar
+     as the ochre: it must read as a one-word label on the card. */
+  --info: #0369a1;
+  --info-soft: rgba(3, 105, 161, 0.12);
   --shadow-soft: 0 1px 2px rgba(30, 20, 10, 0.05);
 
-  --font-display: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-body: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: 'JetBrains Mono', 'SFMono-Regular', monospace;
+  --font-display: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SFMono-Regular', 'Menlo', 'Consolas', monospace;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -49,6 +53,8 @@
     --danger-soft: rgba(177, 82, 74, 0.15);
     --warning: #c49a3a;
     --warning-soft: rgba(196, 154, 58, 0.15);
+    --info: #6fa8cf;
+    --info-soft: rgba(111, 168, 207, 0.16);
     --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
 }
@@ -71,6 +77,8 @@
   --danger-soft: rgba(177, 82, 74, 0.15);
   --warning: #c49a3a;
   --warning-soft: rgba(196, 154, 58, 0.15);
+  --info: #6fa8cf;
+  --info-soft: rgba(111, 168, 207, 0.16);
   --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
 
@@ -570,6 +578,16 @@ a:hover { color: var(--text-main); }
   vertical-align: middle;
 }
 
+/* The run's provider and model chip: a built-in's dropdown label can be long, so it clamps to
+   one line instead of pushing the phase text or the progress bar out of the banner. */
+.processing-model-chip {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: none;
+}
+
 .progress-bar-track {
   width: 100%;
   height: 3px;
@@ -817,6 +835,16 @@ a:hover { color: var(--text-main); }
   white-space: pre-wrap;
   word-break: break-word;
   min-width: 0;
+}
+
+/* The run's numbers under the answer: model calls, steps, tokens in and out. */
+.finish-stats {
+  margin-top: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 /* The files a run hands over with its answer: one chip per file, a click opens its preview. */
@@ -1840,6 +1868,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  font-family: var(--font-body);
   font-size: 10px;
   padding: 4px 9px;
   border-radius: 20px;
@@ -1853,6 +1882,11 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 
 .log-filter-chip:hover {
   color: var(--text-main);
+}
+
+.log-filter-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .log-filter-chip.active {
@@ -2037,9 +2071,12 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 }
 
 .combobox-trigger {
+  /* A real button (Enter and Space open the picker): a button does not stretch like the div it
+     was, and it does not inherit the panel font, so both are set here. */
   display: flex;
   align-items: center;
   justify-content: space-between;
+  width: 100%;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 9px;
@@ -2047,6 +2084,7 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   font-family: var(--font-body);
   font-size: 12px;
   color: var(--text-main);
+  text-align: left;
   cursor: pointer;
   user-select: none;
   transition: border-color 0.15s ease, background 0.15s ease;
@@ -2054,6 +2092,11 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 
 .combobox-trigger:hover {
   border-color: var(--accent);
+}
+
+.combobox-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .combobox-trigger #modelSelectedLabel {
@@ -2428,25 +2471,6 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 
 .act-row.answer { color: var(--text-main); }
 
-/* ask_user is waiting for a real reply, not just a generic Resume click. */
-.ask-user-prompt {
-  margin-top: 8px;
-  padding: 10px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-.ask-user-question {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-  font-size: 12px;
-  color: var(--text-main);
-  margin-bottom: 8px;
-}
-.ask-user-input-row { display: flex; gap: 6px; }
-.ask-user-input { flex: 1; }
-
 /* A plan step the harness skipped because its source was never read. Muted and NOT struck
    through: a struck-through row means done, and this one is the opposite. */
 .act-plan-row.skipped { color: var(--text-muted); }
@@ -2763,13 +2787,7 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   border-left-color: var(--danger);
 }
 .action-confirmation-card.variant-navigate {
-  border-left-color: #0284c7;
-}
-.challenge-help-card {
-  border-left: 3px solid #8b5cf6;
-}
-.continue-budget-card {
-  border-left: 3px solid #f59e0b;
+  border-left-color: var(--info);
 }
 
 .approval-card .card-header {
@@ -2803,18 +2821,9 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   background: var(--surface);
   color: var(--text-muted);
 }
-.variant-tag.tag-purchase { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
-.variant-tag.tag-navigate { background: rgba(2, 132, 199, 0.15); color: #0284c7; }
-.variant-tag.tag-login, .variant-tag.tag-submit { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
-.variant-tag.tag-challenge { background: rgba(139, 92, 246, 0.15); color: #8b5cf6; }
-.variant-tag.tag-budget { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
-
-.budget-desc {
-  font-size: 11.5px;
-  color: var(--text-muted);
-  line-height: 1.4;
-  margin: 0;
-}
+.variant-tag.tag-purchase { background: var(--danger-soft); color: var(--danger); }
+.variant-tag.tag-navigate { background: var(--info-soft); color: var(--info); }
+.variant-tag.tag-login, .variant-tag.tag-submit { background: var(--warning-soft); color: var(--warning); }
 
 .card-body {
   display: flex;
@@ -2847,7 +2856,7 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   color: var(--text-muted);
 }
 .risk-reason-box {
-  background: rgba(245, 158, 11, 0.08);
+  background: var(--warning-soft);
   border-left: 2px solid var(--warning);
   padding: 6px 8px;
   border-radius: 0 4px 4px 0;
@@ -2963,103 +2972,6 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   display: flex;
   gap: 8px;
   margin-top: 4px;
-}
-
-/* Provenance Findings Table */
-.provenance-findings-container {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  margin: 10px 0;
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.findings-table-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.table-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 600;
-  font-size: 12px;
-  color: var(--text-main);
-}
-.findings-count-badge {
-  background: var(--surface);
-  padding: 1px 6px;
-  border-radius: 10px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-muted);
-}
-.findings-table-scroll {
-  overflow-x: auto;
-  max-height: 240px;
-  overflow-y: auto;
-}
-.provenance-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 11px;
-  text-align: left;
-}
-.provenance-table th {
-  border-bottom: 1px solid var(--border);
-  padding: 6px 8px;
-  color: var(--text-muted);
-  font-weight: 600;
-  font-size: 10.5px;
-  text-transform: uppercase;
-}
-.provenance-table td {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: middle;
-}
-.findings-table-row {
-  cursor: pointer;
-}
-.findings-table-row:hover {
-  background: var(--surface);
-}
-.site-link {
-  color: var(--accent);
-  text-decoration: none;
-}
-.site-link:hover {
-  text-decoration: underline;
-}
-.quality-badge {
-  padding: 2px 5px;
-  border-radius: 4px;
-  font-size: 9.5px;
-  font-weight: 600;
-}
-.quality-verified { background: rgba(34, 197, 94, 0.15); color: var(--success); }
-.quality-single { background: rgba(14, 165, 233, 0.15); color: #0284c7; }
-.quality-unverified { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
-
-.finding-provenance-box {
-  background: var(--surface);
-  border-radius: 4px;
-  padding: 6px 8px;
-  font-size: 10.5px;
-}
-.snippet-quote {
-  font-style: italic;
-  color: var(--text-main);
-  margin-bottom: 4px;
-}
-.provenance-meta {
-  display: flex;
-  gap: 10px;
-  font-size: 9.5px;
-  color: var(--text-muted);
 }
 
 /* ==========================================================================
@@ -3326,4 +3238,19 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   .cp-segmented { flex-direction: column; }
   .cp-actions { flex-direction: column-reverse; }
   .cp-actions .btn { width: 100%; }
+}
+
+/* SEC-9: the explicit opt-in row for a key-bearing plain-http endpoint. */
+.cp-allow-http-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-secondary, inherit);
+}
+.cp-allow-http-row input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  flex: none;
 }

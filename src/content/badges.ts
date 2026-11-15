@@ -19,7 +19,7 @@ export function renderBadges(
 ): HTMLDivElement | null {
   removeBadges(null, doc);
 
-  if (!doc || !doc.body || !doc.createElement) return null;
+  if (!doc || !doc.documentElement || !doc.createElement) return null;
 
   const badgeContainer = doc.createElement('div') as HTMLDivElement;
   badgeContainer.id = 'tarka-badge-container';
@@ -31,7 +31,10 @@ export function renderBadges(
   badgeContainer.style.pointerEvents = 'none';
   badgeContainer.style.zIndex = '2147483647'; // Max z-index
 
-  doc.body.appendChild(badgeContainer);
+  // documentElement, not body: the badges are placed in page coordinates inside this absolute
+  // container, and a positioned body (position: relative is a common reset) would become the
+  // container's containing block and shift every badge by the body's own offset.
+  doc.documentElement.appendChild(badgeContainer);
 
   const compressor = win && (win as any).domCompressor ? (win as any).domCompressor : null;
   const scrollY = win ? win.scrollY : 0;

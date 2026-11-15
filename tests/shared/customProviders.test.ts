@@ -75,6 +75,45 @@ test('the display name defaults to the host when it is left empty', async () => 
   assert.equal(result.ok ? result.provider.displayName : '', 'gateway.example');
 });
 
+test('SEC-9: the plain-http opt-in lives on the descriptor, survives a read, and an edit without the tick drops it', async () => {
+  const saved = await saveCustomProvider({
+    id: 'optin-holder',
+    protocol: 'openai',
+    baseUrl: 'http://api.example.com/v1',
+    apiKey: 'sk-synthetic-key-123',
+    allowInsecureHttp: true,
+  });
+  assert.ok(saved.ok, saved.ok ? '' : saved.error);
+
+  // A read must carry the flag: the factory's call-time guard judges the descriptor it reads.
+  const read = (await Storage.getSettings()).customProviders?.['optin-holder'];
+  assert.equal(read?.allowInsecureHttp, true, 'sanitize keeps the opt-in, so a read does not wipe it');
+
+  // An edit saved without the tick is refused: a key-bearing public http endpoint needs the
+  // explicit opt-in on every save, and a refused save changes nothing.
+  const edited = await saveCustomProvider({
+    id: 'optin-holder',
+    protocol: 'openai',
+    baseUrl: 'http://api.example.com/v1',
+    apiKey: 'sk-synthetic-key-123',
+  });
+  assert.equal(edited.ok, false, 'a key-bearing public http endpoint needs the opt-in on every save');
+  const afterRefusal = (await Storage.getSettings()).customProviders?.['optin-holder'];
+  assert.equal(afterRefusal?.allowInsecureHttp, true, 'the refused edit left the stored opt-in standing');
+
+  // The dialog prefills the tick from the descriptor, so the normal edit path carries it.
+  const reticked = await saveCustomProvider({
+    id: 'optin-holder',
+    protocol: 'openai',
+    baseUrl: 'http://api.example.com/v1',
+    apiKey: 'sk-synthetic-key-123',
+    allowInsecureHttp: true,
+  });
+  assert.ok(reticked.ok, reticked.ok ? '' : reticked.error);
+  const after = (await Storage.getSettings()).customProviders?.['optin-holder'];
+  assert.equal(after?.allowInsecureHttp, true, 'an edit with the tick keeps the opt-in');
+});
+
 test('an unusable id, a reserved built-in id, a bad protocol and a bad URL are all refused with a named error', async () => {
   const refused = await saveCustomProvider({ ...VALID, id: 'Acme_Gateway' });
   assert.ok(!refused.ok);
@@ -122,6 +161,7 @@ test('delete removes the descriptor, the credentials and the model cache, and he
   await saveCustomProvider({ ...VALID, id: 'doomed', apiKey: 'sk-doomed', models: ['m1'] });
   const cacheKey = `doomed_https://gateway.example/v1_12ab34`;
   await Storage.saveCachedModels(cacheKey, ['m1']);
+  await Storage.saveCachedContextWindows('doomed', { m1: 131072 });
   await Storage.saveSettings({ provider: 'doomed', baseUrl: 'https://gateway.example/v1', model: 'm1' });
 
   const after = await Storage.deleteCustomProvider('doomed');
@@ -131,6 +171,7 @@ test('delete removes the descriptor, the credentials and the model cache, and he
   assert.equal(after.provider, 'ollama', 'the active selection falls back to the built-in default');
   const cache = await Storage.getCachedModels(cacheKey);
   assert.equal(cache, null, 'the stale model list of a gone endpoint is not served (null means no cache)');
+  assert.equal(await Storage.getCachedContextWindows('doomed'), null, 'the context windows its model list named are gone too');
 
   assert.equal(await Storage.deleteCustomProvider('doomed'), null, 'deleting a gone id says so');
 });

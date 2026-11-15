@@ -5,7 +5,7 @@
 // The loop is one awaited chain: startTask resolves when the run ends, so the runner's task
 // claim is held for the whole run. Every tool call and result is recorded into the runner's
 // history, which is what the side panel's timeline renders from (STATE_UPDATE broadcasts).
-import { TarkaMCPServer, type ImageContent } from './server.ts';
+import { TarkaMCPServer, finishTableOf, type ImageContent } from './server.ts';
 import { TARKA_TOOLS, offeredToolDefs, type ToolDef } from './tools.ts';
 import { coordinateSpaceOf, coordinateWords, pictureCaption, type CoordinateSpace } from '../llm/coordinates.ts';
 import { Storage } from '../../shared/storage.ts';
@@ -33,6 +33,7 @@ import {
 } from './historyEntries.ts';
 import { chainBlock, nextTurnNumber, restorableRecords } from './chatChain.ts';
 import { estimatePromptTokens, estimateTextTokens } from '../../shared/tokens.ts';
+import { redactSensitiveData } from '../browser/redact.ts';
 import type { ContentBlock } from '../llm/types.ts';
 import type { RunRuntime } from '../runner/runtimeRegistry.ts';
 import type { HistoryEntry, RunStatus } from '../types.ts';
@@ -69,11 +70,11 @@ export interface RunRecorder {
   readonly planSteps: Array<{ text: string; status: string }>;
   readonly autoApprovePlan: boolean;
   recordEntry(entry: HistoryEntry): void;
-  setRunStatus(status: RunStatus, pauseReason?: 'user' | 'llm_failure' | 'worker_restart' | null): void;
+  setRunStatus(status: RunStatus, pauseReason?: 'user' | null): void;
   setPlanSteps(steps: Array<{ text: string; status: string }>): void;
   setPendingApproval(value: any): void;
   /** Clears the manual-approve card and moves to the next status in one state broadcast. */
-  resolvePendingApproval(status: RunStatus, pauseReason?: 'user' | 'llm_failure' | 'worker_restart' | null): void;
+  resolvePendingApproval(status: RunStatus, pauseReason?: 'user' | null): void;
   /** Ends the run: a terminal status and its final row in one broadcast (AgentRunner.endRun). */
   endRun(status: 'idle' | 'stopped' | 'error', row: HistoryEntry | null): boolean;
   /** The tokens of the model call that just returned, for the context meter (AgentRunner.noteUsage). */
@@ -147,6 +148,12 @@ export const TEXT_ANSWER_TEXT = 'You answered in text, not with a tool. If the t
 export const FINISH_OUTCOME_TEXT = 'Error: finish needs an outcome. Use "done" if you did what the user asked, "partial" if you did only part of it or could not check your answer, or "blocked" if you could not do it. Call finish again with the same answer and the outcome.';
 
 /**
+ * The reply to a finish without an answer for the user: the card the user reads would be empty,
+ * so the model is asked again, the way a missing outcome is.
+ */
+export const FINISH_ANSWER_TEXT = 'Error: finish needs an answer for the user. Call finish again with the same outcome and the answer: what you found or did, written for a person to read.';
+
+/**
  * How long the loop waits before each retry of a passing provider failure (a 5xx, a 429, a dropped
  * connection). NVIDIA NIM answered 500 twice and then 429 within 8 s (2026-10-25), so the later
  * waits are long enough for a rate limit to pass.
@@ -195,16 +202,19 @@ export function isTransientProviderError(err: any): boolean {
   return err.name === 'TypeError' && /fetch|network/i.test(String(err.message || ''));
 }
 
-/** A message of the conversation, summarized for the log: role, size, the start of its text. */
-function messageSummary(message: Message): Record<string, unknown> {
+/** A message of the conversation, summarized for the log: role, size, the start of its text.
+ * The text goes through the redaction first (SEC-11): a page or a provider echo that carries a
+ * token or a key-value secret is redacted before the preview is kept or shown. */
+export function messageSummary(message: Message): Record<string, unknown> {
   const text = Array.isArray(message.content)
     ? message.content.filter((block) => block.type === 'text').map((block) => (block.type === 'text' ? block.text : '')).join('\n')
     : String(message.content ?? '');
   const pictures = Array.isArray(message.content) ? message.content.filter((block) => block.type === 'image_url').length : 0;
+  const redacted = redactSensitiveData(text.slice(0, 400)) as string;
   return {
     role: message.role,
     chars: text.length,
-    text: text.slice(0, 400),
+    text: redacted,
     ...(pictures ? { pictures } : {}),
     ...(message.tool_calls?.length ? { tool_calls: message.tool_calls.map((call) => call.function.name) } : {}),
     ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {})
@@ -621,7 +631,8 @@ ${p.autoApprovePlan ? '' : '   - MANUAL APPROVAL IS ON: call update_plan before 
    - Prefer element IDs. Use coordinates only for what you can see but cannot find by ID
 
 8. PROGRESS:
-   - Every action result ends with an "Observation:" line. Read it before the next step
+   - The result of click, type, press_key and scroll ends with an "Observation:" line. Read it
+     before the next step
    - Never repeat an action whose Observation showed no change: choose another tool or approach
    - For code editors and text areas use the keyboard: click inside once, press_key select_all,
      then type without element_id; press_key runs keys like Shift+Enter
@@ -711,8 +722,6 @@ export class TarkaMCPClient {
   private restoredFrom: number | null = null;
   /** The step keys of the results the last request shortened (compactToolResults). */
   private compactedKeys = new Set<string>();
-  /** Why the next round offers only finish: the step limit, or a second stall in a row. */
-  private finishOnly: 'limit' | 'stall' | null = null;
   /** True once a second stall in a row asked for the finish-only round. */
   private stalledOut = false;
   /** True once a plain-text reply of this run was asked to become a finish (TEXT_ANSWER_TEXT). */
@@ -761,7 +770,6 @@ export class TarkaMCPClient {
     this.restoredFrom = restored ? restored.turn : null;
     if (restored) this.runner.noteRunData?.({ records: this.records });
     this.compactedKeys.clear();
-    this.finishOnly = null;
     this.stalledOut = false;
     this.textNudged = false;
 
@@ -834,6 +842,9 @@ export class TarkaMCPClient {
 
     // The turn is one higher than the highest turn of the chat, so a follow-up task in the same tab
     // starts its own turn in the timeline, even when the kept history lost its oldest turns.
+    // A Stop that landed while the turn was being set up already closed the run (the runner
+    // broadcast the stopped state with its partial row): no user_goal row may follow it.
+    if (!this.isRunning) return;
     const turn = nextTurnNumber(this.runner.history);
     this.runner.recordEntry(userGoalEntry(turn, userPrompt));
   }
@@ -878,7 +889,6 @@ export class TarkaMCPClient {
         // A run that stalled twice in a row (progress.ts) gets the same last round, with its own words.
         const finishOnly = this.step >= maxSteps ? 'limit' : this.stalledOut ? 'stall' : null;
         const atLimit = finishOnly !== null;
-        this.finishOnly = finishOnly;
         this.atStepLimit = atLimit;
         if (finishOnly === 'limit') this.messageHistory.push({ role: 'user', content: STEP_LIMIT_TEXT(maxSteps) });
         if (finishOnly === 'stall') {
@@ -1169,6 +1179,16 @@ export class TarkaMCPClient {
         return { done: false, content: FINISH_OUTCOME_TEXT };
       }
     }
+    // A finish must carry the answer the user reads: an empty one would end the run with an
+    // empty card. Asked again like a missing outcome, and in the last round the run still ends.
+    if (name === 'finish' && !(typeof args.answer === 'string' && args.answer.trim())) {
+      if (this.atStepLimit) {
+        args.answer = 'The run ended without an answer.';
+      } else {
+        logStep(false, FINISH_ANSWER_TEXT);
+        return { done: false, content: FINISH_ANSWER_TEXT };
+      }
+    }
     // The files of a finish are checked before the run ends: a file the user cannot open is asked
     // again, like a missing outcome. In the last round there is no next one, so the bad file is
     // left out and the answer says so.
@@ -1183,6 +1203,23 @@ export class TarkaMCPClient {
         args.answer = `${String(args.answer || '')}\n\n(The file could not be made: ${built.replace(/^Error:\s*/, '')})`;
       } else {
         files = built;
+      }
+    }
+    // The table of a finish is checked like the files (CONTRACT-TABLE): the panel renders it as a
+    // real table, so a malformed one is asked again, and in the last round it is left out so the
+    // run still ends with the answer.
+    let table: { columns: string[]; rows: string[][] } | undefined;
+    if (name === 'finish') {
+      const checked = finishTableOf(args.table);
+      if (typeof checked === 'string') {
+        if (!this.atStepLimit) {
+          logStep(false, checked);
+          return { done: false, content: checked };
+        }
+        args.answer = `${String(args.answer || '')}\n\n(The table was left out: it did not have the shape { columns, rows } of strings.)`;
+        delete args.table;
+      } else if (checked) {
+        table = checked;
       }
     }
 
@@ -1243,8 +1280,8 @@ export class TarkaMCPClient {
     if (result.image) this.sawPicture = true;
 
     if (resultText.startsWith('TASK_COMPLETE:')) {
-      await this.onTaskComplete(resultText.slice('TASK_COMPLETE:'.length).trim(), result.table, result.outcome, files);
-      return { done: true, content: resultText, image: result.image, table: result.table };
+      await this.onTaskComplete(resultText.slice('TASK_COMPLETE:'.length).trim(), table, result.outcome, files);
+      return { done: true, content: resultText, image: result.image, table };
     }
     // A step that repeats one that changed nothing gets a short hint at the end of its result,
     // and enough such steps ask the model once to reflect (runLoop adds that note). The same record

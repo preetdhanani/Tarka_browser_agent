@@ -15,7 +15,7 @@ import {
   withTypedToolCalls
 } from '../../src/background/llm/index.ts';
 import { toolArguments } from '../../src/background/mcp/client.ts';
-import { spyFetch, waitForRequests } from '../helpers/llmWire.ts';
+import { jsonResponse, spyFetch, waitForRequests } from '../helpers/llmWire.ts';
 
 const TOOLS = [{ name: 'navigate', description: 'Go to a URL', inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } }];
 
@@ -143,4 +143,57 @@ test('the per-provider timeout applies to tool calls (NVIDIA waits longer than t
   const call = callProviderWithTools('openai', { provider: 'openai', apiKey: 'sk-test', model: 'm', providerConfigs: { openai: { llmTimeoutMs: 30 } } }, [{ role: 'user', content: 'go' }], '', { tools: TOOLS });
   await waitForRequests(sent, 1);
   await assert.rejects(call, /30|timed out|timeout/i, 'the 30 ms provider timeout ended the call');
+});
+
+// -------------------------------------------------------------------------------------------
+// The tool path reports a provider failure in the same curated words the chat path uses
+// (W2-L4), and checks a missing key before anything is dispatched.
+// -------------------------------------------------------------------------------------------
+
+test('the Ollama tool path words a 404 like the chat path: a model to pull', async (t) => {
+  spyFetch(t, () => new Response('model not found', { status: 404 }));
+  const error = await callProviderWithTools('ollama', { provider: 'ollama', model: 'qwen3:8b', baseUrl: 'http://localhost:11434' }, [{ role: 'user', content: 'go' }], '', { tools: TOOLS }).then(() => null, (e: Error) => e);
+  assert.ok(error);
+  assert.match(error.message, /Model "qwen3:8b" not found in Ollama\. Please run "ollama pull qwen3:8b" in terminal\./);
+});
+
+test('the OpenRouter tool path words a 401 like the chat path: the authentication error', async (t) => {
+  spyFetch(t, () => jsonResponse({ error: { message: 'No auth credentials found' } }, 401));
+  const error = await callProviderWithTools('openrouter', { provider: 'openrouter', apiKey: 'sk-or-test', model: 'x/y' }, [{ role: 'user', content: 'go' }], '', { tools: TOOLS }).then(() => null, (e: Error) => e);
+  assert.ok(error);
+  assert.match(error.message, /^OpenRouter API connection error: OpenRouter API Authentication Error \(401\): Invalid or missing API key/);
+});
+
+test('a provider that needs a key fails before dispatch on the tool path, with today\'s text', async (t) => {
+  const sent = spyFetch(t, () => openaiReply({ content: 'ok' }));
+  for (const [provider, settings] of [
+    ['openrouter', { provider: 'openrouter', model: 'x/y' }],
+    ['anthropic', { provider: 'anthropic', model: 'claude-3-5-sonnet-20241022' }],
+    ['nvidia', { provider: 'nvidia', model: 'meta/llama-3.3-70b-instruct' }]
+  ] as Array<[string, Record<string, unknown>]>) {
+    const error = await callProviderWithTools(provider, settings as any, [{ role: 'user', content: 'go' }], '', { tools: TOOLS }).then(() => null, (e: Error) => e);
+    assert.match(error!.message, /API Key is missing/, provider);
+  }
+  assert.equal(sent.length, 0, 'no request was made for a missing key');
+});
+
+test('the AgentRouter tool path words a 401 like its own chat path', async (t) => {
+  spyFetch(t, () => jsonResponse({ error: { message: 'unauthorized_client_error' } }, 401));
+  const error = await callProviderWithTools('agent_router', { provider: 'agent_router', apiKey: 'sk-ar-test', model: 'claude-3-5-sonnet' }, [{ role: 'user', content: 'go' }], '', { tools: TOOLS }).then(() => null, (e: Error) => e);
+  assert.ok(error);
+  assert.match(error.message, /^AgentRouter API connection error: AgentRouter API Error \(401\)/);
+});
+
+test('the Ollama tool path honors ollamaNumPredict like the chat path does', async (t) => {
+  const sent = spyFetch(t, (request) => (request.url.endsWith('/api/show')
+    ? jsonResponse({ capabilities: ['completion', 'tools'] })
+    : jsonResponse({ message: { role: 'assistant', content: 'ok' }, done: true })));
+  const settings = { provider: 'ollama', model: 'qwen3:8b', baseUrl: 'http://localhost:11434', ollamaNumCtx: 8192, ollamaNumPredict: 2048 };
+  await callProviderWithTools('ollama', settings as any, [{ role: 'user', content: 'go' }], '', { tools: TOOLS });
+  const chat = () => sent.filter((r) => r.url.endsWith('/api/chat')).at(-1)!.body as any;
+  assert.equal(chat().options.num_predict, 2048, 'the generation cap of Settings rides along on the tool path');
+
+  sent.length = 0;
+  await callProviderWithTools('ollama', { provider: 'ollama', model: 'qwen3:8b', baseUrl: 'http://localhost:11434' } as any, [{ role: 'user', content: 'go' }], '', { tools: TOOLS });
+  assert.equal('num_predict' in chat().options, false, 'no cap stored, no field sent');
 });

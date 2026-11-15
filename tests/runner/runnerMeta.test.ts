@@ -20,8 +20,7 @@ import assert from 'node:assert/strict';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { SessionRunnerMeta } from '../../src/background/runner/runnerMeta.ts';
-import type { StorageSessionArea } from '../../src/background/runner/actionJournal.ts';
-import type { RunnerMeta } from '../../src/background/runner/runnerMeta.ts';
+import type { StorageSessionArea, RunnerMeta } from '../../src/background/runner/runnerMeta.ts';
 
 /** An area that remembers what it was given, so a test can look at the stored shape. */
 function fakeArea(): StorageSessionArea & { data: Record<string, unknown>; writes: number } {
@@ -47,7 +46,6 @@ function meta(stateVersion: number, groupId: number): RunnerMeta {
     stateVersion,
     tarkaGroupIds: [[1, groupId]],
     aliases: [],
-    attachedTabIds: [],
     pauseDetach: null,
     lastBeatAt: 0
   };
