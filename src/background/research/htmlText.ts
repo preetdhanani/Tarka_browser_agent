@@ -58,7 +58,7 @@ export function decodeEntities(text: string): string {
  * typographic spaces a space, the same as decodeEntities does for their named references.
  */
 function plainChars(text: string): string {
-  return text.replace(/[­​-‍⁠﻿]/g, '').replace(/[–—−]/g, '-').replace(/[   ]/g, ' ');
+  return text.replace(/[­​-‍⁠﻿]/g, '').replace(/[–\u2014−]/g, '-').replace(/[   ]/g, ' ');
 }
 
 // Marks that survive the whitespace collapse: a block break, a table cell, a line break inside <pre>.

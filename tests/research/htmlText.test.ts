@@ -94,6 +94,7 @@ test('pinned layout: foster-parented table text, the first newline of <pre>, <te
 test('invisible characters go, dashes become "-" and typographic spaces a space, written or referenced', () => {
   assert.equal(htmlToText('<p>Eiffel­Tower Eif&shy;fel a​b x&zwj;y</p>'), 'EiffelTower Eiffel ab xy');
   assert.equal(htmlToText('<p>1889–1890 &mdash; − 5 a b</p>'), '1889-1890 - - 5 a b');
+  assert.equal(htmlToText(String.fromCharCode(0x2014)), '-');
 });
 
 test('readHtml gives the title and the text from one parse; an SVG <title> is not the page title', () => {
