@@ -1,43 +1,78 @@
+/**
+ * llm/types.ts - the shapes that cross the boundary of the llm layer.
+ *
+ * Callers (the old engine today, the graph's LlmPort later) hand in plain settings and plain
+ * { role, content } turns and get a string back. Nothing LangChain-shaped leaks out of llm/.
+ */
 import type { CustomProviders } from '../../shared/storage.ts';
 
+/** One turn as the engine keeps it. Only 'user' and 'assistant' occur; anything else is read as 'user'. */
 export interface ChatTurn {
   role: string;
   content: string;
 }
 
+/**
+ * One block of a message that carries a picture.
+ *
+ * This is the WIRE shape, the one OpenAI-compatible servers accept in a `role:'user'` message.
+ * Ollama has a different shape (a plain `content` string plus a sibling `images` array), and the
+ * one conversion between the two lives in llm/index.ts, so no provider re-derives it.
+ *
+ * Only a `role:'user'` message may carry one. The OpenAI type for a `role:'tool'` message is
+ * `content: string | Array<ChatCompletionContentPartText>` - text only - and Ollama's converter
+ * builds `images` only for a user message. A picture in a tool message is dropped or rejected.
+ */
 export type ContentBlock =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string } };
 
+/** What a provider needs from the settings. The stored `Settings` fits, and so does a partial test object. */
 export interface LlmSettings {
   provider?: string;
   baseUrl?: string;
   apiKey?: string;
   model?: string;
   providerConfigs?: Record<string, { baseUrl?: string; apiKey?: string; model?: string; llmTimeoutMs?: number } | undefined>;
+  /** User-added third-party providers, keyed by id. A provider id outside this map and the built-in set is unsupported. */
   customProviders?: CustomProviders;
+  /** Per-provider per-model context window override, keyed by "provider|model" (see storage.ts). */
   contextWindow?: Record<string, number>;
   temperature?: number;
   llmTimeoutMs?: number;
+  /** Anthropic and AgentRouter max_tokens. No settings screen sets it, so it is 8192 unless someone stored a value. */
   maxTokens?: number;
+  /** Ollama only: the context window (num_ctx). Ollama's own default is 4096, so Tarka always sends one (8192). */
   ollamaNumCtx?: number;
+  /** Ollama only: the generation cap (num_predict). Not sent when it is missing or not above 0. */
   ollamaNumPredict?: number;
 }
 
 export interface CompletionOptions {
+  /** The task's abort signal (Pause and Stop). Null or absent: the call only has its own deadline. */
   signal?: AbortSignal | null;
+  /** The caller wants JSON. Only Ollama acts on it (format "json"); the cloud providers get no format field. */
   json?: boolean;
+  /** JSON schema for constrained decoding. Only Ollama acts on it (format: the schema); the cloud providers get nothing. */
   schema?: object | null;
+  /** Gemini only: the thinkingConfig of the request (llm/effort.ts). The other providers get nothing from it. */
   thinkingConfig?: { thinkingBudget?: number; thinkingLevel?: 'LOW' | 'MEDIUM' | 'HIGH' };
+  /** Optional callbacks, for compatibility with callers. */
   callbacks?: unknown;
+  /** Called with the token usage of the call when the provider reports one (LangChain's usage_metadata). */
   onUsage?: (usage: TokenUsage) => void;
 }
 
+/** The tokens one model call used, as the provider reported them. */
 export interface TokenUsage {
   promptTokens: number;
   outputTokens: number;
 }
 
+/**
+ * The providers that are one plain chat-model call (factory.ts). `ollama` (ollama.ts) and `agent_router`
+ * (agentRouter.ts) have their own modules, because each has its own fallbacks and error rules.
+ */
 export type ChatProvider = 'openrouter' | 'openai' | 'openai_compatible' | 'anthropic' | 'gemini' | 'nvidia';
 
 export function isChatProvider(provider: string): provider is ChatProvider {

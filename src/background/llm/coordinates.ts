@@ -1,11 +1,28 @@
+// src/background/llm/coordinates.ts
+// The scale a model points with when it clicks on a picture.
+//
+// Vision models do not agree on what a click coordinate means. Claude and GPT answer in pixels of
+// the picture they were given. NVIDIA's Nemotron VL, Qwen3-VL and Gemini were trained to point on
+// a 0-1000 scale of the picture, whatever its size, and they keep doing it when a prompt asks for
+// pixels. Measured with Nemotron 3.5 Super VL on a 1372x858 picture: asked for pixels, it answered
+// (950, 965) for a button at (1307, 827), which is 950/1000 and 965/1000 of the picture. Read as
+// pixels that click lands 360 px left of the button; read on its own scale it is on the button.
+// The same model also answers 0-1 fractions (0.9577, 0.9441) now and then, for the same point.
+//
+// So the scale is a property of the model, the tool text asks for the scale the model already
+// uses, and the reading below accepts the fraction form too. Everything after this module works in
+// picture pixels, so the frame check and the mapping to the viewport stay as they are.
 
 import { providerOf } from './settings.ts';
 import type { LlmSettings } from './types.ts';
 
+/** 'pixels': x and y are pixels of the picture. 'per-mille': x and y are 0-1000 of its width and height. */
 export type CoordinateSpace = 'pixels' | 'per-mille';
 
+/** How a coordinate was read, for the tool result and the log. */
 export type CoordinateReading = 'pixels' | 'per-mille' | 'fraction';
 
+/** The model names that point on a 0-1000 scale. */
 const PER_MILLE_MODELS: RegExp[] = [
   /nemotron[^/]*(?:-vl|vision)/i,
   /qwen3[-.]?vl/i,
@@ -13,6 +30,7 @@ const PER_MILLE_MODELS: RegExp[] = [
   /glm-4\.\dv/i
 ];
 
+/** The scale the configured model points with. Gemini as a provider is always per-mille. */
 export function coordinateSpaceOf(settings: Partial<LlmSettings> | null | undefined): CoordinateSpace {
   if (!settings) return 'pixels';
   if (providerOf(settings as LlmSettings) === 'gemini') return 'per-mille';
@@ -20,6 +38,12 @@ export function coordinateSpaceOf(settings: Partial<LlmSettings> | null | undefi
   return PER_MILLE_MODELS.some((re) => re.test(model)) ? 'per-mille' : 'pixels';
 }
 
+/**
+ * A model's coordinate as a pixel of the picture.
+ *
+ * Both values in [0, 1] with at least one not a whole number is a fraction of the picture, in
+ * either space: no model means "the pixel at (0.95, 0.94)". Otherwise the space decides.
+ */
 export function toPicturePixels(
   space: CoordinateSpace,
   x: number,
@@ -32,6 +56,7 @@ export function toPicturePixels(
   return { x, y, reading: 'pixels' };
 }
 
+/** How the model is told to give a coordinate, in the click tool and the prompt. */
 export function coordinateWords(space: CoordinateSpace): { x: string; y: string; rule: string; example: string } {
   if (space === 'per-mille') {
     return {
@@ -49,6 +74,7 @@ export function coordinateWords(space: CoordinateSpace): { x: string; y: string;
   };
 }
 
+/** The text that goes with a picture: its size, and how a coordinate on it is given. */
 export function pictureCaption(space: CoordinateSpace, width: number, height: number): string {
   return space === 'per-mille'
     ? `Here is the picture of the page (${width}x${height}). To click on it, give x and y on a 0-1000 scale of the picture.`

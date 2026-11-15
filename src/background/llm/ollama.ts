@@ -1,3 +1,11 @@
+/**
+ * llm/ollama.ts - Ollama through native HTTP fetch, one call per request.
+ *
+ * Local models need considerably more scaffolding than hosted ones:
+ *   think:false  - suppresses native thinking on reasoning models (we prompt our own thinking).
+ *   num_ctx      - uses effective context window to prevent silent truncation.
+ *   format       - constrains decoding at the sampler (JSON or schema).
+ */
 import { Logger } from '../../shared/logger.ts';
 import { ProviderError, classifyProviderFailure, describeOllamaFailure, statusOf } from './errors.ts';
 import { baseUrlOf, modelOf } from './settings.ts';
@@ -30,6 +38,7 @@ function isForeignLine(line: string): boolean {
   }
 }
 
+/** A short stand-in for a body that is not a chat reply, for the error the catch below words. */
 function excerptOf(text: string): string {
   const trimmed = text.trim();
   return trimmed.length > 200 ? `${trimmed.slice(0, 200)} ...` : trimmed;
@@ -132,6 +141,9 @@ export async function callOllama(
       const firstLine = text.slice(0, FIRST_LINE_LIMIT).split('\n')[0].trim();
       if (isForeignLine(firstLine)) foreignLine = firstLine;
 
+      // Ollama streaming or non-streaming lines: parse the response. An {"error": ...} in the
+      // reply and a reply of no chat lines at all fail the call here, so the catch below words
+      // them; only a genuine JSON.parse failure is re-worded as "Failed to parse Ollama reply".
       if (text.includes('\n')) {
         const lines = text.trim().split('\n');
         let joinedContent = '';
@@ -147,11 +159,15 @@ export async function callOllama(
           }
           parsedAny = true;
           lastData = parsed;
+          // An {"error": "..."} line in the stream (a runner that died mid-answer) fails the
+          // call: `new Error(line.error)`, the plain Error the failure text below words.
           if (typeof parsed?.error === 'string' && parsed.error) throw new Error(parsed.error);
           if (parsed.message?.content) joinedContent += parsed.message.content;
           if (parsed.message?.thinking) joinedThinking += parsed.message.thinking;
         }
         if (!parsedAny) {
+          // No line of the reply parsed: this is not Ollama (a proxy's error page), not an empty
+          // answer. The foreign-reply wording below needs the line it quotes.
           foreignLine = foreignLine ?? firstLine;
           throw new Error(`Failed to parse Ollama reply: ${excerptOf(text)}`);
         }
@@ -170,6 +186,7 @@ export async function callOllama(
         } catch (parseError) {
           throw new Error(`Failed to parse Ollama reply: ${parseError}`);
         }
+        // A 200 that carries Ollama's error object fails here, like the streamed one does.
         if (typeof data?.error === 'string' && data.error) throw new Error(data.error);
       }
       break;

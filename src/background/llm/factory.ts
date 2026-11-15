@@ -1,3 +1,16 @@
+/**
+ * llm/factory.ts - native HTTP provider calls for providers that talk to a plain HTTP API.
+ *
+ * A model call object is built for every request and dropped after it: nothing about a call (its key,
+ * its base URL, its abort signal) can leak into the next one, and settings are read again each time.
+ *
+ * Rules for every provider call:
+ *   - No external SDKs (LangChain packages removed): all requests are direct, native fetch calls.
+ *   - Temperature is settings.temperature ?? 0.1.
+ *   - Stream false by default (Gemini streams SSE for proper abortability).
+ *   - The caller's abort signal and deadline are directly passed to fetch.
+ *   - Wire formats, headers, and error contexts match what the tests and remote endpoints expect.
+ */
 import { GEMINI_EMPTY_TEXT, UnreadableReplyError, scrubKey, statusOf } from './errors.ts';
 import { Logger } from '../../shared/logger.ts';
 import {
@@ -22,6 +35,7 @@ const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const OPENROUTER_HEADERS = { 'HTTP-Referer': 'https://github.com/preetdhanani/Tarka_browser_agent', 'X-Title': 'Tarka AI Agent' };
 
 
+/** Lightweight message classes for backwards compatibility with tests and callers. */
 export class SystemMessage {
   readonly role = 'system';
   content: string;
@@ -60,6 +74,7 @@ export class AIMessage {
 
 export type BaseMessage = (SystemMessage | HumanMessage | AIMessage) & { text: string; usage?: TokenUsage };
 
+/** Turns as chat messages: system prompt first, then turns. */
 export function toLangChainMessages(turns: ChatTurn[], systemPrompt: string): BaseMessage[] {
   return [
     new SystemMessage(systemPrompt),
@@ -486,6 +501,8 @@ function geminiCall(settings: LlmSettings, apiKey: string, thinkingConfig?: Comp
           try {
             const chunk = JSON.parse(jsonStr);
             const candidate = chunk.candidates?.[0];
+            // Every text part of the candidate is joined: Gemini splits one answer across parts
+            // (a part per segment), and only the first left the rest on the floor.
             for (const part of candidate?.content?.parts ?? []) {
               if (typeof part?.text === 'string' && part.text) fullText += part.text;
             }
@@ -528,11 +545,21 @@ export function createProviderCall(provider: ChatProvider, settings: LlmSettings
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Custom providers (user-added endpoints)
+// ---------------------------------------------------------------------------------------------
 
 const CUSTOM_LOG_TAG = 'CustomClient';
 const HTTP_NOTE_LOGGED = new Set<string>();
 const ENDPOINT_STRATEGY_LOG = new Map<string, 'chat/completions' | 'responses'>();
 
+/**
+ * SEC-9, at call time: a key over plain http to a host that is not the user's own machine is
+ * refused before any request, so a provider saved before the rule cannot quietly keep sending it
+ * in cleartext. The opt-in is the descriptor's own `allowInsecureHttp`, so it covers this server
+ * and no other. Both call paths run it - the completion call here, and the tool loop's own
+ * request building in index.ts - so the two cannot drift apart.
+ */
 export function assertSecureCustomTransport(descriptor: CustomProvider, apiKey: string): void {
   const origin = endpointOriginOf(descriptor.baseUrl);
   if (!origin || !origin.startsWith('http:')) return;
@@ -609,6 +636,8 @@ function customOpenaiCall(descriptor: CustomProvider, settings: LlmSettings, api
             text = parsed.output?.[0]?.content?.[0]?.text || '';
           } catch {}
         }
+        // The usage the server reported rides on the reply, so the context meter reads real
+        // numbers for a custom model as it does for a built-in.
         const usage = usageOfOpenAI(data);
         return new AIMessage(text, usage ? { usage } : undefined);
       };
