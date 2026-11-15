@@ -1,17 +1,3 @@
-/**
- * llm/agentRouter.ts - AgentRouter (https://agentrouter.org): two endpoints, tried in turn, joined by hand.
- *
- * AgentRouter fronts several model families and only lets requests through that look like the Claude CLI, so every
- * request carries the CLI's wire image (agentRouterHeaders in models.ts). It is called in two steps:
- *
- *   1. /v1/messages (the Anthropic format).
- *   2. /v1/chat/completions (the OpenAI format), when step 1 failed in a way another endpoint might not,
- *      or answered 200 with no text.
- *
- * What ends the call without step 2:
- *   A 401 or a body that says unauthorized_client_error (the key is refused), an aborted signal, and a network
- *   error (the server is not there). Any other HTTP error, and a 200 with no text, go on to step 2.
- */
 import { Logger } from '../../shared/logger.ts';
 import {
   ProviderError,
@@ -67,7 +53,6 @@ export async function callAgentRouter(
     });
   };
 
-  // Attempt 1: the Anthropic Messages endpoint (<base>/messages)
   const messagesUrl = `${baseUrl.replace(/\/v1$/, '')}/v1/messages`;
   const messagesBody = {
     model,
@@ -124,7 +109,7 @@ export async function callAgentRouter(
     }
   } catch (error: any) {
     if (signal?.aborted) return fail(String((signal.reason as any)?.message || signal.reason || 'aborted'), error);
-    // If network error (fetch threw TypeError or nobody answered)
+
     const status = statusOf(error);
     if (status === undefined) {
       return fail(describeAgentRouterFailure(error, { apiKey }), error);
@@ -135,7 +120,6 @@ export async function callAgentRouter(
     Logger.warn('AgentRouterClient', '[NETWORK] Messages endpoint failed, trying the chat completions endpoint', describeAgentRouterFailure(error, { rawBody, apiKey }));
   }
 
-  // Attempt 2: the Chat Completions endpoint (<base>/chat/completions)
   const completionsUrl = `${baseUrl}/chat/completions`;
   const completionsBody = {
     model,
