@@ -1,6 +1,5 @@
-// src/background/runner/AgentRunner.ts
-// Runner that drives the Tarka MCP tool loop (replaces LangGraph).
-// Single runner per tab. Client calls LLM with tools, server executes in browser.
+
+
 import { Storage, type SavedSession, type Settings } from '../../shared/storage.ts';
 import { Logger } from '../../shared/logger.ts';
 import { BUILD_STAMP } from '../../shared/build.ts';
@@ -24,17 +23,7 @@ import { CHARS_PER_TOKEN } from '../../shared/tokens.ts';
 import type { ActionConfirmationRequest } from './runtimeRegistry.ts';
 import type { RunStatus, HistoryEntry, Limits, EffortChoice, EffortProfile, RunStats, Level } from '../types.ts';
 
-/**
- * What the context meter of the panel shows (getState().context):
- *   used           tokens: during a run the prompt of the last model call; between runs an estimate
- *                  of what the next request starts with (system prompt, tool definitions, the chain);
- *                  0 for an empty chat
- *   window         the model's context window, and windowSource where that number comes from
- *   estimated      `used` is an estimate (between runs, or a provider that reported no usage)
- *   summarizedTurns  how many turns the last Compact summarized (0: never compacted)
- *   hasEarlierTurn whether a Compact has anything to summarize
- *   compacting     a Compact is in flight
- */
+
 export interface ContextState {
   used: number;
   window: number;
@@ -45,18 +34,14 @@ export interface ContextState {
   compacting: boolean;
 }
 
-/** The answer of compactChat. */
+
 export interface CompactResult {
   success: boolean;
   error?: string;
   summary?: string;
 }
 
-/**
- * The steps of the current turn: the agent_response rows after the LAST user_goal row. Counting
- * the whole history would resurrect the earlier turns' steps into every later turn's counter
- * (W2-R2): a follow-up task in the same chat would start at the previous turn's count.
- */
+
 function stepCountOf(history: HistoryEntry[]): number {
   let count = 0;
   for (let i = history.length - 1; i >= 0; i--) {
@@ -90,35 +75,32 @@ export class AgentRunner {
   public effortProfile: EffortProfile | null = null;
   public runStats: RunStats | null = null;
 
-  /** The context window of the chosen model, resolved by refreshContext (never per call). */
+
   public contextWindow: ContextWindow = { tokens: DEFAULT_CONTEXT_WINDOW, source: 'default' };
-  /** The tokens of the system prompt and the tool definitions, estimated: what every request starts with. */
+
   private contextBase = 0;
-  /** The tokens of the last model call of the current task, or null before its first call. */
+
   private lastCall: CallUsage | null = null;
-  /** True while a Compact is in flight (the panel's card says so and keeps the button off). */
+
   private compacting = false;
-  /** Goes up on New chat: a Compact that started in the old chat must not land in the new one. */
+
   private chatGeneration = 0;
-  /** Cancels the Compact a task start runs (auto-compact) when the user stops the task. */
+
   private compactAbort: AbortController | null = null;
-  /** Orders the refreshes of the window: only the newest one is kept. */
+
   private contextRefreshes = 0;
 
-  /**
-   * The chat this thread is: its Recent tasks entry. New chat makes a new one, LOAD_CHAT takes a
-   * saved one, and every save goes to it, so a reopened and resumed chat stays one entry.
-   */
+
   public chatId: string = AgentRunner.newChatId();
-  /** The chat's title in Recent tasks: the goal of its first turn. */
+
   private chatTitle = '';
-  /** The provider and model of the chat's last run, for its Recent tasks line. */
+
   private runModel: { provider: string; model: string } | null = null;
-  /** The save_data records of the run that is going (the client mirrors them, noteRunData). */
+
   private runRecords: Array<Record<string, unknown>> = [];
-  /** The page the run that is going was on last (noteRunData). */
+
   private runPageUrl = '';
-  /** Writes the chat into Recent tasks: throttled while a run goes, at once when it rests. */
+
   private chatSaver = new ChatSaver();
 
   public tarkaGroupIds = new Map<number, number>();
@@ -127,26 +109,23 @@ export class AgentRunner {
   private taskClaimed = false;
   private stopDuringClaim = false;
   private pauseDuringClaim = false;
-  // A Pause that landed while a confirmation card was up: it takes effect when the card is
-  // answered, so the run does not carry on after a pause the user asked for.
+
+
   private pauseAfterConfirm = false;
-  /** The open confirmation holds, by the card id each was published with (SEC-2). */
+
   private confirmResolvers = new Map<string, (approved: boolean) => void>();
-  /**
-   * CONTRACT-REMEMBER: the origins the user approved with "remember for this run" ticked. The
-   * confirmation gate raises no further card for them until the run (or the chat) ends. Cleared
-   * in startTask, clearHistory and loadChat, so a trust never outlives the run it was given in.
-   */
+
+
   private approvedOrigins = new Set<string>();
   private _activeTabId: number | null = null;
   private onStateChangeCb: ((state: Record<string, any>) => void) | null = null;
 
   private meta: SessionRunnerMeta;
-  /** The panel-visible run, kept across worker restarts (see runSnapshot.ts). */
+
   private snapshots: RunSnapshotStore;
   private runtime: RunRuntime;
 
-  // MCP Client (replaces graph engine)
+
   private mcpClient: TarkaMCPClient | null = null;
 
   constructor(ownerTabId: number, windowId: number | 'default' = 'default') {
@@ -174,13 +153,7 @@ export class AgentRunner {
     return this._activeTabId;
   }
 
-  /**
-   * The picture a run took, by id, for the panel's thumbnail.
-   *
-   * The bytes live in the MCP server's per-session registry and never in a history row, so this
-   * is the one way back to them. Null when the run is over or the picture was dropped: the panel
-   * then says the picture is no longer kept, which is what is true.
-   */
+
   getScreenshot(imageId: string): Promise<{ data: string; mediaType: string } | null> {
     return this.mcpClient ? this.mcpClient.getScreenshot(imageId) : Promise.resolve(null);
   }
@@ -354,14 +327,7 @@ export class AgentRunner {
     return runtime;
   }
 
-  // -----------------------------------------------------------------------
-  // Public API
-  // -----------------------------------------------------------------------
 
-  /**
-   * One row for the side panel's timeline, written by the MCP client. Pushes the entry, keeps
-   * stepCount in step with the action rows, and broadcasts the state so the panel streams live.
-   */
   recordEntry(entry: HistoryEntry): void {
     this.dirty = true;
     this.history.push(entry);
@@ -369,7 +335,7 @@ export class AgentRunner {
     this.notifyStateChange();
   }
 
-  /** The run's status as the panel sees it ('idle' and 'error' are terminal; 'paused' carries its reason). */
+
   setRunStatus(status: RunStatus, pauseReason: 'user' | null = null): void {
     this.dirty = true;
     this.status = status;
@@ -378,34 +344,27 @@ export class AgentRunner {
     void this.detachIfDone();
   }
 
-  /**
-   * What the run has collected, mirrored by the client after each step: the save_data records and
-   * the page it is on. Kept in the snapshot and in the saved chat, and written onto the turn's
-   * closing row when the run ends (withRunData), so a reopened chat can go on from them.
-   */
+
   noteRunData(data: { records?: Array<Record<string, unknown>>; pageUrl?: string }): void {
     if (Array.isArray(data.records)) this.runRecords = data.records.slice();
     if (typeof data.pageUrl === 'string' && data.pageUrl) this.runPageUrl = data.pageUrl;
   }
 
-  /** The plan checklist of the current run (update_plan), replacing any previous one. */
+
   setPlanSteps(steps: Array<{ text: string; status: string }>): void {
     this.dirty = true;
     this.planSteps = steps;
     this.notifyStateChange();
   }
 
-  /** The plan waiting for the user's approval in manual mode, or null once it is decided. */
+
   setPendingApproval(value: any): void {
     this.dirty = true;
     this.pendingApproval = value;
     this.notifyStateChange();
   }
 
-  /**
-   * Ends the manual-approve hold. The card and the status change in one broadcast: clearing the
-   * card while still "paused" would flash a Resume button with nothing to resume.
-   */
+
   resolvePendingApproval(status: RunStatus, pauseReason: 'user' | null = null): void {
     this.dirty = true;
     this.pendingApproval = null;
@@ -426,11 +385,7 @@ export class AgentRunner {
     return { success: true };
   }
 
-  /**
-   * Releases the task claim. stopDuringClaim is deliberately NOT cleared here: a Stop that lands
-   * after startTask's own stop check (during the settings read, W2-R5) must still be visible to
-   * the re-check that follows. claimForTask resets it at the start of the next claim.
-   */
+
   releaseTaskClaim() {
     this.taskClaimed = false;
     this.pauseDuringClaim = false;
@@ -442,23 +397,19 @@ export class AgentRunner {
       return { success: false, error: 'Cannot start empty prompt.' };
     }
 
-    // Everything after the claim is inside the try, so a failure anywhere (restore, the tab
-    // group) still releases it: a claim left behind locks the tab out of every later task.
+
     try {
       await this.restorePromise;
       this.dirty = true;
       this.activeTabId = tabId;
       this.currentTask = userPrompt.trim();
-      // A chat is named after its first goal; a later turn (a follow-up, a resume) keeps that name.
+
       if (!this.chatTitle || !this.history.some((row) => row.type === 'user_goal')) this.chatTitle = this.currentTask;
       Logger.event('agent', 'AgentRunner', `Started the task "${this.currentTask}" on tab [${tabId}]`, { task: this.currentTask, tabId, autoApprovePlan: autoApprove !== false });
 
       await this.ensureTarkaGroup(tabId);
 
-      // The window of the model this task runs on, and the chain of the chat checked against it: a
-      // chain over a quarter of the window is compacted first (the timeline shows the divider).
-      // This happens while the task is still being claimed, so a Stop here lands as a Stop before
-      // the start, and it cancels the summary call.
+
       await this.refreshContext();
       if (!this.stopDuringClaim) await this.autoCompactIfLong();
 
@@ -473,31 +424,24 @@ export class AgentRunner {
         return { success: false, error: 'Task stopped before it started.' };
       }
 
-      // A Pause clicked while the task was still being claimed lands as a real pause: the turn
-      // is set up, then the run waits in 'paused' for Resume. The step signal is never left
-      // aborted, so the actions after Resume run normally.
+
       this.status = pauseLanded ? 'paused' : 'running';
       this.pauseReason = pauseLanded ? 'user' : null;
       this.stepCount = 0;
-      // A new task starts with no plan hold and the approval mode the panel chose. A missing
-      // field keeps the old default (autonomous), which is what every non-panel caller wants.
+
+
       this.autoApprovePlan = autoApprove !== false;
       this.pendingApproval = null;
       this.runtime.control.stopRequested = false;
       this.runtime.control.pauseRequested = false;
 
-      // Initialize and start MCP client (replaces graph). The runner is handed over so the
-      // client can record the history rows the side panel renders from, and so the run ends
-      // in a terminal status instead of "running" forever.
-      // The effort is the model's reasoning level (llm/effort.ts). A start without one (a caller
-      // other than the composer) takes the default of Settings.
+
       const settings = await Storage.getSettings();
-      // W2-R5, the stop-during-startup race: the status went live before this read, so a Stop
-      // that landed during it went through endRun (terminal status, closing row already in).
-      // Re-check here, before the client exists, or the client would run on into a dead run.
+
+
       if (this.stopDuringClaim || (this.status !== 'running' && this.status !== 'paused')) {
-        // The status is already what the ender left (stopped, or idle after a New chat); drop
-        // the task text and answer the start as not taken.
+
+
         this.currentTask = '';
         this.notifyStateChange({ stopped: true });
         return { success: false, error: 'Task stopped before it started.' };
@@ -507,14 +451,14 @@ export class AgentRunner {
       this.runPageUrl = '';
       const level = normalizeEffort(requestedEffort ?? settings.effortDefault);
       this.effort = { requested: level, level, suggestedBy: requestedEffort ? 'user' : 'default' };
-      // The meter shows this task's own calls from its first one on; its token counts start at zero.
+
       this.lastCall = null;
-      // A new run starts with no remembered origin: a trust the user gave lasts one run.
+
       this.approvedOrigins.clear();
       this.runStats = { level: level as Level, modelCalls: 0, stepsUsed: 0, tokensIn: 0, tokensOut: 0 };
       this.mcpClient = new TarkaMCPClient(this.runtime, this);
-      // A Pause that landed during the settings read left the run 'paused': set the turn up and
-      // wait for Resume, like a pause that landed during the claim does.
+
+
       await this.mcpClient.startTask(userPrompt, { startPaused: this.status === 'paused', effort: level });
 
       return { success: true };
@@ -523,27 +467,20 @@ export class AgentRunner {
     }
   }
 
-  /**
-   * Releases the debugger from every tab of the run once it has ended, so the "is debugging this
-   * browser" bar goes away with the run. A paused run keeps it, so Resume does not pay the attach
-   * again. Called on every status change; a running or paused status makes it a no-op.
-   */
+
   private async detachIfDone(): Promise<void> {
     if (this.status === 'running' || this.status === 'paused') return;
     const ids = new Set<number>([this.ownerTabId]);
     if (typeof this._activeTabId === 'number') ids.add(this._activeTabId);
-    // No isAttached filter: detach is idempotent and only ever touches this extension's own
-    // session, and a tab whose attach is still settling must not be skipped.
+
+
     await Promise.allSettled(Array.from(ids).map((id) => cdp.detach(id)));
   }
 
   pause(): { success: boolean; error?: string } {
     if (this.status !== 'running') {
-      // A Pause while a confirmation card is up: the card keeps the run suspended, and the
-      // decision on it still belongs to the user. The pause is accepted now and takes effect
-      // when the card is answered: the run stays paused and the answered action is not
-      // dispatched (the task claim is still held for the whole run, so the claim branch below
-      // would silently swallow this pause).
+
+
       if (this.confirmResolvers.size > 0) {
         this.pauseAfterConfirm = true;
         this.dirty = true;
@@ -578,7 +515,7 @@ export class AgentRunner {
     this.pauseReason = null;
     this.runtime.control.pauseRequested = false;
     this.notifyStateChange({ resumed: true });
-    // The MCP client re-enters its loop from the message history it still holds.
+
     this.mcpClient?.resume();
     return { success: true };
   }
@@ -587,7 +524,7 @@ export class AgentRunner {
     if (!this.endRun('stopped', partialResultEntry(STOPPED_TEXT, 'stopped'))) {
       if (this.taskClaimed) {
         this.stopDuringClaim = true;
-        // A task start that is compacting the chat first: the summary call is cancelled too.
+
         this.compactAbort?.abort({ tarka: 'user', reason: 'user_stop' });
         this.notifyStateChange({ stopped: true });
         return { success: true };
@@ -607,24 +544,17 @@ export class AgentRunner {
   }
 
   async approvePlan(decision: any) {
-    // Handle plan approval from side panel
+
     if (this.mcpClient) {
       this.mcpClient.handleApprovePlan(decision?.decision === 'approve');
     }
   }
 
-  /**
-   * SEC-2: publishes the confirmation card for one exact action and waits for the user's
-   * decision. The request is bound to the action (tool, serialized arguments, tab, frame, origin,
-   * element), so an approval approves this call and nothing else. Resolves true only on an
-   * explicit approve of THIS id; a reject, a Stop, a New chat or an opened other chat resolve
-   * false, and the caller refuses the action.
-   */
+
   async requestActionConfirmation(req: ActionConfirmationRequest): Promise<boolean> {
     if (this.status !== 'running') return false;
-    // CONTRACT-REMEMBER: the user already approved an action on this origin with "remember for
-    // this run" ticked. The card is skipped and the action may go on; the gate can also ask
-    // isOriginApproved() itself before it even prepares a card.
+
+
     if (req.targetOrigin && this.approvedOrigins.has(req.targetOrigin)) return true;
     const id = (typeof crypto !== 'undefined' && crypto.randomUUID)
       ? crypto.randomUUID()
@@ -654,15 +584,11 @@ export class AgentRunner {
       this.pendingConfirm = null;
     }
     if (!this.isRunLive()) return false;
-    // Only a run still resting on THIS card goes on: the card held it in 'paused'. A Stop, a New
-    // chat or any other end that landed while the card was up has already set a terminal status
-    // here, and the answer of the card must not resurrect the run as 'running'. (The task claim
-    // is still held at this point - it is released only when the loop above unwinds - so
-    // isRunLive() alone cannot tell "ended" from "live" here.)
+
+
     if (this.status !== 'paused') return false;
-    // A Pause that landed while this card was up takes effect now: the run stays paused, the
-    // answered action is not dispatched, and the loop is stopped so it does not carry on. Resume
-    // re-enters it from the message history it still holds.
+
+
     if (this.pauseAfterConfirm) {
       this.pauseAfterConfirm = false;
       this.dirty = true;
@@ -672,27 +598,20 @@ export class AgentRunner {
       this.notifyStateChange({ paused: true });
       return false;
     }
-    // The card held the run in 'paused'; the decision is in, so the run goes on either way
-    // (W2-R1). A decline must not leave the run paused: the model is told of the refusal and
-    // acts on it, and a later gated action raises its own new card.
+
+
     this.status = 'running';
     this.pauseReason = null;
     this.notifyStateChange();
     return approved;
   }
 
-  /** Whether the run is live enough for an approved action to dispatch: not stopped, not ended. */
+
   private isRunLive(): boolean {
     return this.status === 'running' || this.status === 'paused' || this.taskClaimed;
   }
 
-  /**
-   * The user's decision on the confirmation card. An approve resolves the hold of the card that
-   * is up (the newest one); anything else resolves it as a refusal. A decision for a card that is
-   * no longer up does nothing. An approve with the remember checkbox ticked ('site') adds the
-   * card's targetOrigin to the run's approvedOrigins (CONTRACT-REMEMBER), and the decision is
-   * kept as a confirm_review row, with remembered: true when the checkbox was ticked.
-   */
+
   confirmAction(decision: 'approve' | 'reject', remember?: 'site'): { success: boolean; error?: string } {
     const ids = Array.from(this.confirmResolvers.keys());
     const id = ids.at(-1);
@@ -716,7 +635,7 @@ export class AgentRunner {
     return { success: true };
   }
 
-  /** Resolves every confirmation hold as a refusal: the run is ending or the chat is going away. */
+
   private releasePendingConfirms(): void {
     for (const [, resolve] of Array.from(this.confirmResolvers.entries())) {
       resolve(false);
@@ -726,22 +645,15 @@ export class AgentRunner {
     this.pauseAfterConfirm = false;
   }
 
-  /**
-   * The one way out of running or paused. Every ending goes through here: the user's Stop, the
-   * client's finish or failure, a closed tab, New chat. It halts the loop first, so nothing writes
-   * into the run after its end, then leaves a terminal status and the final row (none for New
-   * chat, whose history is cleared) in one state broadcast: a run never ends as an idle thread
-   * with no card. Returns false when no run is active; that later ending is dropped, since the
-   * run already has its own.
-   */
+
   endRun(status: 'idle' | 'stopped' | 'error', row: HistoryEntry | null): boolean {
     if (this.status !== 'running' && this.status !== 'paused') return false;
     this.runtime.control.abortStep('user_stop');
     this.mcpClient?.stop();
     this.releasePendingConfirms();
     this.dirty = true;
-    // The closing row keeps what the run collected, so the chat can go on from it later, and the
-    // run's counts (W2-R4): the panel's stats card reads them from the finish or partial row.
+
+
     if (row) this.history.push(withRunData(row, { records: this.runRecords, planSteps: this.planSteps, pageUrl: this.runPageUrl, runStats: this.runStats }));
     this.runRecords = [];
     this.status = status;
@@ -752,12 +664,7 @@ export class AgentRunner {
     return true;
   }
 
-  /**
-   * Chrome swapped this session's tab for another one (chrome.tabs.onReplaced: a prerendered or
-   * instant page took its place). The run follows the new id, and so do its storage keys: a
-   * restarted worker builds the runner of a tab from that tab's id, so a run kept under the old id
-   * would never be found again.
-   */
+  // Chrome replaces a prerendered tab with a new ID.
   replaceTab(oldTabId: number, newTabId: number): void {
     if (this.ownerTabId === oldTabId) {
       this.ownerTabId = newTabId;
@@ -768,10 +675,7 @@ export class AgentRunner {
     if (this._activeTabId === oldTabId) this.activeTabId = newTabId;
   }
 
-  /**
-   * Moves the thread to the owner tab's new id: the runtime registry entry, the run snapshot and
-   * the runner meta are written under the new key at once, and the old keys are dropped.
-   */
+
   private rekeyThread(newTabId: number): void {
     const previous = this.threadId;
     const next = String(newTabId);
@@ -781,7 +685,7 @@ export class AgentRunner {
     this.sessionId = newTabId;
     this.runtime.threadId = next;
     runtimeRegistry.set(this.runtime);
-    // A debounced write of the old store must not land under the old key after it was dropped.
+
     this.snapshots.discard();
     this.meta = new SessionRunnerMeta(next);
     this.snapshots = new RunSnapshotStore(next);
@@ -791,21 +695,21 @@ export class AgentRunner {
   }
 
   clearHistory() {
-    // New chat ends a live run first: its loop must not go on into the cleared thread.
+
     const ended = this.endRun('idle', null);
     this.releasePendingConfirms();
-    // endRun stops the client when it ended the run; when the run was already over (a second New
-    // chat, a stopped run) the client is left as it is, so stop it here before the reference goes.
+
+
     if (!ended) this.mcpClient?.stop();
     this.mcpClient = null;
     this.dirty = true;
-    // A Compact still in flight belongs to the chat that is gone: its summary is dropped.
+
     this.chatGeneration += 1;
     this.lastCall = null;
     this.runStats = null;
     this.approvedOrigins.clear();
-    // The chat that ends here was saved by the endRun above (or by its last resting state); the
-    // new chat has its own id, so nothing more is written to the old entry.
+
+
     void this.chatSaver.flush();
     this.chatId = AgentRunner.newChatId();
     this.chatTitle = '';
@@ -849,22 +753,13 @@ export class AgentRunner {
     };
   }
 
-  /** A new chat id: unique across tabs and worker restarts. */
+
   static newChatId(): string {
     const rand = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.floor(Math.random() * 1e9).toString(36);
     return `chat_${Date.now()}_${rand}`;
   }
 
-  /**
-   * Opens a saved chat from Recent tasks as this tab's live chat (LOAD_CHAT). Its history, plan
-   * and title become the runner's own, so the context ring, Compact and the chain of the next
-   * request work on it, and every later save goes back to the same entry. A chat that was saved
-   * while its run went and never saved again was cut off (the browser or the panel closed): it
-   * gets the closing row of an interrupted run, with the records and plan it had.
-   *
-   * Refused while a task runs, waits or is being started, and while a Compact is written. The
-   * background refuses a chat another tab holds before it gets here.
-   */
+
   async loadChat(chatId: string): Promise<{ success: boolean; error?: string }> {
     await this.restorePromise;
     const busy = () => this.status === 'running' || this.status === 'paused' || this.taskClaimed || this.compacting;
@@ -873,7 +768,7 @@ export class AgentRunner {
     if (!saved || !Array.isArray(saved.history)) return { success: false, error: 'That chat is no longer saved.' };
     if (busy()) return { success: false, error: 'Stop the task before you open another chat.' };
 
-    // Whatever belonged to the chat on screen goes: a Compact in flight, a client, the holds.
+
     this.releasePendingConfirms();
     this.chatGeneration += 1;
     this.mcpClient = null;
@@ -907,7 +802,7 @@ export class AgentRunner {
     return { success: true };
   }
 
-  /** The context meter's numbers (see ContextState). */
+
   contextState(): ContextState {
     const live = (this.status === 'running' || this.status === 'paused') && this.lastCall !== null;
     const empty = this.history.length === 0;
@@ -922,7 +817,7 @@ export class AgentRunner {
     };
   }
 
-  /** The tokens of the model call that just returned (the MCP client's RunRecorder.noteUsage). */
+
   noteUsage(usage: CallUsage): void {
     this.lastCall = { ...usage };
     if (this.runStats) {
@@ -938,11 +833,7 @@ export class AgentRunner {
     this.notifyStateChange();
   }
 
-  /**
-   * Resolves the window of the chosen model and the size of what a request starts with, and
-   * broadcasts when either changed. Called when a task starts, when the panel asks for the state,
-   * and when the settings or the model lists change (background.ts), never per model call.
-   */
+
   async refreshContext(): Promise<void> {
     const mine = ++this.contextRefreshes;
     try {
@@ -963,21 +854,13 @@ export class AgentRunner {
     }
   }
 
-  /**
-   * The one model call of a Compact: the fixed instruction and the chat as data, a plain answer.
-   * A seam of its own, so a test can stand in for the model.
-   */
+
   async summarizeChat(input: string, signal?: AbortSignal): Promise<string> {
     const settings = await Storage.getSettings();
     return generateCompletion(settings, [{ role: 'user', content: `${COMPACT_PROMPT}\n\n${input}` }], COMPACT_SYSTEM, { signal });
   }
 
-  /**
-   * Compact: one model call summarizes the chat (the earlier summary and the turns after it), and
-   * the summary is kept in a chat_compacted row, which the chain of every later request starts
-   * from. Refused while a task runs. A failed call, or a New chat while it was in flight, leaves
-   * the chat as it was.
-   */
+
   async compactChat(options: { auto?: boolean; signal?: AbortSignal } = {}): Promise<CompactResult> {
     await this.restorePromise;
     if (this.status === 'running' || this.status === 'paused') return { success: false, error: 'Stop the task before you compact the chat.' };
@@ -987,7 +870,7 @@ export class AgentRunner {
 
     const generation = this.chatGeneration;
     const summarizedTurns = (lastSummary(this.history)?.summarizedTurns ?? 0) + turns.length;
-    // The input is held to half the window: the oldest turns are left out first.
+
     const maxChars = Math.max(8_000, Math.floor(this.contextWindow.tokens * CHARS_PER_TOKEN * 0.5));
     const input = compactionInput(this.history, maxChars);
     this.compacting = true;
@@ -1013,7 +896,7 @@ export class AgentRunner {
     }
   }
 
-  /** Compacts the chat before a task when its chain takes more than CHAIN_WINDOW_SHARE of the window. */
+
   private async autoCompactIfLong(): Promise<void> {
     if (!hasEarlierTurn(this.history)) return;
     const tokens = chainTokens(this.history);
@@ -1040,9 +923,6 @@ export class AgentRunner {
     });
   }
 
-  // -----------------------------------------------------------------------
-  // Tab Sandboxing
-  // -----------------------------------------------------------------------
 
   async ensureTarkaGroup(tabId: number, explicitWindowId?: number) {
     return await ensureTarkaGroup(
@@ -1072,8 +952,7 @@ export class AgentRunner {
           clearTimeout(timer);
           resolve();
         });
-        // A load that completed before the listener was added fires no event any more: the tab's
-        // own status says so, instead of a wait that can only time out.
+        // Chrome can finish loading before the listener is registered.
         chrome.tabs.get?.(tabId, (tab) => {
           if (chrome.runtime?.lastError) return;
           if (tab?.status === 'complete') {
@@ -1084,35 +963,28 @@ export class AgentRunner {
         });
       });
     } catch {
-      // Timeout or error - continue anyway
+
     }
   }
 
-  // -----------------------------------------------------------------------
-  // State Broadcast
-  // -----------------------------------------------------------------------
 
   setStateChangeCallback(cb: (state: Record<string, any>) => void) {
     this.onStateChangeCb = cb;
   }
 
-  // Static: forget a session when its owner tab closes
+
   static forgetSession(sessionId: number | string): void {
     runtimeRegistry.delete(String(sessionId));
     AgentRunner.dropStoredState(sessionId);
   }
 
-  /**
-   * Removes what a tab's session kept in storage.session (its run and its meta). Also called for a
-   * tab whose session this worker never built: after a worker restart a closed tab may have state
-   * in storage and no runner in memory.
-   */
+
   static dropStoredState(threadId: number | string): void {
     if (typeof chrome === 'undefined' || !chrome.storage?.session?.remove) return;
     void chrome.storage.session.remove([runSnapshotKey(threadId), `sf:meta:${threadId}`]).catch(() => {});
   }
 
-  // groupIdForWindow: returns the Tarka group id for a window
+
   groupIdForWindow(windowId: number): number | null {
     return groupIdForWindow(
       { windowId: this.windowId, groupIds: this.tarkaGroupIds, persist: () => this.persistState() },
@@ -1122,12 +994,11 @@ export class AgentRunner {
 
   private notifyStateChange(extra?: Record<string, any>) {
     this.stateVersion++;
-    // Every state the panel sees is kept for a worker restart. A state the run rests in (ended,
-    // paused, waiting on the user) goes out at once: that is when the worker may be stopped next.
+    // MV3 can stop the worker after an idle, paused, or waiting state.
     const resting = this.status !== 'running' || this.pendingApproval !== null;
     this.snapshots.save(this.runSnapshot(), resting);
-    // The chat in Recent tasks: written by the runner alone, once every few seconds while the run
-    // goes (a closed browser keeps it up to its last steps) and at once when the run rests.
+
+
     this.chatSaver.save(() => this.savedChat(), resting);
     if (this.onStateChangeCb) {
       this.onStateChangeCb({ ...this.getState(), ...extra });
@@ -1154,11 +1025,7 @@ export class AgentRunner {
     };
   }
 
-  /**
-   * The chat as Recent tasks keeps it, or null while it has no turn. The history goes through the
-   * same fitting as the snapshot (slim rows, the oldest turns first); the records of a run that is
-   * still going ride along, an ended run has them on its closing row.
-   */
+
   private savedChat(): SavedSession | null {
     if (!this.history.some((row) => row.type === 'user_goal')) return null;
     const live = this.status === 'running' || this.status === 'paused';
@@ -1178,10 +1045,7 @@ export class AgentRunner {
     };
   }
 
-  /**
-   * The tab group map is what lets a restarted worker keep grouping and adopting this session's
-   * tabs; persistState writes it, so it is read back here.
-   */
+
   private restoreGroupMap(entries: Array<[number, number]>): void {
     for (const [windowId, groupId] of entries) {
       if (typeof windowId === 'number' && typeof groupId === 'number' && !this.tarkaGroupIds.has(windowId)) {
@@ -1191,8 +1055,8 @@ export class AgentRunner {
   }
 
   private async restoreState(): Promise<void> {
-    // The run the panel showed before the worker restarted. Restored before restorePromise
-    // resolves, which the port connect and GET_AGENT_STATE both wait for.
+
+
     try {
       const kept = await this.snapshots.read();
       if (kept) {
@@ -1214,20 +1078,20 @@ export class AgentRunner {
         if (run !== kept) {
           Logger.info('AgentRunner', `[RUN_RESTORED] The worker restarted during the run on tab [${this.ownerTabId}]; its steps are kept and the run is marked interrupted.`);
           this.snapshots.save(this.runSnapshot(), true);
-          // Recent tasks gets the interrupted row too, so the chat opens the way the panel shows it.
+
           this.chatSaver.save(() => this.savedChat(), true);
         }
       }
     } catch {
-      // A run that cannot be read back starts clean, like before.
+
     }
     try {
       const saved = await this.meta.read();
-      // Only the tab group map comes back from the meta. The status is the restored run's own
-      // (an interrupted run stays "stopped" with its final row), never reset here.
+
+
       if (saved) this.restoreGroupMap(saved.tarkaGroupIds || []);
     } catch {
-      // Ignore restore errors
+
     }
   }
 }
