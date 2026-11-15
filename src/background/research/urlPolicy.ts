@@ -67,7 +67,7 @@ export function isPrivateOrLocalHost(rawHostname: string): boolean {
   return false;
 }
 
-// Chrome exposes no DNS resolver to extensions, so public-host DNS rebinding cannot be detected here.
+
 export function checkWorkerFetchUrl(raw: unknown): UrlCheck {
   const base = checkWebUrl(raw);
   if (!base.ok) return base;

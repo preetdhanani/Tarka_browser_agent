@@ -4,7 +4,7 @@ export type HtmlNode = DefaultTreeAdapterTypes.Node;
 export type HtmlElement = DefaultTreeAdapterTypes.Element;
 export type HtmlDocument = DefaultTreeAdapterTypes.Document;
 
-// Blink's HTML parser also caps the element nesting depth at 512.
+
 export const MAX_DEPTH = 512;
 
 const $ = html.TAG_ID;

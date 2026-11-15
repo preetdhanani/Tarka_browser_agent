@@ -91,7 +91,7 @@ export async function fetchCapped(url: string, deps: FetchDeps = {}, accept = '*
     const response = await fetchImpl(url, {
       method: 'GET',
       credentials: 'omit',
-      // Chrome hides the destination of cross-origin manual redirects as an opaqueredirect.
+
       redirect: followRedirects ? 'follow' : 'manual',
       referrerPolicy: 'no-referrer',
       cache: 'no-store',
