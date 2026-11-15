@@ -924,7 +924,10 @@ test('a document with 20 000 short lines, and one with 20 000 list items, render
 // ---------------------------------------------------------------------------------------------
 
 const CSS = fs.readFileSync(new URL('../sidepanel/sidepanel.css', import.meta.url), 'utf8');
-const MD_CSS = CSS.slice(CSS.indexOf('/* ---- Markdown blocks in the answer'), CSS.indexOf('/* Input Panel */'));
+const markdownStylesStart = CSS.indexOf('.md-doc {');
+const markdownStylesEnd = CSS.indexOf('.input-panel {');
+assert.ok(markdownStylesStart >= 0 && markdownStylesEnd > markdownStylesStart, 'the markdown rules are bounded by their first and next panel selectors');
+const MD_CSS = CSS.slice(markdownStylesStart, markdownStylesEnd);
 
 function ruleOf(selector) {
   const match = MD_CSS.replace(/\/\*[^]*?\*\//g, '').match(new RegExp(`(?:^|\\})\\s*${selector.replace(/[.*+?^${}()|[\]\\>]/g, '\\$&')}\\s*\\{([^}]*)\\}`));
