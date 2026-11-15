@@ -79,6 +79,7 @@
 - `sidepanel/sidepanel.css` cleanup was reverted; retry only after its tests locate selectors without section comments, and do not restructure the file.
 - LLM comments remain after their cleanup was reverted; retry only when the configured real-model provider is available.
 - `npm run verify` passed after every retained cleanup commit and after each revert; the stylesheet cleanup commits failed twice before revert.
+- The final report commit passed `npm run verify`, with all 8 steps green and 1841 unit tests passing.
 - A completed real-model run passed 11 of 11 cases after the storage comment cleanup, and its screenshots were reviewed without visible layout issues.
 - The later real-model run timed out on two cases waiting for the configured provider and was stopped; it did not complete, and its cleanup commit was reverted.
 - Held-out tasks were not run because no behavior changed, and no sealed task trace was read.
