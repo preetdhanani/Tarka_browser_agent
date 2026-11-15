@@ -1,9 +1,3 @@
-// src/background/mcp/server.ts
-// MCP server that wraps the existing browser APIs.
-//
-// The server is called in-process by the client (src/background/mcp/client.ts), which owns the
-// tool loop. There is no JSON-RPC transport and no @modelcontextprotocol/sdk: the tools are a
-// plain list of names and argument schemas (./tools.ts) and a tool call is a method call.
 import { takeSnapshot } from '../browser/snapshot.ts';
 import { TOP_FRAME, readFrameTexts } from '../browser/frames.ts';
 import { executeAction } from '../browser/execute.ts';
@@ -24,27 +18,16 @@ import { Storage, normalizeResearch } from '../../shared/storage.ts';
 import { MASKED_FIELD_KINDS } from '../../shared/maskedFields.ts';
 import type { ActionConfirmationRequest } from '../runner/runtimeRegistry.ts';
 
-/** A block of text in a tool result, which is what a model reads. */
 export interface TextContent {
   type: 'text';
   text: string;
 }
 
-/**
- * A picture in a tool result.
- *
- * The bytes live here and in the LLM message, never in a history row: the panel rebuilds the
- * whole timeline from the history on every broadcast, and a base64 JPEG in it would be re-parsed
- * on every one of them, and written into the saved session.
- */
 export interface ImageContent {
   type: 'image';
-  /** The bytes, base64, no data: prefix. */
   data: string;
   mediaType: 'image/jpeg' | 'image/png';
-  /** The id the panel fetches the picture by. */
   imageId: string;
-  /** The measured size of the picture the model is given. */
   imageWidth: number;
   imageHeight: number;
 }
@@ -54,28 +37,17 @@ export interface CallToolResult {
   isError?: boolean;
 }
 
-/**
- * What a tool call produced: the text blocks the model reads, and at most one picture.
- *
- * The client separates the two because a picture travels in a `role:'user'` message after the
- * whole tool block, never inside a `role:'tool'` message (the providers accept text only there).
- */
 export interface ToolOutcome {
   text: string;
   image?: ImageContent;
-  /** A table to show alongside the answer for quick comparison. */
   table?: { columns: string[]; rows: string[][] };
-  /** finish only: how the run went, as the model said it (done, partial, blocked). */
   outcome?: FinishOutcome;
   isError?: boolean;
-  /** The name the timeline row shows for what the step read (a fetched document's title or file name). */
   label?: string;
 }
 
-/** How many pictures a session keeps for the panel. The model's copy is trimmed separately. */
 export const PICTURE_KEEP = 8;
 
-/** A refusal to click by coordinates, in the words the model reads. */
 export function coordinateClickRefusal(args: Record<string, any>): string | null {
   const hasX = args?.x !== undefined && args?.x !== null;
   const hasY = args?.y !== undefined && args?.y !== null;
@@ -88,13 +60,9 @@ export function coordinateClickRefusal(args: Record<string, any>): string | null
   return 'Error: click needs either an element_id from get_page_elements or find, or both x and y read off a take_screenshot picture.';
 }
 
-// The bot-check pattern, the high-risk labels and the masked-field refusal texts live in
-// shared/safetyPatterns.ts, so the input dispatcher and the gate use the same ones. Re-exported
-// here for the existing importers.
 export { BOT_CHECK_PATTERN, MASKED_TYPE_REFUSAL, MASKED_CLICK_REFUSAL } from '../../shared/safetyPatterns.ts';
 import { BOT_CHECK_PATTERN, HIGH_RISK_ACTION_PATTERN, MASKED_TYPE_REFUSAL, MASKED_CLICK_REFUSAL } from '../../shared/safetyPatterns.ts';
 
-/** The refusal of a click on a bot check, worded so the model stops and tells the user. */
 export function botCheckRefusal(elementId: unknown, label: string): string {
   return `Refused: element [${elementId}] is a bot check (${label.trim().slice(0, 80)}). Tarka never clicks or solves bot checks or CAPTCHAs. Call finish now and tell the user the page is behind a bot check that a person has to pass.`;
 }
@@ -103,17 +71,10 @@ export function botCheckPointRefusal(what: string): string {
   return `Refused: that point is on a bot check (${what.trim().slice(0, 80)}). Tarka never clicks or solves bot checks or CAPTCHAs. Call finish now and tell the user the page is behind a bot check that a person has to pass.`;
 }
 
-/** The answer to a tool call the user declined on the confirmation card. */
 export const CONFIRM_DECLINED_TEXT = 'Refused: the user declined this action. Do not try to work around the decision, and do not repeat it. Say what you could not do and finish, or take a different path that needs no such action.';
 
-/** The error text for a finish whose table is not { columns, rows } of strings (CONTRACT-TABLE). */
 export const FINISH_TABLE_ERROR = 'Error: finish needs table as {"columns": ["Header"], "rows": [["cell"]]}: columns a list of header strings, rows a list of rows where every cell is a string. Call finish again with the same answer and the table in that shape, or without table.';
 
-/**
- * The finish tool's table as the panel renders it (CONTRACT-TABLE): `{ columns: string[],
- * rows: string[][] }`. Null when the call has none; the error text when the shape is wrong, so
- * the model is asked again instead of the panel rendering whatever came.
- */
 export function finishTableOf(table: unknown): { columns: string[]; rows: string[][] } | null | string {
   if (table === undefined || table === null) return null;
   const t = table as any;
@@ -124,10 +85,8 @@ export function finishTableOf(table: unknown): { columns: string[]; rows: string
   return { columns: t.columns, rows: t.rows };
 }
 
-/** The answer when no confirmation channel is connected: a sensitive action never runs unconfirmed. */
 const CONFIRM_UNAVAILABLE_TEXT = 'Refused by security policy: this action needs your confirmation, but the confirmation card could not be shown. Ask the user to do this step manually.';
 
-/** The risk facts of an element, as the content script answers them (ELEMENT_SECURITY). */
 export interface ElementSecurity {
   tag?: string;
   type?: string;
@@ -135,13 +94,11 @@ export interface ElementSecurity {
   isSubmitControl?: boolean;
   formTarget?: { formActionHost?: string; formMethod?: 'get' };
   formHasMaskedField?: boolean;
-  /** The label of the form's default button (the one Enter would press), or '' when there is none. */
   formSubmitLabel?: string;
   label?: string;
   text?: string;
 }
 
-/** What the gate decides for one tool call: a hard refusal, a confirmation hold, or nothing. */
 export interface SensitiveActionDecision {
   refuse?: string;
   confirm?: { variant: 'purchase' | 'submit'; actionSummary: string; reason: string };
@@ -149,18 +106,6 @@ export interface SensitiveActionDecision {
 
 const GATE_REASON = 'This action can submit a form, start a payment or change account data. Tarka asks you before it acts.';
 
-/**
- * The gate's rules, pure: what one click or type needs before it may dispatch.
- *
- *   - a masked field (password, card, one-time code) is refused outright, per tool;
- *   - a high-risk label (pay, purchase, checkout, delete account and friends) asks the user;
- *   - a submit control of a form that holds a masked field or sends to another host asks;
- *   - a submitting type into such a form asks, and so does a submitting type into a form whose
- *     own submit control carries a high-risk label: the Enter would do what that button's click
- *     would do, so it is judged the same way;
- *   - a tool whose definition sets requires_approval asks;
- *   - everything else runs as before (a search submit, a link, an ordinary button).
- */
 export function sensitiveActionDecision(input: {
   tool: 'click' | 'type';
   sec: ElementSecurity | null | undefined;
@@ -195,12 +140,6 @@ export function sensitiveActionDecision(input: {
   return {};
 }
 
-/**
- * What a click on a link to another page of this site says when the tab did not go there. The tab
- * is still on the old page, but the link itself may have opened in a new tab (which this run does
- * not see), or a consent banner may be swallowing every click on the page (frame.work does until
- * cookies are answered): the note names both instead of asserting a blocked click.
- */
 export function linkNotOpenedNote(elementLine: string): string {
   const path = /\(.*?\bhref="([^"]+)"/.exec(elementLine)?.[1];
   return path
@@ -208,20 +147,12 @@ export function linkNotOpenedNote(elementLine: string): string {
     : '';
 }
 
-/**
- * How much visible text (characters that appeared plus went away) counts as "the page changed a
- * lot": then a fresh screenshot goes with the result. A clock or a status ticker changes a few
- * dozen characters, a new panel, dialog or result list several hundred.
- */
 export const LARGE_TEXT_CHANGE_CHARS = 300;
 
-/** The start of every observation line, which the harness and the tamper anchor on. */
 export const OBSERVATION_PREFIX = 'Observation:';
 
-/** The note on a picture that shows the same page as the one before it. */
 export const SAME_PICTURE_NOTE = 'Same picture as your last screenshot.';
 
-/** The note on a text read that is the same as the one before it. */
 export const SAME_TEXT_NOTE = 'Same text as your last read.';
 
 function quoted(text: string, max = 120): string {
@@ -229,13 +160,6 @@ function quoted(text: string, max = 120): string {
   return `"${t.length > max ? `${t.slice(0, max - 1)}…` : t}"`;
 }
 
-/**
- * The one fact line an action's result ends with: what the effect probe measured, never a
- * verdict. A fact that could not be measured says unknown.
- *
- * @param detail   the probe's facts (undefined when the page did not answer)
- * @param urlAfter the tab's url after the action when it changed (the tabs API is the authority on that)
- */
 export function observationLine(detail: EffectDetail | undefined | null, urlAfter?: string): string {
   if (!detail) {
     return urlAfter
@@ -248,8 +172,6 @@ export function observationLine(detail: EffectDetail | undefined | null, urlAfte
     return `${OBSERVATION_PREFIX} url ${urlChanged === false ? 'unchanged' : `now ${url}`}; a new page loaded, so what changed in view is unknown`;
   }
   const focus = detail.focus;
-  // A masked field's caret line is null from the content script; a marker-shaped answer is never
-  // quoted either, so a redacted value cannot reach the model through the Observation line.
   const caret = focus && focus.editable && typeof focus.caretLine === 'string' && !isRedactedFieldText(focus.caretLine)
     ? `, caret line ${quoted(focus.caretLine)}`
     : '';
@@ -279,28 +201,16 @@ export function observationLine(detail: EffectDetail | undefined | null, urlAfte
   return `${OBSERVATION_PREFIX} ${parts.join('; ')}`;
 }
 
-/** Whether the visible text changed enough that a fresh picture is worth its tokens. */
 export function isLargeChange(detail: EffectDetail | undefined | null): boolean {
   return !!detail && detail.base && detail.textChanged === true && detail.changedChars >= LARGE_TEXT_CHANGE_CHARS;
 }
 
-/**
- * The marker the content script answers with for a masked field's text (a password, a card or a
- * one-time code field): it says only whether the field holds anything, never what. Must match
- * REDACTED_MARKER in content/content.js; the parity and redaction tests anchor it.
- */
 export const REDACTED_FIELD_MARKER = '[REDACTED: populated]';
 
-/** True when a read-back text is the redaction marker (or any marker-shaped answer), not real content. */
 export function isRedactedFieldText(text: unknown): boolean {
   return typeof text === 'string' && text.startsWith('[REDACTED');
 }
 
-/**
- * What type says about the field after typing: the first 120 characters it holds, and an honest
- * note when the typed text is not in it. A masked field (the marker, or null from a sensitive
- * field) is never quoted: the note says the field is the user's to fill.
- */
 export function fieldReadBack(fieldText: string | null | undefined, typed: string): string {
   if (isRedactedFieldText(fieldText)) {
     return '\nThis is a sensitive field (a password, card or one-time code field), so Tarka does not read its content back. The field holds a value.';
@@ -313,17 +223,8 @@ export function fieldReadBack(fieldText: string | null | undefined, typed: strin
   return `\nField now starts with: "${head}"${holds ? '' : '\nNote: the field does not contain the text you typed: the page may have refused or changed it.'}`;
 }
 
-/**
- * The line a read gets when a code editor on the page draws only the lines near the view
- * (CodeMirror 6 stands a .cm-gap in for the rest). The same words as the content script's note.
- */
 export const EDITOR_LINES_NOTE = 'Note: a code editor here draws only the lines near the view (editor may hide off-screen lines). Scroll it into view to read the rest.';
 
-/**
- * The arguments with an element_id a model wrote for "no element" ("None", "null", "", 0) taken
- * out, and a number written as a string ("12") read as the number. A coordinate click that also
- * carried element_id "None" was sent down the element path and failed with "Element [None]".
- */
 export function normalizeElementId(args: any): any {
   if (!args || typeof args !== 'object' || !('element_id' in args)) return args;
   const raw = args.element_id;
@@ -332,14 +233,12 @@ export function normalizeElementId(args: any): any {
   return Number.isInteger(n) && n >= 1 ? { ...rest, element_id: n } : rest;
 }
 
-/** The part a read_page call asks for: a whole number from 1 up, 1 when it is left out. */
 export function readPagePart(raw: unknown): number | null {
   if (raw === undefined || raw === null) return 1;
   const n = Number(raw);
   return Number.isInteger(n) && n >= 1 ? n : null;
 }
 
-/** What the content script measured for one scroll (InputDispatcher.handleScroll). */
 export interface ScrollMeasurement {
   moved: number;
   label: string;
@@ -351,10 +250,6 @@ export interface ScrollMeasurement {
   fallback?: boolean;
 }
 
-/**
- * The first line of a scroll result: what moved and by how much, measured, or that nothing moved
- * and why. Never a "Scrolled" that is not true.
- */
 export function scrollResultText(direction: 'up' | 'down', m: ScrollMeasurement | null | undefined): string {
   if (!m || typeof m.moved !== 'number') return `Scrolled ${direction}, but the page did not say how far, so whether anything moved is unknown.`;
   const label = m.label || 'the page';
@@ -369,14 +264,12 @@ export function scrollResultText(direction: 'up' | 'down', m: ScrollMeasurement 
   return `Scrolled ${label} ${m.moved > 0 ? 'down' : 'up'} ${Math.abs(m.moved)}px, now at ${m.top} of ${m.max}px${where}${how}.`;
 }
 
-/** A short stable hash of a text, for "same as last time". */
 function textHash(text: string): string {
   let h = 2166136261 >>> 0;
   for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619) >>> 0;
   return `${h.toString(16)}:${text.length}`;
 }
 
-/** The element lines of a list ("[3] button \"Buy\""), by id. */
 function elementLinesById(elementsText: string): Map<number, string> {
   const lines = new Map<number, string>();
   for (const line of String(elementsText || '').split('\n')) {
@@ -388,46 +281,30 @@ function elementLinesById(elementsText: string): Map<number, string> {
 
 export class TarkaMCPServer {
   private runtime: RunRuntime | null = null;
-  /** The element list the model last saw, per tab: what a click on an id targets. */
   private elementLines = new Map<number, Map<number, string>>();
-  /** The frame of the last screenshot, per tab. The model's coordinates are in these pixels. */
   private frames = new Map<number, CoordinateFrame>();
-  /** True once a provider refused a picture this run: the tool is no longer offered or run. */
   private visionUnavailable = false;
-  /** How the server reaches the page for a capture. Replaced by a test or the harness. */
   private screenshotDeps: ((tabId: number) => ScreenshotDeps) | null = null;
   private mintedImages = 0;
-  /**
-   * The pictures this session took, by id, for the panel's thumbnail. The bytes never enter a
-   * history row: the panel rebuilds the timeline on every broadcast, so a base64 JPEG in a row
-   * would be re-parsed on every one of them and written into the saved session.
-   *
-   * The last PICTURE_KEEP pictures are kept, oldest dropped first. A run longer than that leaves
-   * rows whose picture is gone, and those rows say so instead of showing a broken image.
-   */
   private images = new Map<string, { data: string; mediaType: string; tabId: number }>();
 
   setRuntime(runtime: RunRuntime) {
     this.runtime = runtime;
   }
 
-  /** Replaces the capture path, so a test can stand in for Chrome. */
   setScreenshotDeps(factory: ((tabId: number) => ScreenshotDeps) | null) {
     this.screenshotDeps = factory;
   }
 
-  /** The frame the last screenshot of a tab left behind, for a coordinate click. */
   frameFor(tabId: number): CoordinateFrame | null {
     return this.frames.get(tabId) ?? null;
   }
 
-  /** The bytes of one picture of this session, or null when it is not held (or was dropped). */
   getScreenshot(imageId: string): { data: string; mediaType: string } | null {
     const held = this.images.get(String(imageId || ''));
     return held ? { data: held.data, mediaType: held.mediaType } : null;
   }
 
-  /** Turns the screenshot tool off for the rest of the run, after a provider refused a picture. */
   setVisionUnavailable(): void {
     this.visionUnavailable = true;
   }
@@ -436,26 +313,17 @@ export class TarkaMCPServer {
     return this.visionUnavailable;
   }
 
-  /** The element line an id stood for in the last list of a tab ("[12] button \"Buy\""), or ''. */
   elementLabel(tabId: number | null | undefined, elementId: unknown): string {
     if (typeof tabId !== 'number' || elementId === undefined || elementId === null) return '';
     return this.elementLines.get(tabId)?.get(Number(elementId)) || '';
   }
 
-  /** The fetch the research tools use: the worker's own, unless a test stood one in. */
   private researchFetch: typeof fetch | null = null;
 
   setResearchFetch(fetchImpl: typeof fetch | null) {
     this.researchFetch = fetchImpl;
   }
 
-  /**
-   * The risk facts of one element, asked of the content script before anything is dispatched
-   * (ELEMENT_SECURITY). The content script answers synchronously and touches nothing. Null when
-   * the page does not answer: the gate then stays open - an older content script must keep
-   * working, and the dispatcher's own checks at dispatch time still refuse a masked field - and
-   * the degrade is logged, so a silent gate is never the reason an action went through.
-   */
   async elementSecurity(tabId: number, elementId: unknown): Promise<ElementSecurity | null> {
     if (typeof chrome === 'undefined' || !chrome.tabs?.sendMessage) return null;
     const gateBlind = (why: string, level: 'warn' | 'info' = 'warn') =>
@@ -488,11 +356,6 @@ export class TarkaMCPServer {
     }
   }
 
-  /**
-   * Asks the runner to put the confirmation card up and waits for the user's decision. False when
-   * the user declines, the run ends while the card is up, or no channel is connected: a sensitive
-   * action never runs without an explicit yes.
-   */
   private async requestConfirmation(req: ActionConfirmationRequest): Promise<boolean> {
     const ask = this.runtime?.requestActionConfirmation;
     if (!ask) {
@@ -507,12 +370,6 @@ export class TarkaMCPServer {
     }
   }
 
-  /**
-   * Whether this run already approved the page's origin (CONTRACT-REMEMBER): the user ticked the
-   * remember box on an earlier card, the runner kept the origin in its per-run set, and the same
-   * origin is not asked again. The port is optional on the runtime, so a runtime without it (an
-   * older runner, a test stub) is never treated as approved, and the card goes up.
-   */
   private originApproved(origin: string): boolean {
     if (!origin) return false;
     try {
@@ -522,11 +379,6 @@ export class TarkaMCPServer {
     }
   }
 
-  /**
-   * The gate of one element-id action: refuse a masked field, ask the user for a risky one, and
-   * only then let the dispatch happen. Returns the refusal text to return to the model, or null
-   * when the action may go on (possibly after an approval).
-   */
   private async gateElementAction(
     tabId: number,
     tool: 'click' | 'type',
@@ -547,7 +399,6 @@ export class TarkaMCPServer {
       const pageUrl = info?.url || '';
       let targetOrigin = '';
       try { targetOrigin = pageUrl ? new URL(pageUrl).origin : ''; } catch (_) { targetOrigin = ''; }
-      // An origin the run already approved (CONTRACT-REMEMBER) gets no second card.
       if (!this.originApproved(targetOrigin)) {
         const approved = await this.requestConfirmation({
           id: '',
@@ -570,9 +421,7 @@ export class TarkaMCPServer {
     return null;
   }
 
-  // Execute a tool call
   async callTool(name: string, args: any): Promise<ToolOutcome> {
-    // Research reads the web from the worker, not from the tab: it runs with no tab at all.
     if (RESEARCH_TOOL_NAMES.has(name)) return await this.research(name, args || {});
 
     if (!this.runtime) {
@@ -595,7 +444,6 @@ export class TarkaMCPServer {
 
   private async executeTool(name: string, args: any, tabId: number): Promise<ToolOutcome> {
     const rt = this.runtime!;
-    // Only the action right after a type gets the covered-button hint.
     if (name !== 'type' && name !== 'click') this.lastTyped.delete(tabId);
 
     switch (name) {
@@ -603,15 +451,11 @@ export class TarkaMCPServer {
         const part = readPagePart(args?.part);
         if (part === null) return { text: `Error: part must be a whole number from 1 up, got ${JSON.stringify(args?.part)}.`, isError: true };
         const hasId = args?.element_id !== undefined && args?.element_id !== null;
-        // innerText never enters an iframe: the text of each embedded frame (a lesson, a document
-        // viewer) is read by that frame's own agent and added after the page text.
         const frames = hasId ? [] : await readFrameTexts(tabId).catch(() => []);
         const outcome = await this.run(tabId, { action: 'read_page', part, ...(hasId ? { element_id: args.element_id } : {}), ...(frames.length ? { frames } : {}) }, rt);
         if (!outcome.ok) return outcome.result;
         const read: any = outcome.exec?.result || {};
         const text = typeof read.pageText === 'string' && read.pageText ? read.pageText : '(no text)';
-        // The link targets of this part (content/pageLinks.ts) go after the text, inside the same
-        // untrusted envelope: an address is the page's words too.
         const body = typeof read.links === 'string' && read.links ? `${text}\n\n${read.links}` : text;
         const editorNote = read.hidesLines ? `\n${EDITOR_LINES_NOTE}` : '';
         const head = `${hasId ? `Text of element [${args.element_id}]` : 'Page text'} (${read.note || `part ${part}`}):${editorNote}`;
@@ -619,7 +463,6 @@ export class TarkaMCPServer {
         const hash = textHash(`${url}\n${hasId ? args.element_id : ''}\n${part}\n${body}`);
         const same = this.lastTextHash.get(tabId) === hash;
         this.lastTextHash.set(tabId, hash);
-        // The page's words are the page's, not the user's: they come in the untrusted envelope.
         return { text: `${same ? `${SAME_TEXT_NOTE}\n` : ''}${head}\n${wrapUntrusted(sourceOf(url), body)}` };
       }
 
@@ -633,8 +476,6 @@ export class TarkaMCPServer {
       }
 
       case 'find': {
-        // The content script scans every element of the page (not only the listed window), and
-        // the ids it hands out work for click and type like the ones of get_page_elements.
         const query = String(args?.query ?? '').trim();
         if (!query) return { text: 'Error: find needs a query: the plain words to look for, such as "next page".', isError: true };
         const outcome = await this.run(tabId, { action: 'find_element', query }, rt);
@@ -658,10 +499,8 @@ export class TarkaMCPServer {
         if (args?.element_id === undefined || args?.element_id === null) {
           return await this.clickAtCoordinates(tabId, args, rt);
         }
-        // A bot check is never clicked, whatever the model thinks it should do: that is the user's.
         const target = this.elementLines.get(tabId)?.get(Number(args.element_id)) || '';
         if (BOT_CHECK_PATTERN.test(target)) return { text: botCheckRefusal(args.element_id, target), isError: true };
-        // The security gate: a masked field is refused outright, a risky submit asks the user.
         const gateRefusal = await this.gateElementAction(tabId, 'click', args, target);
         if (gateRefusal) return { text: `Error: ${gateRefusal}`, isError: true };
         const outcome = await this.run(tabId, { action: 'click', element_id: args.element_id }, rt);
@@ -675,8 +514,6 @@ export class TarkaMCPServer {
         const hasId = args?.element_id !== undefined && args?.element_id !== null;
         const field = hasId ? this.elementLines.get(tabId)?.get(Number(args.element_id)) || '' : '';
         if (BOT_CHECK_PATTERN.test(field)) return { text: botCheckRefusal(args.element_id, field), isError: true };
-        // The security gate: a masked field is refused outright, a submitting type into a risky
-        // form asks the user.
         if (hasId) {
           const gateRefusal = await this.gateElementAction(tabId, 'type', args, field);
           if (gateRefusal) return { text: `Error: ${gateRefusal}`, isError: true };
@@ -735,21 +572,14 @@ export class TarkaMCPServer {
       }
 
       case 'wait': {
-        // Through the dispatcher: its 1 to 5 s clamp and the step signal apply here too (a cloud
-        // reply of amount 600 once parked a run for ten minutes inside one action, BUG-36).
         const outcome = await this.run(tabId, { action: 'wait', amount: args.amount }, rt);
         if (!outcome.ok) return outcome.result;
-        // The dispatcher's message says what really waited (the clamped amount), never the
-        // amount the model asked for.
         const waited = outcome.exec?.message || 'Waited';
         return { text: `${waited}${args.reason ? `: ${args.reason}` : ''}` };
       }
 
       case 'go_back':
       case 'go_forward': {
-        // Honest about whether the tab moved: the dispatcher's effect says whether the URL
-        // changed. Without a change there was no earlier (or later) page to go to, and a "Went
-        // back" would make the model believe it is on a page it never saw.
         const back = name === 'go_back';
         const outcome = await this.run(tabId, { action: back ? 'go_back' : 'go_forward' }, rt);
         if (!outcome.ok) return outcome.result;
@@ -763,8 +593,6 @@ export class TarkaMCPServer {
       }
 
       case 'finish': {
-        // The table is checked here too (CONTRACT-TABLE): a malformed one is an error, never a
-        // row the panel cannot render. The client asks the model again before this point.
         const table = finishTableOf(args.table);
         if (typeof table === 'string') return { text: table, isError: true };
         return { text: `TASK_COMPLETE: ${args.answer}`, ...(table ? { table } : {}), outcome: finishOutcomeOf(args.outcome) };
@@ -775,10 +603,6 @@ export class TarkaMCPServer {
     }
   }
 
-  /**
-   * web_search and fetch_url: a request from the service worker, never from the user's tab. Off
-   * in Settings > Research, a call is refused (the model is not offered them then either).
-   */
   private async research(name: string, args: any): Promise<ToolOutcome> {
     const settings = await Promise.resolve(this.runtime?.settings ? this.runtime.settings() : Storage.getSettings()).catch(() => null);
     const research = normalizeResearch(settings?.research);
@@ -799,7 +623,6 @@ export class TarkaMCPServer {
     }
   }
 
-  /** The capture path: the real one, unless a test stood one in. */
   private screenshotDepsFor(tabId: number): ScreenshotDeps {
     if (this.screenshotDeps) return this.screenshotDeps(tabId);
     return {
@@ -809,7 +632,6 @@ export class TarkaMCPServer {
     };
   }
 
-  /** Sends one CDP command through the shared manager. Split out so a test can stand in for it. */
   private async sendCdp(
     tabId: number,
     method: string,
@@ -820,12 +642,6 @@ export class TarkaMCPServer {
     return cdp.sendCommand(tabId, method, params, control);
   }
 
-  /**
-   * take_screenshot: the picture, its frame, and a text block the model can read.
-   *
-   * A failure comes back as an error the model can act on, never as a thrown exception that ends
-   * the run: a restricted page or a renderer that will not answer has a text fallback.
-   */
   private async takeScreenshot(tabId: number, args: Record<string, any>): Promise<ToolOutcome> {
     if (this.visionUnavailable) {
       return {
@@ -848,8 +664,6 @@ export class TarkaMCPServer {
         { width: shot.imageWidth, height: shot.imageHeight }
       );
       this.frames.set(tabId, tempFrame);
-      // The same page signature, scroll and url as the last picture of this tab: the model is told,
-      // so it stops taking the same picture again. A page without a signature is never "the same".
       const shotKey = shot.sig
         ? JSON.stringify([tempFrame.url, shot.sig.interactiveHash, shot.sig.textHash, shot.scrollX, shot.scrollY, shot.viewportWidth, shot.viewportHeight])
         : null;
@@ -885,25 +699,10 @@ export class TarkaMCPServer {
     }
   }
 
-  /**
-   * click with x and y: the coordinate is a pixel in the last picture of this tab.
-   *
-   * The order is the one the plan names: the frame is checked against the live page FIRST, the
-   * coordinate is mapped from the picture into viewport CSS pixels, the page is asked what is at
-   * that point, and only then is the click dispatched - through executeAction, so it gets the
-   * effect probe, the urlAfter capture and the settle an element-id click gets.
-   */
-  /**
-   * A picture coordinate of the model as a viewport CSS pixel, through the frame of the last
-   * screenshot of the tab, or the refusal the model reads.
-   */
   private pictureToViewport(tabId: number, args: Record<string, any>): { point: { x: number; y: number }; frame: CoordinateFrame; reading: string } | { error: string } {
     const frame = this.frameFor(tabId);
     if (!frame) return { error: 'Error: no screenshot has been taken for this tab yet. Take one before using x and y.' };
-    // The model's numbers in its own scale, as a pixel of the picture (see coordinates.ts).
     const read = toPicturePixels(this.coordinateSpace, Number(args.x), Number(args.y), { width: frame.imageWidth, height: frame.imageHeight });
-    // The far edge of a 0-1000 scale (or a fraction of 1) is the last pixel row, not one past it.
-    // Past the end of the scale stays outside the picture and is refused below.
     const scaleEnd = read.reading === 'fraction' ? 1 : 1000;
     const atEdge = (value: number, raw: number, size: number) => (read.reading !== 'pixels' && raw <= scaleEnd && value >= size ? size - 1 : value);
     const x = atEdge(read.x, Number(args.x), frame.imageWidth);
@@ -923,9 +722,6 @@ export class TarkaMCPServer {
     if ('error' in mapped) return { text: mapped.error, isError: true };
     const { frame } = mapped;
 
-    // The page is re-read at click time, because a frame is only good while the page is the same.
-    // It goes through the same deps the capture used, so the two are read the same way. A refusal
-    // is for this one call: the next screenshot gives a fresh frame, and the path stays open.
     const live = await this.readLiveState(tabId, rt, this.screenshotDepsFor(tabId));
     const check = checkFrame(frame, live);
     if (!check.ok) {
@@ -934,22 +730,15 @@ export class TarkaMCPServer {
 
     let point = mapped.point;
 
-    // What is actually at that pixel. A point just next to a control is moved onto it (the page
-    // answers with `snapped`). A sensitive field refuses the click; anything else is described in
-    // the result, so the user and the model both know what was hit.
     const described = await this.describePointOnPage(tabId, point);
     if (described.refused) {
       return { text: described.refused, isError: true };
     }
-    // A bot check is never clicked, by element or by point. Embedded frames are shown in pictures,
-    // so a CAPTCHA frame can be seen and pointed at: what is under the point decides.
     if (described.what && BOT_CHECK_PATTERN.test(described.what)) {
       return { text: botCheckPointRefusal(described.what), isError: true };
     }
     if (described.snapped) point = { x: described.snapped.x, y: described.snapped.y };
 
-    // The security gate for a coordinate click: the same rules an element click goes through,
-    // judged on what the point (or the control it was snapped onto) really is.
     const pointSec: ElementSecurity = {
       fieldKind: described.fieldKind,
       isSubmitControl: described.isSubmitControl,
@@ -970,7 +759,6 @@ export class TarkaMCPServer {
       const pageUrl = info?.url || '';
       let targetOrigin = '';
       try { targetOrigin = pageUrl ? new URL(pageUrl).origin : ''; } catch (_) { targetOrigin = ''; }
-      // An origin the run already approved (CONTRACT-REMEMBER) gets no second card.
       if (!this.originApproved(targetOrigin)) {
         const approved = await this.requestConfirmation({
           id: '',
@@ -1000,11 +788,6 @@ export class TarkaMCPServer {
     return await this.observed(tabId, `Clicked at ${where}${snapped}${hit}${args.reason ? `: ${args.reason}` : ''}${arrived}`, outcome.exec);
   }
 
-  /**
-   * An action's result with its observation line, and a fresh picture when the visible text
-   * changed a lot and this run may take pictures: the model then reads what happened from the
-   * result, instead of spending a round on a screenshot.
-   */
   private async observed(tabId: number, text: string, exec: ExecResult | undefined): Promise<ToolOutcome> {
     const urlAfter = exec?.effect === 'url_changed' && exec.urlAfter ? exec.urlAfter : undefined;
     const line = observationLine(exec?.effectDetail, urlAfter);
@@ -1019,14 +802,12 @@ export class TarkaMCPServer {
     return result;
   }
 
-  /** The scale the model of this run points with on a picture. The client sets it every turn. */
   private coordinateSpace: CoordinateSpace = 'pixels';
 
   setCoordinateSpace(space: CoordinateSpace): void {
     this.coordinateSpace = space;
   }
 
-  /** The live page state a frame is checked against. */
   private async readLiveState(tabId: number, rt: RunRuntime, deps: ScreenshotDeps): Promise<{
     url: string; viewportWidth: number; viewportHeight: number; devicePixelRatio: number;
     scrollX: number; scrollY: number; sig: { interactiveHash: string; textHash: string; layoutHash?: string } | null;
@@ -1045,7 +826,6 @@ export class TarkaMCPServer {
     };
   }
 
-  /** Asks the page what is at a viewport point, through the content script's DESCRIBE_POINT. */
   private async describePointOnPage(
     tabId: number,
     point: { x: number; y: number }
@@ -1086,27 +866,11 @@ export class TarkaMCPServer {
     }
   }
 
-  /**
-   * Runs an action on the page and turns the outcome into a tool result.
-   *
-   * A failed action must come back as a failure. The model reads the text of a tool result and
-   * decides what to do next: if a click that never reached the page is answered with "Clicked
-   * element [3]", the model believes the page moved on, and the run ends with an answer about a
-   * page it never changed. So the error of the action goes back to the model, and the result is
-   * marked as an error so the panel shows it as a failed step.
-   */
-  /** The tabs whose last action was a type, for the covered-button hint. */
   private lastTyped = new Set<number>();
-  /** The hash of the last read_page per tab, for "Same text as your last read". */
   private lastTextHash = new Map<number, string>();
-  /** The page signature of the last picture per tab, for "Same picture as your last screenshot". */
   private lastShotKey = new Map<number, string>();
 
 
-  /**
-   * The start of the page text for the first message of a task: the snapshot's text, capped, the
-   * same text an arrived page shows. It is not a tool call, so it never counts as a read.
-   */
   async pagePreview(): Promise<string> {
     const rt = this.runtime;
     const tabId = rt ? rt.tabs.activeTabId ?? rt.tabs.ownerTabId : null;
@@ -1122,11 +886,6 @@ export class TarkaMCPServer {
     }
   }
 
-  /**
-   * The text of the page an action led to, for the result of that action: a new page costs the
-   * model one round less when it does not have to ask for the text it is going to ask for anyway.
-   * Empty when the page cannot be read; the action itself still counts as done.
-   */
   private async arrivedPageText(tabId: number, rt: RunRuntime): Promise<string> {
     try {
       const snapshot = await takeSnapshot(tabId, { showBadges: false, maxElements: 0 }, {
@@ -1145,7 +904,6 @@ export class TarkaMCPServer {
     action: Record<string, unknown>,
     rt: RunRuntime
   ): Promise<{ ok: boolean; result: ToolOutcome; exec?: ExecResult }> {
-    // The user's pause between actions (Settings, actionDelayMs) applies to every page action.
     const settings = await Promise.resolve(rt.settings?.()).catch(() => null);
     const outcome: ExecResult = await executeAction(tabId, action, {
       runRuntime: rt,
@@ -1155,8 +913,6 @@ export class TarkaMCPServer {
     if (outcome.success) return { ok: true, result: { text: '' }, exec: outcome };
     const why = outcome.error || outcome.message || 'the action did not go through';
     Logger.info('MCP Server', `Tool action "${String(action.action)}" failed: ${why}`);
-    // A button under the search suggestions of the field the model just typed into: Enter is the
-    // way through, and the model is told so instead of trying the covered button again.
     const hint = /is covered by/i.test(why) && this.lastTyped.has(tabId)
       ? ' You just typed into a field: to submit it, call type again with submit=true (it presses Enter) instead of clicking.'
       : '';

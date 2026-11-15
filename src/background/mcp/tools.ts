@@ -1,4 +1,3 @@
-// src/background/mcp/tools.ts
 export interface ToolDef {
   name: string;
   description: string;
@@ -8,22 +7,12 @@ export interface ToolDef {
     required?: string[];
     additionalProperties?: boolean;
   };
-  /**
-   * True when every call of this tool needs the user's confirmation before it dispatches (SEC-2).
-   * No shipped tool sets it today; the confirmation gate reads it, so a future opt-in tool gets
-   * the hold for free.
-   */
   requires_approval?: boolean;
 }
 
-/**
- * The step note every tool but finish asks for. It is how the model keeps its own thread: the
- * tool arguments stay in the history, so each round it reads what it concluded the round before.
- */
 export const REASON_TEXT = 'One or two sentences: what the last result told you, and why this step comes next.';
 
 export const TARKA_TOOLS: ToolDef[] = [
-  // === PLANNING ===
   {
     name: 'update_plan',
     description: 'The plan of a multi-step task, and its progress. Call it with plan (the steps) before you start; simple tasks (one action, summarize the page) can skip it. Call it again with done (the numbers of the finished steps) whenever a step is finished: with the same plan, or without plan, the steps are only marked, nothing is asked again. A plan with other steps replaces the old one.',
@@ -47,7 +36,6 @@ export const TARKA_TOOLS: ToolDef[] = [
     }
   },
 
-  // === PAGE READING ===
   {
     name: 'read_page',
     description: 'Read the text of the whole page, in parts of about 3000 characters: the result says "part i of M" and how to get the next part. Use it FIRST to understand the page. Panels that scroll on their own are included, not only what is in view. The links of each part are listed under its text with their full addresses ("Links in this part:"). Give element_id (from get_page_elements or find) to read only that element, for example one code cell or one search result. A code editor draws only the lines near the view; the result says so when it does.',
@@ -93,7 +81,6 @@ export const TARKA_TOOLS: ToolDef[] = [
     }
   },
 
-  // === PAGE ACTING ===
   {
     name: 'click',
     description: 'Click an element by its ID from get_page_elements or find, or at pixel coordinates read off a take_screenshot picture. Use IDs for links, buttons, checkboxes, tabs. Use coordinates only for a target you read off a screenshot.',
@@ -105,8 +92,6 @@ export const TARKA_TOOLS: ToolDef[] = [
         y: { type: 'number', description: 'The y pixel in the picture from take_screenshot' },
         reason: { type: 'string', description: REASON_TEXT }
       },
-      // Either element_id, or both x and y. The server enforces the rule, so a half-specified
-      // coordinate never reaches the mouse.
       required: ['reason'],
       additionalProperties: false
     }
@@ -194,7 +179,6 @@ export const TARKA_TOOLS: ToolDef[] = [
     inputSchema: { type: 'object', properties: { reason: { type: 'string', description: REASON_TEXT } }, required: ['reason'], additionalProperties: false }
   },
 
-  // === RESEARCH (outside the tab) ===
   {
     name: 'web_search',
     description: 'Search the web from the background, WITHOUT touching the user\'s tab (the tab stays where it is). Returns up to 8 results, each a title, its URL and a snippet. Use it to find the official source of a fact (a download URL, a version, a command) before you write it. Snippets can be old or wrong: read the page itself with fetch_url before you rely on it.',
@@ -225,7 +209,6 @@ export const TARKA_TOOLS: ToolDef[] = [
     }
   },
 
-  // === COLLECTING ===
   {
     name: 'save_data',
     description: 'Save records you found (for example one per item of a list: {"name": ..., "date": ..., "url": ...}) to the run\'s collected data. Saved records are kept for the whole run, whatever is read later, and every round shows how many you have. Save as soon as you read them; finish can write them into a file with records_file.',
@@ -244,7 +227,6 @@ export const TARKA_TOOLS: ToolDef[] = [
     }
   },
 
-  // === COMPLETION ===
   {
     name: 'finish',
     description: 'End the task with a final answer for the user. Call it when the task is done, and also when you cannot go on: then say in the answer what worked, what did not, and why.',
@@ -279,13 +261,8 @@ export const TARKA_TOOLS: ToolDef[] = [
   }
 ];
 
-/** The tools that read the web outside the tab. They need no tab and are offered only when Settings > Research is on. */
 export const RESEARCH_TOOL_NAMES: ReadonlySet<string> = new Set(['web_search', 'fetch_url']);
 
-/**
- * The tools a run offers: all of them, without the research tools when research is off, and
- * without take_screenshot when the model cannot see pictures.
- */
 export function offeredToolDefs({ research, vision }: { research: boolean; vision: boolean }): ToolDef[] {
   return TARKA_TOOLS.filter((tool) => (research || !RESEARCH_TOOL_NAMES.has(tool.name)) && (vision || tool.name !== 'take_screenshot'));
 }

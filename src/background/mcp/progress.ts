@@ -1,74 +1,36 @@
-// src/background/mcp/progress.ts
-// Repeat detection for the tool loop. Pure: no chrome APIs, no clock, so it is unit-tested alone.
-//
-// The harness owns the facts of a step (the Observation line, "Same picture", "Same text"); this
-// module reads those facts and tells the loop two things:
-//   - a short per-tool hint for a step that repeats an earlier step that changed nothing;
-//   - when the run has made no progress for a while, one reflection note for the next request.
-// It never narrows the tools, never touches plan approval and never asks the user. The step
-// limit of the run stays the hard stop.
 
-/** The start of every repeat hint: the tamper and the mock anchor on it. */
 export const REPEAT_HINT_PREFIX = 'Hint (repeated step):';
 
-/**
- * Task progress, apart from page change. Reading element 41, 42, 43 brings new text every time, so
- * the page-change record above never trips on it; a real run read 74 elements in a row that way
- * and never finished. A step moves the task when it saves new data, finishes a plan step, changes
- * the page, opens a page, reads a part of a page it had not read, or reads the web somewhere new.
- * STALL_AT steps in a row that do none of that are a stall: the first gets a note (STALL_TEXT), a
- * second one in a row ends the run with a finish-only round (STALL_END_TEXT).
- */
 export const STALL_AT = 8;
 
-/** The note after the first stall. The mock anchors on its start. */
 export const STALL_TEXT = `You have taken ${STALL_AT} steps without new data or a finished plan step. Say in reason what you are looking for and whether the tools can show it. Then save what you have with save_data, mark finished plan steps with update_plan, take a different approach, or finish with outcome partial and say what is missing.`;
 
-/** The note of the finish-only round after a second stall. */
 export const STALL_END_TEXT = `STALLED: ${STALL_AT * 2} steps in a row brought no new data and finished no plan step. Call finish now with what you have (save nothing more), with outcome partial, and say what is missing and why.`;
 
-/** The answer of a stalled run whose model did not call finish in its last round. */
 export const STALL_FALLBACK_TEXT = `The run stopped: it made no progress for ${STALL_AT * 2} steps in a row.`;
 
-/** How a step stands toward the task, as the client knows it (save_data, update_plan) or the tracker reads it. */
 export interface StepContext {
-  /** True when the call was refused because manual approval waits for a plan. */
   planFirst?: boolean;
-  /** The tab's URL when the step ran, for "a part of this page not read before". */
   url?: string;
-  /** The client measured task progress itself: save_data added records, update_plan finished a step. */
   taskProgress?: boolean;
-  /** A re-read of a result the context compaction shortened: it neither counts nor resets. */
   neutral?: boolean;
 }
 
-/** The note the next request gets after too many steps that changed nothing. */
 export const REFLECTION_TEXT = 'Your last steps changed nothing on the page: say what failed, then choose a different approach (another tool, keyboard, research) or finish with what you know and the exact next steps for the user.';
 
-/** How many recent steps the reflection looks at, and the least distance between two reflections. */
 export const REFLECTION_WINDOW = 6;
-/** How many of those steps must have changed nothing. */
 export const REFLECTION_THRESHOLD = 4;
-/** How many identical no-progress actions make a repeat (the second one gets the hint). A read is no progress only when it repeats an earlier one, so its first no-progress run gets the hint. */
 export const REPEAT_AT = 2;
-/** The grid a coordinate is rounded to, so a click 5 px next to the last one is the same click. */
 export const COORDINATE_GRID = 24;
 
-/**
- * The tools that only read: the page, or the web outside the tab (web_search, fetch_url). A read
- * is progress when it brings new content, and no progress when the same call brings the same thing again.
- */
 const READ_TOOLS = new Set(['read_page', 'get_page_elements', 'find', 'take_screenshot', 'web_search', 'fetch_url']);
 
-/** The tools that never count: planning and finishing are not steps on the page. */
 const NOT_COUNTED = new Set(['update_plan', 'save_data', 'finish']);
 
-// The facts the server writes (server.ts). Matched as text so this module needs nothing from it.
 const QUIET_OBSERVATION = /(^|\n)Observation: nothing in view changed/;
 const DID_NOT_MOVE = /^Did not move:/;
 const SAME_NOTE = /^(Same picture as your last screenshot\.|Same text as your last read\.)/m;
 
-/** An element id as the server reads it: a whole number from 1 up, anything else is no id. */
 function normalizedElementId(raw: unknown): number | undefined {
   const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\s*\d+\s*$/.test(raw) ? Number(raw) : NaN;
   return Number.isInteger(n) && n >= 1 ? n : undefined;
@@ -83,11 +45,6 @@ function normalizedValue(key: string, value: unknown): unknown {
   return value;
 }
 
-/**
- * The identity of a step: the tool plus its arguments, normalized. The reason is left out (the
- * model words it differently every time), coordinates are rounded to a 24 px grid, and an
- * element_id the model wrote for "no element" ("None", "", 0) is the same as none.
- */
 export function stepKey(tool: string, args: Record<string, any> | null | undefined): string {
   const source = args && typeof args === 'object' ? args : {};
   const parts: string[] = [];
@@ -105,17 +62,14 @@ export function stepKey(tool: string, args: Record<string, any> | null | undefin
   return `${tool}(${parts.join(',')})`;
 }
 
-/** What one step did, as the tracker judges it. 'pending' is a wait whose effect the next read decides. */
 type Verdict = 'progress' | 'none' | 'pending';
 
-/** Whether an action's result says the page did not change. */
 export function actionChangedNothing(tool: string, result: string): boolean {
   const text = String(result || '');
   if ((tool === 'scroll' || tool === 'go_back' || tool === 'go_forward') && DID_NOT_MOVE.test(text)) return true;
   return QUIET_OBSERVATION.test(text);
 }
 
-/** The per-tool hint for a repeated step that changed nothing. */
 export function repeatHint(tool: string, times: number): string {
   const head = `${REPEAT_HINT_PREFIX} you ran this same ${tool} ${times} times and it changed nothing.`;
   switch (tool) {
@@ -142,13 +96,10 @@ export function repeatHint(tool: string, times: number): string {
   }
 }
 
-/** What the loop does after a step: a hint for this step's result, and whether to reflect. */
 export interface ProgressNote {
   hint: string | null;
   reflect: boolean;
-  /** 0: no stall; 1: the first stall (send STALL_TEXT); 2: the second in a row (finish-only round). */
   stall: 0 | 1 | 2;
-  /** Why, for the log. */
   noProgressInWindow: number;
   repeats: number;
 }
@@ -160,21 +111,12 @@ interface StepEntry {
   verdict: Verdict;
 }
 
-/**
- * The run-wide record of steps. One per task: update_plan and finish are not steps on the page,
- * and a PLAN_FIRST refusal never ran, so none of them enter the record (and none resets it).
- */
 export class ProgressTracker {
   private steps: StepEntry[] = [];
-  /** How many no-progress steps each key had. */
   private noProgressByKey = new Map<string, number>();
-  /** The step count at the last reflection, or -Infinity before the first. */
   private lastReflectionAt = Number.NEGATIVE_INFINITY;
-  /** Steps in a row that did not move the task. */
   private sinceProgress = 0;
-  /** Stalls in a row without task progress between them. */
   private stalls = 0;
-  /** The page parts read so far (url + part), and the web places read (query or url + part). */
   private readPlaces = new Set<string>();
 
   reset(): void {
@@ -186,23 +128,14 @@ export class ProgressTracker {
     this.readPlaces.clear();
   }
 
-  /** Steps in a row that did not move the task (the run state shows it). */
   get stepsSinceProgress(): number {
     return this.sinceProgress;
   }
 
-  /**
-   * Whether a step moved the task: the client's own measure (taskProgress), a page change, a page
-   * opened, or a read of somewhere not read before. An error never does.
-   */
   private movedTask(tool: string, args: Record<string, any>, text: string, verdict: Verdict, ctx: StepContext): boolean {
     if (ctx.taskProgress) return true;
-    // A plan mark or a save moves the task only when the client says it did: a mark of a step
-    // already done, the same plan again, or records already saved do not.
     if (NOT_COUNTED.has(tool)) return false;
     if (/^Error:/.test(text) || /^Refused:/.test(text)) return false;
-    // A move in history counts as progress only when the tab really moved: a go_back that answered
-    // "Did not move" is a repeat that must feed the stall and repeat machinery like any other.
     if (tool === 'navigate' || tool === 'go_back' || tool === 'go_forward') return verdict !== 'none';
     if (!READ_TOOLS.has(tool)) return tool !== 'wait' && verdict === 'progress';
     const place = (key: string) => {
@@ -218,7 +151,6 @@ export class ProgressTracker {
     return false;
   }
 
-  /** Counts one step toward a stall, and says which stall (if any) it completes. */
   private stallOf(tool: string, args: Record<string, any>, text: string, verdict: Verdict, ctx: StepContext): 0 | 1 | 2 {
     if (ctx.neutral) return 0;
     if (this.movedTask(tool, args, text, verdict, ctx)) {
@@ -233,21 +165,13 @@ export class ProgressTracker {
     return this.stalls >= 2 ? 2 : 1;
   }
 
-  /** How many steps the record holds (for tests and the log). */
   get count(): number {
     return this.steps.length;
   }
 
-  /**
-   * Records one step that ran, and says what the loop should add.
-   *
-   * @param planFirst true when the call was refused because manual approval waits for a plan
-   */
   record(tool: string, args: Record<string, any> | null | undefined, result: string, ctx: StepContext = {}): ProgressNote {
     const nothing: ProgressNote = { hint: null, reflect: false, stall: 0, noProgressInWindow: this.noProgressInWindow(), repeats: 0 };
     if (ctx.planFirst) return nothing;
-    // update_plan and save_data are no steps on the page, but a finished plan step or new data is
-    // task progress, and a mark that finishes nothing counts toward a stall like any other step.
     if (NOT_COUNTED.has(tool)) {
       if (tool === 'finish') return nothing;
       return { ...nothing, stall: this.stallOf(tool, args || {}, String(result || ''), 'none', ctx) };
@@ -257,7 +181,6 @@ export class ProgressTracker {
     const verdict = this.verdictOf(tool, key, text);
     const stall = this.stallOf(tool, args || {}, text, verdict, ctx);
 
-    // A wait before this step: it counts only when this step is a read that brought nothing new.
     const previous = this.steps[this.steps.length - 1];
     if (previous && previous.verdict === 'pending') {
       const unchangedRead = READ_TOOLS.has(tool) && verdict === 'none';
@@ -270,8 +193,6 @@ export class ProgressTracker {
     if (verdict === 'none') repeats = this.bump(key);
 
     const inWindow = this.noProgressInWindow();
-    // A read that brought nothing new (or an error that came again) is already the repeat of an
-    // earlier call, so it counts that call too; an action is a repeat on its second quiet run.
     const byIdentity = READ_TOOLS.has(tool) || /^Error:/.test(text);
     const times = byIdentity ? repeats + 1 : repeats;
     const hint = verdict === 'none' && times >= REPEAT_AT ? repeatHint(tool, times) : null;
@@ -294,13 +215,10 @@ export class ProgressTracker {
     if (tool === 'wait') return 'pending';
     if (READ_TOOLS.has(tool)) {
       if (SAME_NOTE.test(text)) return 'none';
-      // A read the server does not mark (the element list, find): the same call bringing the same text.
       const earlier = [...this.steps].reverse().find((s) => s.key === key);
       return earlier && earlier.result === text ? 'none' : 'progress';
     }
     if (actionChangedNothing(tool, text)) return 'none';
-    // The same call failing with the same error again changed nothing either. A first error is
-    // not held against the run: the model reads it and usually changes course.
     if (/^Error:/.test(text)) {
       const earlier = [...this.steps].reverse().find((s) => s.key === key);
       if (earlier && earlier.result === text) return 'none';
