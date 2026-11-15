@@ -115,7 +115,7 @@ test('5. tests/test-count-floor.json floor is valid and enforced by npm run chec
   // (BUG-47). The checker parses the node --test summary and fails on a drop;
   // these asserts keep it wired.
   const checker = fs.readFileSync(path.join(ROOT, 'scripts', 'checkTestCount.mjs'), 'utf8');
-  assert.match(checker, /# tests (\d+)/, 'the checker must parse the node --test summary');
+  assert.ok(checker.includes('tap.match(/^# tests (\\d+)\\s*$/m)'), 'the checker must parse the node --test summary');
   assert.match(checker, /process\.exit\(1\)/, 'the checker must fail when the count drops');
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   assert.equal(pkg.scripts['check:tests'], 'node scripts/checkTestCount.mjs', 'the floor check must stay wired into npm scripts');
