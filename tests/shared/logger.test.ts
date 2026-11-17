@@ -16,12 +16,17 @@ globalThis.chrome = {
       set: (items: Record<string, unknown>, cb?: () => void) => {
         Object.assign(mockLogsData, items);
         if (cb) cb();
+      },
+      remove: (keys: string[], cb?: () => void) => {
+        keys.forEach((key) => delete mockLogsData[key]);
+        if (cb) cb();
       }
     }
   }
 } as unknown as typeof chrome;
 
 const { Logger, MAX_LOG_ENTRIES } = await import('../../src/shared/logger.ts');
+Logger.setDeveloperMode(true);
 
 test('Logger - Add Log Entry and Retrieve History', () => {
   Logger.clearLogs();
@@ -96,4 +101,17 @@ test('Logger - a timestamp carries the date (ISO), so a persisted entry is unamb
   Logger.info('T', 'timestamped entry');
   const entry = Logger.getLogsHistory().at(-1)!;
   assert.match(entry.timestamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/, `${entry.timestamp} is an ISO stamp with a date`);
+});
+
+test('Logger - Developer Mode saves logs when enabled and removes them when disabled', async () => {
+  Logger.clearLogs();
+  Logger.setDeveloperMode(true);
+  Logger.info('DeveloperMode', 'saved while enabled');
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal((mockLogsData.agent_logs_history as LogEntry[])[0].message, 'saved while enabled');
+
+  Logger.setDeveloperMode(false);
+  Logger.info('DeveloperMode', 'not saved while disabled');
+  assert.equal(Logger.getLogsHistory().length, 0);
+  assert.equal('agent_logs_history' in mockLogsData, false);
 });

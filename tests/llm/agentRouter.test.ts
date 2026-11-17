@@ -23,6 +23,8 @@ import type { LlmSettings } from '../../src/background/llm/types.ts';
 import { hangUntilAborted, jsonResponse, settledWithin, spyFetch, textReply, waitForRequests } from '../helpers/llmWire.ts';
 import type { SentRequest } from '../helpers/llmWire.ts';
 
+Logger.setDeveloperMode(true);
+
 const KEY = 'sk-test-agentrouter-123';
 const SETTINGS: LlmSettings = { provider: 'agent_router', apiKey: KEY, model: 'claude-3-5-sonnet', baseUrl: 'https://agentrouter.org/v1' };
 const TURNS = [

@@ -24,6 +24,7 @@ const { Storage, DEFAULT_SETTINGS, DEFAULT_PROVIDER_CONFIGS } = await import('..
 
 test('Storage - DEFAULT_SETTINGS sanity check', () => {
   assert.equal(DEFAULT_SETTINGS.provider, 'ollama');
+  assert.equal(DEFAULT_SETTINGS.developerMode, false);
   assert.equal(DEFAULT_SETTINGS.maxSteps, 250);
   assert.equal(DEFAULT_SETTINGS.effortDefault, 'medium');
   assert.ok(DEFAULT_SETTINGS.providerConfigs);
@@ -37,6 +38,14 @@ test('Storage - an old stored execute_js opt-in is dropped (there is no execute_
   assert.equal('allowExecuteJs' in DEFAULT_SETTINGS, false);
   mockStorageData['agent_settings'] = { provider: 'openrouter', maxSteps: 250, allowExecuteJs: true };
   assert.equal('allowExecuteJs' in (await Storage.getSettings()), false);
+  delete mockStorageData['agent_settings'];
+});
+
+test('Storage - removed built-in providers migrate to the default provider', async () => {
+  for (const provider of ['agent_router', 'openai_compatible']) {
+    mockStorageData['agent_settings'] = { provider };
+    assert.equal((await Storage.getSettings()).provider, DEFAULT_SETTINGS.provider, provider);
+  }
   delete mockStorageData['agent_settings'];
 });
 

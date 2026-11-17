@@ -57,8 +57,17 @@ export type LogBroadcastCallback = (entry: LogEntry) => void;
 const logsHistory: LogEntry[] = [];
 let logBroadcastCallback: LogBroadcastCallback | null = null;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let developerMode = false;
+
+function removeStoredLogs(): void {
+  if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local || typeof chrome.storage.local.remove !== 'function') return;
+  chrome.storage.local.remove(['agent_logs_history'], () => {
+    if (chrome.runtime && chrome.runtime.lastError) void chrome.runtime.lastError;
+  });
+}
 
 function persistLogsToStorage(): void {
+  if (!developerMode) return;
   if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local || typeof chrome.storage.local.set !== 'function') return;
   if (persistTimer) return;
   persistTimer = setTimeout(() => {
@@ -66,6 +75,7 @@ function persistLogsToStorage(): void {
     try {
       chrome.storage.local.set({ agent_logs_history: logsHistory.slice(-MAX_LOG_ENTRIES) }, () => {
         if (chrome.runtime && chrome.runtime.lastError) void chrome.runtime.lastError;
+        if (!developerMode) removeStoredLogs();
       });
     } catch (_) {}
   }, 100);
@@ -76,14 +86,18 @@ const logsRestored = new Promise<void>((resolve) => { resolveLogsRestored = reso
 
 if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local && typeof chrome.storage.local.get === 'function') {
   try {
-    chrome.storage.local.get<{ agent_logs_history?: LogEntry[] }>(['agent_logs_history'], (res) => {
+    chrome.storage.local.get<{ agent_settings?: { developerMode?: boolean }; agent_logs_history?: LogEntry[] }>(['agent_settings', 'agent_logs_history'], (res) => {
       if (chrome.runtime && chrome.runtime.lastError) void chrome.runtime.lastError;
-      if (Array.isArray(res?.agent_logs_history) && res.agent_logs_history.length > 0) {
+      developerMode = res?.agent_settings?.developerMode === true;
+      if (developerMode && Array.isArray(res?.agent_logs_history) && res.agent_logs_history.length > 0) {
         const keyOf = (e: LogEntry) => e.id || `${e.timestamp}_${e.message}`;
         const existingKeys = new Set(logsHistory.map(keyOf));
         const toAdd: LogEntry[] = res.agent_logs_history.filter((e) => !existingKeys.has(keyOf(e)));
         logsHistory.unshift(...toAdd);
         if (logsHistory.length > MAX_LOG_ENTRIES) logsHistory.splice(0, logsHistory.length - MAX_LOG_ENTRIES);
+      } else if (!developerMode) {
+        logsHistory.length = 0;
+        removeStoredLogs();
       }
       resolveLogsRestored();
     });
@@ -95,6 +109,16 @@ if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local && t
 }
 
 export const Logger = {
+  setDeveloperMode(enabled: boolean): void {
+    if (developerMode === enabled) return;
+    developerMode = enabled;
+    if (enabled) return;
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = null;
+    logsHistory.length = 0;
+    removeStoredLogs();
+  },
+
   setBroadcastCallback(cb: LogBroadcastCallback | null): void {
     logBroadcastCallback = cb;
   },
@@ -118,6 +142,7 @@ export const Logger = {
 
   addLog(level: LogLevel, module: string, message: unknown, data: unknown = null, options: { silent?: boolean; kind?: LogKind } = {}): void {
     try {
+      if (!developerMode) return;
       const timestamp = new Date().toISOString();
       let dataStr: string | null = null;
       if (data) {
@@ -194,3 +219,12 @@ export const Logger = {
     console.warn(`[${module}]`, redactedText(message), redactedData(data) ?? '');
   }
 };
+
+if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local' || !changes.agent_settings) return;
+    const savedSettings = changes.agent_settings.newValue;
+    Logger.setDeveloperMode(typeof savedSettings === 'object' && savedSettings !== null
+      && 'developerMode' in savedSettings && savedSettings.developerMode === true);
+  });
+}

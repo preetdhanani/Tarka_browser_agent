@@ -9,6 +9,8 @@ import fs from 'node:fs';
 import { Logger } from '../../src/shared/logger.ts';
 import { messageSummary } from '../../src/background/mcp/client.ts';
 
+Logger.setDeveloperMode(true);
+
 test('SEC-10: sidepanel.html loads no resource from any external host', () => {
   const html = fs.readFileSync(new URL('../../sidepanel/sidepanel.html', import.meta.url), 'utf8');
   const externals: string[] = [];

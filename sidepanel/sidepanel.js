@@ -473,6 +473,7 @@ function timeoutShownFor(settings, provider) {
 async function loadSettings() {
   currentSettings = await Storage.getSettings();
   applyTheme(currentSettings.theme || 'system');
+  setDeveloperModeUI(currentSettings.developerMode === true);
 
   const activeProvider = currentSettings.provider || 'openrouter';
   const activeIsCustom = isCustomProviderId(activeProvider, currentSettings);
@@ -931,6 +932,24 @@ function initTabs() {
   });
 }
 
+function setDeveloperModeUI(enabled) {
+  const toggle = document.getElementById('btnDeveloperMode');
+  const query = typeof document.querySelector === 'function' ? document.querySelector.bind(document) : null;
+  const logsTab = query ? query('.nav-btn[data-tab="logs"]') : null;
+  if (toggle) toggle.setAttribute('aria-checked', String(enabled));
+  if (!enabled && logsTab?.classList.contains('active')) {
+    query?.('.nav-btn[data-tab="chat"]')?.click?.();
+  }
+  if (logsTab) logsTab.hidden = !enabled;
+  if (!enabled) {
+    rawLogsCache = [];
+    const logOutput = document.getElementById('logOutput');
+    if (logOutput) logOutput.textContent = 'Developer mode is off. Logs are not saved.';
+  } else {
+    renderFilteredLogs();
+  }
+}
+
 
 function initPortConnection() {
   connectPort();
@@ -1111,6 +1130,7 @@ function setConnectionBanner(isDisconnected) {
 
 
 function appendLocalLog(level, module, message) {
+  if (currentSettings.developerMode !== true) return;
   try {
     addLogEntry({
       id: `panel-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -1143,6 +1163,12 @@ window.addEventListener('error', (event) => reportClientError('window.onerror', 
 window.addEventListener('unhandledrejection', (event) => reportClientError('unhandledrejection', event.reason));
 
 function initEventListeners() {
+  document.getElementById('btnDeveloperMode')?.addEventListener('click', async () => {
+    const enabled = !currentSettings.developerMode;
+    currentSettings = await Storage.saveSettings({ developerMode: enabled });
+    setDeveloperModeUI(enabled);
+  });
+
   document.getElementById('btnThemeToggle').addEventListener('click', async () => {
     const current = currentSettings.theme || 'system';
     const next = THEME_MODES[(THEME_MODES.indexOf(current) + 1) % THEME_MODES.length];
@@ -3343,6 +3369,7 @@ function renderFilteredLogs() {
 
 
 function addLogEntry(entry) {
+  if (currentSettings.developerMode !== true) return;
   if (!entry) return;
   rawLogsCache.push(entry);
   if (rawLogsCache.length > MAX_PANEL_LOGS) rawLogsCache.shift();

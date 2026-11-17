@@ -35,7 +35,7 @@ function makeBackgroundChromeMock() {
           if (wantsLogs) {
             // The exact race: this callback does not fire until the test says so, simulating
             // a storage read for logs that has not landed yet when GET_AGENT_STATE arrives.
-            pendingGet.then(() => cb({ agent_logs_history: ['restored-entry'] }));
+            pendingGet.then(() => cb({ agent_settings: { developerMode: true }, agent_logs_history: ['restored-entry'] }));
           } else {
             cb({});
           }

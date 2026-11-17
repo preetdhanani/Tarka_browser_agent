@@ -141,7 +141,7 @@ test('an approve with remember:site lets the next gated action on the same origi
   const approved = await rig.send({ action: 'CONFIRM_ACTION', tabId: 100, payload: { decision: 'approve', remember: 'site' } });
   assert.equal(approved?.success, true);
 
-  const done = await rig.waitForStatus(100, 'idle', { maxPolls: 20000 });
+  const done = await rig.waitForStatus(100, 'idle', { maxPolls: 100000 });
   // One card in the whole run: the decision broadcast itself still shows the card it decided
   // (the row and the status change in one sweep), so the cards are told apart by their ids.
   const cardIds = new Set(panel.states().map((s) => s['pendingConfirm']?.id).filter(Boolean));

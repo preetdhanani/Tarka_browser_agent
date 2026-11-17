@@ -70,6 +70,7 @@ function makeChromeStorageMock(initial = {}) {
 test('clear-logs-not-propagated: Logger.clearLogs() empties the in-memory history immediately', async () => {
   global.chrome = makeChromeStorageMock();
   const { Logger } = await import('../src/shared/logger.ts?case=clearLogs');
+  Logger.setDeveloperMode(true);
 
   Logger.info('Test', 'entry one');
   Logger.info('Test', 'entry two');
@@ -98,7 +99,7 @@ test('simplify-duplicate-log-restore: logsRestored() only resolves after the sto
       local: {
         // Simulates a cold-boot restore that has not landed yet when logsRestored() is
         // first awaited - the exact race that used to let an empty logs array through.
-        get: (keys, cb) => { pendingGet.then(() => cb({ agent_logs_history: ['restored'] })); },
+        get: (keys, cb) => { pendingGet.then(() => cb({ agent_settings: { developerMode: true }, agent_logs_history: ['restored'] })); },
         set: () => {}
       }
     }

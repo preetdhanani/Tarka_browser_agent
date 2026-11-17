@@ -18,10 +18,8 @@ export const CUSTOM_EMPTY_MODELS_TEXT = 'No models will be shown in the selector
 
 const BUILTIN_PROVIDER_LABELS = {
   openrouter: 'OpenRouter API',
-  agent_router: 'Agent Router API',
   gemini: 'Google Gemini API',
   ollama: 'Ollama (Local Host)',
-  openai_compatible: 'OpenAI-Compatible (Groq, vLLM, LM Studio, Llama API)',
   openai: 'OpenAI Official',
   anthropic: 'Anthropic (Claude)',
   nvidia: 'NVIDIA NIM (build.nvidia.com)'

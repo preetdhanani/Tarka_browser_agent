@@ -56,6 +56,7 @@ export interface Settings {
   autoApprove?: boolean;
   modelTier?: 'auto' | 'small' | 'large';
   screenshots: boolean;
+  developerMode: boolean;
   customProviders?: CustomProviders;
   research: ResearchSettings;
 }
@@ -208,6 +209,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoApprove: true,
   modelTier: 'auto',
   screenshots: true,
+  developerMode: false,
   research: { ...DEFAULT_RESEARCH },
 };
 
@@ -239,6 +241,7 @@ export function sanitizeCustomProviders(raw: unknown): CustomProviders {
 
 function resolveStoredProvider(raw: unknown, customProviders: CustomProviders): string {
   const provider = typeof raw === 'string' && raw ? raw : DEFAULT_SETTINGS.provider;
+  if (provider === 'agent_router' || provider === 'openai_compatible') return DEFAULT_SETTINGS.provider;
   if ((BUILTIN_PROVIDER_IDS as readonly string[]).includes(provider)) return provider;
   if (customProviders[provider]) return provider;
   return DEFAULT_SETTINGS.provider;
@@ -392,6 +395,7 @@ export const Storage = {
           model,
           providerConfigs: mergedConfigs,
           customProviders,
+          developerMode: loaded.developerMode === true,
           research: normalizeResearch(loaded.research),
           contextWindow: loaded.contextWindow || {},
           screenshots: true

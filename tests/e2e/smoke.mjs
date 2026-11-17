@@ -1226,6 +1226,25 @@ async function checkLogsTab(ctx, tabId, shotName, shotDir, screenshots) {
   return problems;
 }
 
+/** Toggle Developer mode through the same Settings switch a user uses. */
+async function setDeveloperMode(ctx, tabId, enabled) {
+  const panel = await openPanelAsPage(ctx, tabId);
+  try {
+    await panel.click('.nav-btn[data-tab="settings"]');
+    const current = await panel.$eval('#btnDeveloperMode', (el) => el.getAttribute('aria-checked') === 'true');
+    if (current !== enabled) await panel.click('#btnDeveloperMode');
+    await panel.waitForFunction((expected) => document.getElementById('btnDeveloperMode')?.getAttribute('aria-checked') === String(expected), { timeout: 5000 }, enabled);
+    const ui = await panel.evaluate(() => ({
+      enabled: document.getElementById('btnDeveloperMode')?.getAttribute('aria-checked') === 'true',
+      logsVisible: !document.querySelector('.nav-btn[data-tab="logs"]')?.hidden
+    }));
+    const stored = await ctx.driver.evaluate(() => chrome.storage.local.get('agent_settings').then(({ agent_settings: settings }) => settings?.developerMode === true));
+    return { ...ui, stored };
+  } finally {
+    await panel.close();
+  }
+}
+
 /**
  * Chrome stops an idle MV3 worker after about 30 seconds; a user who comes back later meets a fresh
  * worker. This does the same on purpose: every service worker of the profile is stopped over CDP,
@@ -1380,6 +1399,12 @@ async function addCustomProvider(ctx, llm) {
     await page.setViewport({ width: 400, height: 900 });
     await page.goto(`chrome-extension://${ctx.extensionId}/sidepanel/sidepanel.html`, { waitUntil: 'load' });
     await page.click('.nav-btn[data-tab="settings"]');
+    const initialDeveloperMode = await page.evaluate(() => ({
+      enabled: document.getElementById('btnDeveloperMode')?.getAttribute('aria-checked') === 'true',
+      logsVisible: !document.querySelector('.nav-btn[data-tab="logs"]')?.hidden
+    }));
+    if (initialDeveloperMode.enabled) result.problems.push('Developer mode is on by default');
+    if (initialDeveloperMode.logsVisible) result.problems.push('the Logs tab is visible while Developer mode is off');
     await page.waitForSelector('#providerSelect', { visible: true, timeout: 8000 });
     await page.select('#providerSelect', '__custom_provider__');
     await page.waitForSelector('#cpOverlay', { visible: true, timeout: 5000 });
@@ -2059,6 +2084,12 @@ async function runTask(ctx, fixtures, llm, name, attempt = 1) {
   await page.goto(url, { waitUntil: 'load' });
   await page.bringToFront();
   const tabId = await tabIdFor(ctx.driver, url);
+  if (task.expectLogs) {
+    const developerMode = await setDeveloperMode(ctx, tabId, true);
+    if (!developerMode.enabled || !developerMode.logsVisible || !developerMode.stored) {
+      throw new Error(`Developer mode did not turn on and reveal Logs: ${JSON.stringify(developerMode)}`);
+    }
+  }
   // Before the run: the page as loaded. After the run (below): the page the task ended on, which
   // is a new document when a click navigated.
   const probes = [await probePage(ctx, page, tabId)];
@@ -2145,6 +2176,13 @@ async function runTask(ctx, fixtures, llm, name, attempt = 1) {
   const badgeProblems = badgeCount > 0 ? [`the page shows ${badgeCount} numbered element badge(s), but element badges are off`] : [];
   const restartProblems = task.restartWorker ? await restartWorkerAndReadCard(ctx, tabId, expectCard) : [];
   const logProblems = task.expectLogs ? await checkLogsTab(ctx, tabId, shotName, shotDir, screenshots) : [];
+  if (task.expectLogs) {
+    const developerMode = await setDeveloperMode(ctx, tabId, false);
+    const logsStored = await ctx.driver.evaluate(() => chrome.storage.local.get('agent_logs_history').then((items) => Object.hasOwn(items, 'agent_logs_history')));
+    if (developerMode.enabled || developerMode.logsVisible || developerMode.stored || logsStored) {
+      logProblems.push(`turning Developer mode off did not hide Logs and remove saved logs: ${JSON.stringify({ ...developerMode, logsStored })}`);
+    }
+  }
   // The effort is the model's reasoning level: every request of the run must carry it.
   const effortProblems = effortWireProblems(calls, { provider: PROVIDER, model, effort: EFFORT });
   // A task can ask the page itself for evidence of what the run did (a consent cookie set by the

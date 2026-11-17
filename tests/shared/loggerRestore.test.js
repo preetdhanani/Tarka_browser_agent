@@ -15,7 +15,7 @@ test('Logger - the restore dedups an id-less stored entry by time and text, in t
   globalThis.chrome = {
     storage: {
       local: {
-        get: (_keys, cb) => { gate.then(() => cb({ agent_logs_history: storedEntries })); },
+        get: (_keys, cb) => { gate.then(() => cb({ agent_settings: { developerMode: true }, agent_logs_history: storedEntries })); },
         set: (items, cb) => { Object.assign({}, items); if (cb) cb(); }
       }
     }

@@ -12,6 +12,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { Logger } from '../../src/shared/logger.ts';
 
 import { PLAN_FIRST_TEXT, TarkaMCPClient } from '../../src/background/mcp/client.ts';
 import { REFLECTION_TEXT, REPEAT_HINT_PREFIX } from '../../src/background/mcp/progress.ts';
@@ -22,6 +23,8 @@ import { clearEffortCache } from '../../src/background/llm/effort.ts';
 import { fakeDom, link } from '../helpers/fakeDom.ts';
 import type { RunRuntime } from '../../src/background/runner/runtimeRegistry.ts';
 import type { HistoryEntry, RunStatus } from '../../src/background/types.ts';
+
+Logger.setDeveloperMode(true);
 
 const PAGE_URL = 'https://shop.test/items';
 const DETAIL_URL = 'https://shop.test/items/42';
