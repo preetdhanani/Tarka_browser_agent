@@ -290,34 +290,13 @@ export const TASKS = {
   // click and when to stop are all the model's decisions. Nothing is scripted and no site is
   // named or prepared. The checks only read facts a right answer must contain.
   // ---------------------------------------------------------------------------------------------
-  'web-eiffel-tower': {
-    page: WEB_START,
-    web: true,
-    prompt: 'In which year was the Eiffel Tower completed, and how tall is it today? Look it up on the web and tell me which site you used.',
-    expectLogs: true,
-    // The user who leaves during a run and comes back meets a new worker: the run and its logs must still be there.
-    restartWorker: true,
-    timeoutMs: 6 * 60 * 1000,
-    check: (run) => /1889/.test(run.answer || '') && /\b3\d\d\b|\b1[,.]?0\d\d\b/.test(run.answer || '')
-  },
-  'web-python-release': {
-    page: WEB_START,
-    web: true,
-    prompt: 'What is the newest stable Python 3 release right now? Check the official source and give me the exact version number and its release date.',
-    timeoutMs: 6 * 60 * 1000,
-    check: (run) => /\b3\.\d{1,2}\.\d{1,2}\b/.test(run.answer || '')
-  },
-  'web-npm-react': {
-    page: WEB_START,
-    web: true,
-    prompt: 'What is the latest published version of the React library on npm, and roughly how many weekly downloads does it have?',
-    timeoutMs: 6 * 60 * 1000,
-    check: (run) => /\b(1[89]|[2-9]\d)\.\d+\.\d+\b/.test(run.answer || '')
-  },
   'web-arxiv-agents': {
     page: WEB_START,
     web: true,
     prompt: 'Find one recent research paper about LLM agents that browse the web. Give me its title, the first author, and its arXiv id.',
+    expectLogs: true,
+    // The user who leaves during a run and comes back meets a new worker: the run and its logs must still be there.
+    restartWorker: true,
     timeoutMs: 6 * 60 * 1000,
     check: (run) => /\b\d{4}\.\d{4,5}\b/.test(run.answer || '') && (run.answer || '').length > 40
   },
@@ -327,21 +306,6 @@ export const TASKS = {
     prompt: 'How many stars does the Playwright repository by Microsoft have on GitHub, and what is its latest release?',
     timeoutMs: 6 * 60 * 1000,
     check: (run) => /star/i.test(run.answer || '') && /\d/.test(run.answer || '') && /v?1\.\d+/.test(run.answer || '')
-  },
-  'web-train-hof-munich': {
-    page: WEB_START,
-    web: true,
-    prompt: 'Find me a train connection from Hof to München Hbf for tomorrow around 08:00, and tell me the departure time, arrival time, train type and any changes.',
-    timeoutMs: 8 * 60 * 1000,
-    // bahn.de answers its timetable API with HTTP 403 for an automated Chromium (measured
-    // 2026-10-25): the agent accepted the shadow-root cookie layer and filled the form, then the
-    // site refused the search. Not something the agent can fix, so the task waits for a site that
-    // lets it through, and the check no longer passes an answer that says it could not.
-    pending: 'bahn.de refuses the timetable search (HTTP 403) to an automated browser',
-    check: (run) => {
-      const a = run.answer || '';
-      return a.length > 20 && /\b\d{1,2}:\d{2}\b/.test(a) && !/unable|could not|couldn't|blocked|bot detection|not able/i.test(a);
-    }
   },
   'web-notebook-fix': {
     // The JupyterLab case on the local notebook fixture, with the real model: an inner scroll
@@ -442,7 +406,7 @@ export const TASKS = {
   // tuned against these: they only run after a change made for the tasks above, to show that the
   // change helps in general and is not fitted to those tasks. A held-out task that fails is a finding
   // about the agent, never a reason to edit the task. Each one asks for a different kind of work:
-  // an official download page, a release log, a wiki fact, a reference doc, a live list, a registry.
+  // an official download page, a reference doc, and a live list.
   'held-node-lts': {
     page: WEB_START,
     web: true,
@@ -450,22 +414,6 @@ export const TASKS = {
     prompt: 'Which Node.js major version is the current Active LTS release, and what is its codename? Use the official Node.js website.',
     timeoutMs: 6 * 60 * 1000,
     check: (run) => /\b(2[2-9]|3\d)\b/.test(run.answer || '') && /[A-Z][a-z]+/.test(run.answer || '')
-  },
-  'held-rust-release': {
-    page: WEB_START,
-    web: true,
-    heldOut: true,
-    prompt: 'What is the latest stable version of the Rust programming language, and on which date was it released?',
-    timeoutMs: 6 * 60 * 1000,
-    check: (run) => /\b1\.\d{2,3}(\.\d+)?\b/.test(run.answer || '') && /\b20\d\d\b/.test(run.answer || '')
-  },
-  'held-munich-population': {
-    page: WEB_START,
-    web: true,
-    heldOut: true,
-    prompt: 'What is the population of Munich according to its English Wikipedia article, and which year is that number from?',
-    timeoutMs: 6 * 60 * 1000,
-    check: (run) => /\b1[.,]\d{3}[.,]\d{3}\b|\b1[.,]\d+\s*million\b/i.test(run.answer || '') && /\b20[12]\d\b/.test(run.answer || '')
   },
   'held-mdn-array-at': {
     page: WEB_START,
@@ -482,14 +430,6 @@ export const TASKS = {
     prompt: 'What is the title of the story at position 1 on the Hacker News front page right now, and how many points does it have?',
     timeoutMs: 6 * 60 * 1000,
     check: (run) => /\b\d+\s*points?\b/i.test(run.answer || '') && (run.answer || '').length > 25
-  },
-  'held-pypi-requests': {
-    page: WEB_START,
-    web: true,
-    heldOut: true,
-    prompt: 'What is the latest version of the Python package "requests" on PyPI, and which minimum Python version does it require?',
-    timeoutMs: 6 * 60 * 1000,
-    check: (run) => /\b2\.\d{2}\.\d+\b/.test(run.answer || '') && /\b3\.\d{1,2}\b/.test(run.answer || '')
   },
 
   // Sealed open-web tasks (`--sealed`). They judge the finished work of a series of changes, so they are

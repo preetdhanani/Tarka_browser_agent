@@ -34,7 +34,7 @@ The run against a real local Ollama needs the model to be pulled already.
 
 ```
 node tests/e2e/smoke.mjs --provider=ollama            # the open-web tasks with qwen3.8:27b-mlx
-node tests/e2e/smoke.mjs --provider=ollama --task=web-eiffel-tower --model=gemma4:12b
+node tests/e2e/smoke.mjs --provider=ollama --task=web-github-playwright --model=gemma4:12b
 ```
 
 The run prints every task with its steps, model calls and tokens, then a summary, and it ends with `SMOKE PASSED` or `SMOKE FAILED` with the list of problems. The exit code is 0 for a pass and 1 for a fail. If the sources are newer than `dist/`, it prints a warning to build again (or to use `--build`).
@@ -42,7 +42,7 @@ The run prints every task with its steps, model calls and tokens, then a summary
 | Option | What it does |
 | --- | --- |
 | `--build` | Runs `npm run build` first, so `dist/` is fresh. |
-| `--task=a,b` | Runs only these tasks, for example `web-eiffel-tower,web-npm-react` |
+| `--task=a,b` | Runs only these tasks, for example `web-github-playwright,web-arxiv-agents` |
 | `--provider=name` | The real model server: `lisa` (default), `nvidia` or `ollama`. The OpenAI-compatible profiles live in `lib/providers.mjs`. |
 | `--held-out` | Runs the held-out open-web tasks instead of the regular ones (see "The tasks"). |
 | `--sealed` | Runs the sealed open-web tasks and shows only their verdicts and numbers, never their steps, answers or model calls (see "The tasks"). |
@@ -121,12 +121,8 @@ The check reads only facts a right answer must contain.
 
 | Task | The question |
 | --- | --- |
-| `web-eiffel-tower` | the year the Eiffel Tower was completed and its height, with the site used |
-| `web-python-release` | the newest stable Python 3 release and its date, from the official source |
-| `web-npm-react` | the latest React version on npm and its weekly downloads |
 | `web-arxiv-agents` | one recent arXiv paper about web-browsing LLM agents: title, first author, id |
 | `web-github-playwright` | the stars and the latest release of microsoft/playwright |
-| `web-train-hof-munich` | a train from Hof to München Hbf tomorrow around 08:00 (bahn.de has a cookie layer in a shadow root) |
 | `web-cookie-accept` | a local fixture page puts a cookie banner over its article: accept all cookies and name the headline underneath |
 | `web-research-archive` | the exact file name of Ollama's latest Linux amd64 archive and whether it needs zstd, looked up with `web_search` or `fetch_url` (the run must use one) |
 
@@ -146,11 +142,8 @@ The summary ends with a table per task (runs that succeeded, and the median and 
 | Task | The question |
 | --- | --- |
 | `held-node-lts` | the current Active LTS major of Node.js and its codename, from the official site |
-| `held-rust-release` | the latest stable Rust version and its release date |
-| `held-munich-population` | Munich's population from its English Wikipedia article, and the year of the figure |
 | `held-mdn-array-at` | what `Array.prototype.at()` returns for a negative index, per MDN, with an example |
 | `held-hn-top-story` | the title and points of the top story on Hacker News |
-| `held-pypi-requests` | the latest `requests` version on PyPI and its minimum Python version |
 
 A task may list the sites it needs (`reachable`): the harness asks each first, and a site that does not answer skips the task with the reason, never a failure.
 

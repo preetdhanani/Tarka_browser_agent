@@ -44,7 +44,7 @@
  *         node smoke.mjs --repeat=3                every task 3 times, summarised as median and p90 per task
  *         node smoke.mjs --provider=nvidia         the open-web tasks on NVIDIA NIM
  *         node smoke.mjs --provider=ollama         all tasks with qwen3.8:27b-mlx on the real Ollama
- *         node smoke.mjs --task=web-eiffel-tower   one task (or a comma list)
+ *         node smoke.mjs --task=web-github-playwright   one task (or a comma list)
  *         node smoke.mjs --model=gemma4:12b
  *         node smoke.mjs --headful                 watch it in a real window
  *         node smoke.mjs --out=report.json         also save the full report as JSON
