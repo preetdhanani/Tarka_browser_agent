@@ -62,6 +62,19 @@ test('num_ctx is a fallback for Ollama only: a cloud or custom model falls back 
   assert.deepEqual(await getEffectiveContextWindow({ provider: 'lisa', model: 'lisa-pro', ollamaNumCtx: 8192, customProviders: {} as any }), { tokens: 262144, source: 'default' });
 });
 
+test('known 1M cloud models (like NVIDIA Nemotron 3.5) get their 1M window estimate when the provider omits it', async (t) => {
+  spyFetch(t, () => { throw new Error('no request expected'); });
+  assert.deepEqual(
+    await getEffectiveContextWindow({ provider: 'nvidia', model: 'nvidia/nemotron-3.5-super-vl-120b-a12b' }),
+    { tokens: 1_000_000, source: 'estimate' }
+  );
+  assert.deepEqual(
+    await getEffectiveContextWindow({ provider: 'nvidia', model: 'nvidia/nemotron-3.5-super-vl-120b-a12b', contextWindow: { 'nvidia|nvidia/nemotron-3.5-super-vl-120b-a12b': 200000 } }),
+    { tokens: 200000, source: 'user' },
+    'a user value still wins over the model estimate'
+  );
+});
+
 test('the model list keeps the windows it names, and the window is read from there', async (t) => {
   spyFetch(t, () => jsonResponse({
     data: [

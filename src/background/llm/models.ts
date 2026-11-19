@@ -376,6 +376,17 @@ export function contextWindowKey(provider: string, model: string): string {
   return `${provider}|${model}`;
 }
 
+const KNOWN_MODEL_WINDOWS: Array<[RegExp, number]> = [
+  [/nemotron[-_.]?3\.5/i, 1_000_000]
+];
+
+function knownModelWindow(model: string): number | null {
+  for (const [pattern, tokens] of KNOWN_MODEL_WINDOWS) {
+    if (pattern.test(model)) return tokens;
+  }
+  return null;
+}
+
 function ollamaFamilyWindow(model: string): number | null {
   if (model.includes('qwen3') || model.includes('qwen2.5')) return 262144;
   if (model.includes('llama3.1') || model.includes('llama3.2')) return 131072;
@@ -398,7 +409,7 @@ export async function getEffectiveContextWindow(settings: LlmSettings): Promise<
   if (provider === 'ollama') {
     const shown = await fetchModelContextWindow(settings, model);
     if (shown && shown > 0) return { tokens: shown, source: 'provider' };
-    const family = model ? ollamaFamilyWindow(model) : null;
+    const family = model ? (knownModelWindow(model) ?? ollamaFamilyWindow(model)) : null;
     if (family) return { tokens: family, source: 'estimate' };
     const numCtx = Number(settings.ollamaNumCtx);
     return { tokens: numCtx > 0 ? numCtx : DEFAULT_CONTEXT_WINDOW, source: 'default' };
@@ -406,6 +417,8 @@ export async function getEffectiveContextWindow(settings: LlmSettings): Promise<
 
   const listed = Number((await Storage.getCachedContextWindows(provider).catch(() => null))?.[model]);
   if (Number.isFinite(listed) && listed > 0) return { tokens: listed, source: 'provider' };
+  const known = model ? knownModelWindow(model) : null;
+  if (known) return { tokens: known, source: 'estimate' };
   return { tokens: DEFAULT_CONTEXT_WINDOW, source: 'default' };
 }
 
