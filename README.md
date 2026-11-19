@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>An open-source AI browser agent built directly into Chrome's Side Panel.</b><br>
-  Automate multi-step web tasks in your real browser using local or cloud models, with code-enforced safety gates that keep you in control.<br>
+  Execute real multi-step workflows inside your own browser using local or cloud models, with code-enforced safety gates that keep you in control.<br>
   Chrome Manifest V3 · Ollama · NVIDIA NIM · Gemini · Claude · OpenAI · Custom APIs
 </p>
 
@@ -28,9 +28,9 @@
 <br>
 
 <p align="center">
-  <img src="assets/images/tarka-hero.png" alt="Tarka running inside Chrome's Side Panel next to the ollama/ollama v0.40.16 GitHub release page, using nvidia/nemotron-3.5-super-vl-120b-a12b to verify the exact Linux amd64 archive filename" width="100%">
+  <img src="assets/images/tarka-notebook-fix.png" alt="Tarka editing cell 14 of setup-ollama.ipynb inside Chrome to remove sudo, running the cell with Shift+Enter, and verifying ollama version 0.40.11 using nvidia/nemotron-3.5-super-vl-120b-a12b" width="100%">
   <br>
-  <sub>Tarka verifying the latest Ollama release on GitHub from Chrome's Side Panel using <code>nvidia/nemotron-3.5-super-vl-120b-a12b</code>.</sub>
+  <sub>Fixing a failing browser notebook cell, running it with <code>Shift+Enter</code>, and verifying the command output using <code>nvidia/nemotron-3.5-super-vl-120b-a12b</code>.</sub>
 </p>
 
 > [!NOTE]
@@ -40,7 +40,6 @@
 
 <p align="center">
   <a href="#highlights">Highlights</a> ·
-  <a href="#plan-act-and-verify">Plan &amp; Verify</a> ·
   <a href="#work-inside-real-web-apps">Real Workflows</a> ·
   <a href="#manage-long-sessions">Sessions</a> ·
   <a href="#safety-enforced-in-code">Safety</a> ·
@@ -82,42 +81,19 @@ Session history, keys, and redacted logs never leave your browser storage except
 
 ---
 
-## Plan, act, and verify
-
-Give Tarka a goal from the Side Panel and watch it break multi-step tasks into visible steps.
-You can pause or stop a run at any time, inspect every action taken, and check the final verified answer with model call and token counts.
-
-<table>
-<tr>
-<td width="50%"><img src="assets/images/tarka-live-plan.png" alt="Tarka Side Panel mid-run showing a three-step plan checklist, active browser status, and Pause and Stop Task controls"></td>
-<td width="50%"><img src="assets/images/tarka-github-done.png" alt="Tarka Side Panel after completion showing the Done card, Playwright star count, v1.65.1 release link, and call and token summary"></td>
-</tr>
-<tr>
-<td align="center"><sub>Live progress: numbered plan checklist with Pause and Stop controls.</sub></td>
-<td align="center"><sub>Verified completion: direct answer, source links, and step/token usage.</sub></td>
-</tr>
-</table>
-
----
-
 ## Work inside real web apps
 
-Tarka handles multi-step interaction across code notebooks, cookie banners, forms, and long pages, and can export structured results as downloadable files (`certifications.json`, CSV, Markdown tables).
-
-<p align="center">
-  <img src="assets/images/tarka-notebook-fix.png" alt="Tarka editing cell 14 of setup-ollama.ipynb in the browser to remove sudo, running it with Shift+Enter, and confirming ollama version 0.40.11" width="100%">
-  <br>
-  <sub>Fixing a failing notebook cell, executing it with <code>Shift+Enter</code>, and reporting the verified output.</sub>
-</p>
+Tarka navigates live pages, dismisses overlapping banners, fills and runs interactive editors, and extracts structured records into downloadable files (`certifications.json`, CSV, Markdown tables).
+During execution, you can inspect the step plan, pause or stop a run at any time, and review exact model call and token counts when the task completes.
 
 <table>
 <tr>
-<td width="50%"><img src="assets/images/tarka-cookie-accept.png" alt="Tarka dismissing an overlapping cookie banner on an article page and reading the headline underneath"></td>
+<td width="50%"><img src="assets/images/tarka-cookie-accept.png" alt="Tarka Side Panel after accepting cookies on an article page and extracting the underlying headline"></td>
 <td width="50%"><img src="assets/images/tarka-json-export.png" alt="Tarka Side Panel displaying a formatted JSON preview card with Copy button after extracting all ten certifications into certifications.json"></td>
 </tr>
 <tr>
 <td align="center"><sub>Dismiss overlays and cookie banners to reach underlying content.</sub></td>
-<td align="center"><sub>Extract page records into clean, downloadable JSON files.</sub></td>
+<td align="center"><sub>Extract structured page records into clean, downloadable JSON files.</sub></td>
 </tr>
 </table>
 
@@ -125,12 +101,12 @@ Tarka handles multi-step interaction across code notebooks, cookie banners, form
 
 ## Manage long sessions
 
-Long multi-turn sessions show live context window usage in the composer ring.
-When a chat grows, you can compact earlier turns into a structured turn summary while keeping the workspace ready for your next follow-up.
+Tarka supports long-context models up to **1M tokens** (`1,000,000` tokens), reading context limits automatically from provider metadata or per-model overrides in Settings (for example `200K` or `1M`).
+The composer displays a live usage ring with warnings at `70%` and `90%`, and lets you compact earlier turns into a structured summary whenever a conversation grows.
 
 <table>
 <tr>
-<td width="50%"><img src="assets/images/tarka-context-card.png" alt="Context meter popover showing 5K of 256K tokens used and a Compact chat action button"></td>
+<td width="50%"><img src="assets/images/tarka-context-card.png" alt="Context meter popover showing token usage against the configured context window and a Compact chat button"></td>
 <td width="50%"><img src="assets/images/tarka-chat-compacted.png" alt="Chat compacted divider with an expandable summary of the prior turn including goal, answer, sites used, and files"></td>
 </tr>
 <tr>
@@ -177,34 +153,18 @@ Read the full threat model and disclosure process in [SECURITY.md](SECURITY.md).
 
 ## Bring any model
 
-Switch providers at any time in **Settings**, fetch live model lists directly from your endpoint, or add any self-hosted vLLM, SGLang, relay, or proxy through **Custom model API**.
+Switch providers at any time in **Settings** (`Ollama`, `NVIDIA NIM`, `Google Gemini`, `Anthropic Claude`, `OpenAI / Compatible`, `OpenRouter`, `AgentRouter`), fetch live model lists directly from your endpoint, or add any self-hosted vLLM, SGLang, LISA, or relay server through **Custom model API**.
 
 <table>
 <tr>
-<td width="50%"><img src="assets/images/tarka-settings.png" alt="Tarka Settings tab in light mode showing Developer mode toggle, LLM Provider dropdown, Base API URL, API key field, Fetch Models button, context window, and step limits"></td>
+<td width="50%"><img src="assets/images/tarka-settings.png" alt="Tarka Settings tab in light mode showing Developer mode toggle, LLM Provider dropdown, Base API URL, API key field, Fetch Models button, 1M-capable context window input, and step limits"></td>
 <td width="50%"><img src="assets/images/tarka-custom-api.png" alt="Custom model API modal showing Provider ID, Display name, Base URL, OpenAI Chat Completions and Anthropic Messages protocol selector, and model ID controls"></td>
 </tr>
 <tr>
-<td align="center"><sub>Settings tab: local or cloud providers, timeouts, and context window controls.</sub></td>
+<td align="center"><sub>Settings tab: local or cloud providers, context window up to 1M+, and step limits.</sub></td>
 <td align="center"><sub>Custom model API dialog supporting OpenAI Chat Completions and Anthropic Messages protocols.</sub></td>
 </tr>
 </table>
-
-### Supported providers and fallback model IDs
-
-The model picker fetches live models from the provider you configure.
-If a live fetch fails or returns nothing, Tarka falls back to the built-in lists below (`getFallbackModels` in [src/background/llm/models.ts](src/background/llm/models.ts)); custom endpoints use the model IDs you save in the dialog.
-
-| Provider | Runtime | Fallback model list |
-| --- | --- | --- |
-| **Ollama** | Local / Offline | `qwen3.8:27b-mlx`, `qwen2.5:14b`, `llama3.1:8b`, `gemma2:9b` |
-| **Google Gemini** | Cloud API | `gemini-2.0-flash`, `gemini-2.0-flash-lite`, `gemini-1.5-flash`, `gemini-1.5-pro`, `gemini-2.0-pro-exp-02-05`, `gemini-1.5-flash-8b` |
-| **Anthropic** | Cloud API | `claude-3-5-sonnet-20241022`, `claude-3-5-haiku-20241022` |
-| **OpenAI / OpenAI-compatible** | Cloud API (Groq default for compatible) | `gpt-4o`, `gpt-4o-mini`, `llama-3.3-70b-versatile`, `llama-3.1-8b-instant` |
-| **NVIDIA NIM** | Cloud / Enterprise | `meta/llama-3.3-70b-instruct`, `deepseek-ai/deepseek-r1`, `nvidia/llama-3.1-nemotron-70b-instruct`, `meta/llama-3.1-405b-instruct`, `mistralai/mixtral-8x22b-instruct`, `qwen/qwen2.5-72b-instruct`, `nvidia/nemotron-4-340b-instruct` (plus vision-language models such as `nvidia/nemotron-3.5-super-vl-120b-a12b`) |
-| **OpenRouter** | Multi-Provider Gateway | `anthropic/claude-3.5-sonnet`, `meta-llama/llama-3.3-70b-instruct`, `google/gemini-2.0-flash-001`, `deepseek/deepseek-r1`, `deepseek/deepseek-chat`, `openai/gpt-4o-mini` |
-| **AgentRouter** | Multi-Provider Gateway | `claude-3-5-sonnet`, `gpt-4o`, `deepseek-r1`, `llama-3.3-70b`, `claude-3-haiku` |
-| **Custom Endpoints** | Local or Hosted | User-saved model IDs (self-hosted vLLM, SGLang, LISA, or private proxies) |
 
 ---
 
