@@ -421,3 +421,108 @@ test('dialog, Edit flow fetch: the fetched ids merge with the saved list, and th
   assert.deepEqual(dialog.draft().models, ['endpoint-1', 'saved-2', 'saved-1'], 'fetched first, then what only the user had');
   assert.match(getEl('cpFetchStatus').textContent, /1 new id\(s\).*merged/);
 });
+
+test('providerMeta: a custom provider uses descriptor.baseUrl as authoritative over stale providerConfigs.baseUrl', () => {
+  const settings = {
+    customProviders: {
+      acme: { id: 'acme', displayName: 'Acme Gateway', protocol: 'openai', baseUrl: 'https://new.example/v1', models: ['m1'], keyMode: 'apiKey' }
+    },
+    providerConfigs: { acme: { baseUrl: 'https://stale.example/v1', apiKey: 'sk-live', model: 'm1' } }
+  };
+  const meta = providerMeta('acme', settings);
+  assert.equal(meta.baseUrl, 'https://new.example/v1');
+  assert.equal(meta.baseUrlPlaceholder, 'https://new.example/v1');
+});
+
+test('dialog, allowInsecureHttp: draftPayload carries allowInsecureHttp: true into FETCH_MODELS and TEST_PROVIDER when checked, and omits it when unchecked', async () => {
+  elements.clear();
+  mockStorageData['agent_settings'] = { provider: 'openrouter' };
+  const sent = [];
+  const dialog = initCustomProviderDialog({
+    getSettings: () => ({ provider: 'openrouter', providerConfigs: {} }),
+    applySettings: () => {},
+    sendBgMessage: (msg, cb) => {
+      sent.push(msg);
+      if (msg.action === 'FETCH_MODELS') cb({ success: false, error: 'no list', models: [] });
+      else cb({ success: true, reply: 'ok', latencyMs: 10 });
+    },
+    showToast: () => {},
+    providerSelected: async () => {}
+  });
+
+  dialog.open('add');
+  getEl('cpIdInput').value = 'acme-http';
+  getEl('cpBaseUrlInput').value = 'http://api.example.com/v1';
+  getEl('cpApiKeyInput').value = 'sk-test';
+  getEl('cpModelAddInput').value = 'm1';
+  await getEl('btnCpAddModel').dispatchEvent('click');
+
+  getEl('cpAllowHttpInput').checked = false;
+  await getEl('btnCpFetchModels').dispatchEvent('click');
+  await getEl('btnCpTest').dispatchEvent('click');
+  assert.equal(sent[0].payload.customProviders['acme-http'].allowInsecureHttp, undefined);
+  assert.equal(sent[2].payload.customProviders['acme-http'].allowInsecureHttp, undefined);
+
+  sent.length = 0;
+  getEl('cpAllowHttpInput').checked = true;
+  await getEl('btnCpFetchModels').dispatchEvent('click');
+  await getEl('btnCpTest').dispatchEvent('click');
+  assert.equal(sent[0].action, 'FETCH_MODELS');
+  assert.equal(sent[0].payload.customProviders['acme-http'].allowInsecureHttp, true);
+  assert.equal(sent[1].action, 'FETCH_MODELS');
+  assert.equal(sent[1].payload.customProviders['acme-http'].allowInsecureHttp, true);
+  assert.equal(sent[2].action, 'TEST_PROVIDER');
+  assert.equal(sent[2].payload.customProviders['acme-http'].allowInsecureHttp, true);
+});
+
+test('dialog, Test button stays disabled across both FETCH_MODELS and TEST_PROVIDER, resets on reopen, and adapts Logs hint to developerMode', async () => {
+  elements.clear();
+  mockStorageData['agent_settings'] = { provider: 'openrouter', developerMode: false };
+  let settings = { provider: 'openrouter', providerConfigs: {}, developerMode: false };
+  let resolveTestProbe = null;
+  const dialog = initCustomProviderDialog({
+    getSettings: () => settings,
+    applySettings: () => {},
+    sendBgMessage: (msg, cb) => {
+      if (msg.action === 'FETCH_MODELS') {
+        cb({ success: false, error: 'no list', models: [] });
+        return;
+      }
+      if (msg.action === 'TEST_PROVIDER') {
+        resolveTestProbe = cb;
+      }
+    },
+    showToast: () => {},
+    providerSelected: async () => {}
+  });
+
+  dialog.open('add');
+  getEl('cpIdInput').value = 'acme-test';
+  getEl('cpBaseUrlInput').value = 'https://gw.example/v1';
+  getEl('cpModelAddInput').value = 'm1';
+  await getEl('btnCpAddModel').dispatchEvent('click');
+
+  const testRun = getEl('btnCpTest').dispatchEvent('click');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(getEl('btnCpTest').disabled, true, 'Test button remains disabled while TEST_PROVIDER is in flight');
+
+  resolveTestProbe({ success: false, error: 'HTTP 502 Bad Gateway', latencyMs: 12 });
+  await testRun;
+  assert.equal(getEl('btnCpTest').disabled, false, 'Test button re-enables once TEST_PROVIDER settles');
+  assert.match(getEl('cpTestStatus').textContent, /Enable Developer mode in Settings and test again to see the full text in the Logs tab\./);
+
+  settings = { ...settings, developerMode: true };
+  const testRun2 = getEl('btnCpTest').dispatchEvent('click');
+  await Promise.resolve();
+  await Promise.resolve();
+  resolveTestProbe({ success: false, error: 'HTTP 502 Bad Gateway', latencyMs: 12 });
+  await testRun2;
+  assert.match(getEl('cpTestStatus').textContent, /Test failed: HTTP 502 Bad Gateway The full text is in the Logs tab\./);
+
+  getEl('btnCpTest').disabled = true;
+  getEl('btnCpFetchModels').disabled = true;
+  dialog.open('add');
+  assert.equal(getEl('btnCpTest').disabled, false, 'open() resets disabled Test button');
+  assert.equal(getEl('btnCpFetchModels').disabled, false, 'open() resets disabled Fetch button');
+});

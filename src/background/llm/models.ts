@@ -3,7 +3,7 @@ import { Logger } from '../../shared/logger.ts';
 import { baseUrlOf, customModelsUrl, endpointOriginOf, getApiKey, normalizeNvidiaBaseUrl, providerOf, withV1 } from './settings.ts';
 import { scrubKey } from './errors.ts';
 import { rememberAnthropicList, rememberGeminiList, rememberOpenRouterList } from './effort.ts';
-import { watchFetch } from './factory.ts';
+import { InsecureTransportError, assertSecureCustomTransport, watchFetch } from './factory.ts';
 import { contextLengthOf } from '../../shared/tokens.ts';
 import type { CustomProvider } from '../../shared/storage.ts';
 import type { LlmSettings } from './types.ts';
@@ -101,6 +101,7 @@ async function rememberContextWindows(provider: string, entries: unknown): Promi
 }
 
 async function fetchCustomProviderModels(custom: CustomProvider, apiKey: string, providerId: string, startTime: number): Promise<CustomModelList> {
+  assertSecureCustomTransport(custom, apiKey);
   const url = customModelsUrl(custom.protocol, custom.baseUrl || '');
   const headers: Record<string, string> = {};
   if (custom.protocol === 'anthropic') {
@@ -313,7 +314,7 @@ export async function fetchAvailableModels(settings: LlmSettings, forceRefresh =
     return models;
   } catch (err) {
     const status = (err as { status?: number })?.status;
-    if (status === 404 || status === 405) throw err;
+    if (err instanceof InsecureTransportError || status === 404 || status === 405) throw err;
     Logger.warn('ApiClients', `[MODEL_FETCH_WARN] Network fetch failed for [${provider}]: ${(err as Error).message}. Using fallback defaults.`);
     return custom ? [...custom.models] : getFallbackModels(provider);
   }

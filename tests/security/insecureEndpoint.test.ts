@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { saveCustomProvider, Storage } from '../../src/shared/storage.ts';
 import { createCustomProviderCall } from '../../src/background/llm/factory.ts';
-import { callProviderWithTools } from '../../src/background/llm/index.ts';
+import { callProviderWithTools, fetchAvailableModels } from '../../src/background/llm/index.ts';
 import { createFakeStorage } from '../helpers/fakeStorageSession.ts';
 import { jsonResponse, spyFetch } from '../helpers/llmWire.ts';
 
@@ -176,4 +176,32 @@ test('SEC-9: the tool loop keeps a bracketed IPv6 loopback with a port on the al
   const local = toolSettings(TOOL_DESCRIPTOR('http://[::1]:8080/v1'));
   await callProviderWithTools('tool-gw', local, [{ role: 'user', content: 'go' }], '', { tools: TOOLS });
   assert.equal(sent.length, 1, '[::1]:8080 is the user\'s own machine, with or without brackets in the host');
+});
+
+test('SEC-9: fetchAvailableModels refuses a key-bearing plain http custom endpoint (no network call made)', async (t) => {
+  withStorage();
+  const sent = spyFetch(t, () => jsonResponse({ data: [{ id: 'm1' }] }));
+  const descriptor = TOOL_DESCRIPTOR('http://api.example.com/v1');
+  await assert.rejects(
+    fetchAvailableModels(toolSettings(descriptor), true),
+    /plain HTTP|unencrypted|Allow insecure http/i,
+  );
+  assert.equal(sent.length, 0, 'nothing was sent: the guard fires before any model-list request');
+});
+
+test('SEC-9: fetchAvailableModels allows loopback http and explicit allowInsecureHttp opt-in', async (t) => {
+  withStorage();
+  const sent = spyFetch(t, () => jsonResponse({ data: [{ id: 'm1' }] }));
+
+  const localModels = await fetchAvailableModels(toolSettings(TOOL_DESCRIPTOR('http://127.0.0.1:11435/v1')), true);
+  assert.deepEqual(localModels, ['m1']);
+  assert.equal(sent.length, 1);
+
+  sent.length = 0;
+  const optInModels = await fetchAvailableModels(
+    toolSettings({ ...TOOL_DESCRIPTOR('http://api.example.com/v1'), allowInsecureHttp: true }),
+    true,
+  );
+  assert.deepEqual(optInModels, ['m1']);
+  assert.equal(sent.length, 1);
 });

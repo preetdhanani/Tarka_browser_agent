@@ -50,7 +50,7 @@ export function providerMeta(providerId, settings) {
       isCustom: true,
       exists: true,
       displayName: custom.displayName || providerId,
-      baseUrl: cfg.baseUrl || custom.baseUrl || '',
+      baseUrl: custom.baseUrl || cfg.baseUrl || '',
       apiKey: cfg.apiKey || '',
       savedModel: cfg.model || '',
       savedModels: Array.isArray(custom.models) ? custom.models : [],
@@ -212,6 +212,8 @@ export function initCustomProviderDialog(deps) {
 
 
     el('cpAllowHttpInput').checked = descriptor?.allowInsecureHttp === true;
+    if (el('btnCpFetchModels')) el('btnCpFetchModels').disabled = false;
+    if (el('btnCpTest')) el('btnCpTest').disabled = false;
     el('cpError').style.display = 'none';
     el('cpError').textContent = '';
     el('cpTestStatus').textContent = '';
@@ -336,7 +338,8 @@ export function initCustomProviderDialog(deps) {
       protocol: state.protocol,
       baseUrl,
       models: state.models,
-      keyMode: state.keyMode
+      keyMode: state.keyMode,
+      ...(el('cpAllowHttpInput')?.checked === true ? { allowInsecureHttp: true } : {})
     };
     return {
       provider: id || 'draft',
@@ -365,36 +368,39 @@ export function initCustomProviderDialog(deps) {
     btn.disabled = true;
     el('cpFetchStatus').textContent = 'Fetching models…';
     const startedAt = Date.now();
-    const res = await messagePromise({ action: 'FETCH_MODELS', payload: draftPayload(true) });
-    btn.disabled = false;
-    if (generation !== state.generation) return;
-    if (res.success && Array.isArray(res.models) && res.models.length > 0) {
+    try {
+      const res = await messagePromise({ action: 'FETCH_MODELS', payload: draftPayload(true) });
+      if (generation !== state.generation) return;
+      if (res.success && Array.isArray(res.models) && res.models.length > 0) {
 
 
-      const merged = [...res.models];
-      for (const model of state.savedAtOpen) {
-        if (!merged.includes(model)) merged.push(model);
+        const merged = [...res.models];
+        for (const model of state.savedAtOpen) {
+          if (!merged.includes(model)) merged.push(model);
+        }
+        for (const model of state.handAdded) {
+          if (!merged.includes(model)) merged.push(model);
+        }
+        const newCount = res.models.filter((m) => !state.savedAtOpen.includes(m) && !state.handAdded.includes(m)).length;
+        state.models = merged;
+        const filtered = res.filteredCount ? ` (${res.filteredCount} non-chat id(s) hidden)` : '';
+        el('cpFetchStatus').textContent = newCount > 0
+          ? `${newCount} new id(s) from the endpoint merged with your saved list (${merged.length} total, ${Date.now() - startedAt}ms)${filtered}. Review, remove, or add ids.`
+          : `The endpoint listed the ids you already saved (${merged.length} total, ${Date.now() - startedAt}ms)${filtered}. Review, remove, or add ids.`;
+        renderModelRows();
+        clearFormError();
+      } else if (res.success) {
+        el('cpFetchStatus').textContent = 'The endpoint returned no chat models. Add ids by hand.';
+        renderModelRows();
+      } else if (res.status && (res.status === 404 || res.status === 405)) {
+        el('cpFetchStatus').textContent = 'This endpoint has no model list. Add ids by hand, and Test still works.';
+      } else {
+        const reason = res.error || 'Unreachable';
+        el('cpFetchStatus').textContent = `Could not fetch models: ${reason.length > 120 ? `${reason.slice(0, 120)}…` : reason} You can still add by hand.`;
+        renderModelRows();
       }
-      for (const model of state.handAdded) {
-        if (!merged.includes(model)) merged.push(model);
-      }
-      const newCount = res.models.filter((m) => !state.savedAtOpen.includes(m) && !state.handAdded.includes(m)).length;
-      state.models = merged;
-      const filtered = res.filteredCount ? ` (${res.filteredCount} non-chat id(s) hidden)` : '';
-      el('cpFetchStatus').textContent = newCount > 0
-        ? `${newCount} new id(s) from the endpoint merged with your saved list (${merged.length} total, ${Date.now() - startedAt}ms)${filtered}. Review, remove, or add ids.`
-        : `The endpoint listed the ids you already saved (${merged.length} total, ${Date.now() - startedAt}ms)${filtered}. Review, remove, or add ids.`;
-      renderModelRows();
-      clearFormError();
-    } else if (res.success) {
-      el('cpFetchStatus').textContent = 'The endpoint returned no chat models. Add ids by hand.';
-      renderModelRows();
-    } else if (res.status && (res.status === 404 || res.status === 405)) {
-      el('cpFetchStatus').textContent = 'This endpoint has no model list. Add ids by hand, and Test still works.';
-    } else {
-      const reason = res.error || 'Unreachable';
-      el('cpFetchStatus').textContent = `Could not fetch models: ${reason.length > 120 ? `${reason.slice(0, 120)}…` : reason} You can still add by hand.`;
-      renderModelRows();
+    } finally {
+      if (generation === state.generation) btn.disabled = false;
     }
   }
 
@@ -405,27 +411,32 @@ export function initCustomProviderDialog(deps) {
     const startedAt = Date.now();
     btn.disabled = true;
     status.textContent = 'Testing…';
-    const list = await messagePromise({ action: 'FETCH_MODELS', payload: draftPayload(true) });
-    btn.disabled = false;
-    if (generation !== state.generation) return;
-    if (list.success && Array.isArray(list.models) && list.models.length > 0) {
-      status.textContent = `Endpoint answered: ${list.models.length} model(s) via the model list (${Date.now() - startedAt}ms).`;
-      return;
-    }
+    try {
+      const list = await messagePromise({ action: 'FETCH_MODELS', payload: draftPayload(true) });
+      if (generation !== state.generation) return;
+      if (list.success && Array.isArray(list.models) && list.models.length > 0) {
+        status.textContent = `Endpoint answered: ${list.models.length} model(s) via the model list (${Date.now() - startedAt}ms).`;
+        return;
+      }
 
 
-    if (!state.models.length) {
-      status.textContent = `The endpoint could not be asked for a model list (${(list.error || 'no models listed').slice(0, 80)}), and no model id is set for a test chat call. Add an id and Test again.`;
-      btn.disabled = false;
-      return;
-    }
-    const probe = await messagePromise({ action: 'TEST_PROVIDER', payload: draftPayload(false) });
-    if (generation !== state.generation) return;
-    if (probe.success) {
-      status.textContent = `Model list unavailable (${(list.error || 'no models listed').slice(0, 80)}), but a chat call succeeded (${probe.latencyMs}ms). The endpoint works; add model ids by hand.`;
-    } else {
-      const reason = probe.error || 'Unknown failure';
-      status.textContent = `Test failed: ${reason.length > 160 ? `${reason.slice(0, 160)}…` : reason} The full text is in the Logs tab.`;
+      if (!state.models.length) {
+        status.textContent = `The endpoint could not be asked for a model list (${(list.error || 'no models listed').slice(0, 80)}), and no model id is set for a test chat call. Add an id and Test again.`;
+        return;
+      }
+      const probe = await messagePromise({ action: 'TEST_PROVIDER', payload: draftPayload(false) });
+      if (generation !== state.generation) return;
+      if (probe.success) {
+        status.textContent = `Model list unavailable (${(list.error || 'no models listed').slice(0, 80)}), but a chat call succeeded (${probe.latencyMs}ms). The endpoint works; add model ids by hand.`;
+      } else {
+        const reason = probe.error || 'Unknown failure';
+        const logsHint = deps.getSettings()?.developerMode === true
+          ? 'The full text is in the Logs tab.'
+          : 'Enable Developer mode in Settings and test again to see the full text in the Logs tab.';
+        status.textContent = `Test failed: ${reason.length > 160 ? `${reason.slice(0, 160)}…` : reason} ${logsHint}`;
+      }
+    } finally {
+      if (generation === state.generation) btn.disabled = false;
     }
   }
 

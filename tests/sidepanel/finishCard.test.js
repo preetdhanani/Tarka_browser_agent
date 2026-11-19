@@ -28,9 +28,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
 globalThis.window = { addEventListener() {} };
-globalThis.document = { readyState: 'loading', addEventListener() {}, getElementById: () => null };
+globalThis.document = { readyState: 'loading', addEventListener() {}, getElementById: () => null, querySelectorAll: () => [] };
 
-const { buildTurns, renderFinishCard } = await import('../../sidepanel/sidepanel.js');
+const { buildTurns, renderFinishCard, renderTurns } = await import('../../sidepanel/sidepanel.js');
 
 const CSS = fs.readFileSync(new URL('../../sidepanel/sidepanel.css', import.meta.url), 'utf8');
 
@@ -441,4 +441,85 @@ test('the code span has a stylesheet rule built from theme tokens, so it reads i
   assert.match(body, /background: var\(--surface\)/);
   assert.match(body, /overflow-wrap: anywhere/, 'a long path wraps inside the card');
   assert.doesNotMatch(body, /#[0-9a-f]{3,8}\b|rgb/i, 'no literal colours');
+});
+
+test('renderRunStats wraps each stat in .finish-stat (nowrap in CSS) joined by non-breaking dot so tokens out never orphan-wraps', () => {
+  const turns = buildTurns(historyOf({ steps: [{ action: 'read_page', success: true }], answer: 'Done.', outcome: 'done' }));
+  turns[turns.length - 1].runStats = { level: 'medium', modelCalls: 12, stepsUsed: 8, tokensIn: 4321, tokensOut: 1234 };
+  const withStats = renderFinishCard(turns[turns.length - 1]);
+  assert.match(withStats, /<span class="finish-stat">12 model calls<\/span>&nbsp;· <span class="finish-stat">8 steps<\/span>&nbsp;· <span class="finish-stat">4\.3K tokens in<\/span>&nbsp;· <span class="finish-stat">1\.2K tokens out<\/span>/);
+
+  const statAt = CSS.indexOf('.finish-stat {');
+  assert.ok(statAt >= 0, 'a .finish-stat rule exists');
+  const statRule = CSS.slice(statAt, CSS.indexOf('}', statAt));
+  assert.match(statRule, /white-space:\s*nowrap/);
+});
+
+test('0-action single-fault turn hides redundant 0 actions group when Failed card already shows the fault, but keeps it when reopened idle or on an earlier turn', () => {
+  const singleFaultHistory = [
+    { type: 'user_goal', turn: 1, prompt: 'What is the newest Python 3 release?', isNewRun: true },
+    { type: 'error', content: 'Ollama API error (502): proxy error: fetch failed' }
+  ];
+
+  const errorHtml = renderTurns(singleFaultHistory, 'error', '', null, null, null);
+  assert.doesNotMatch(errorHtml, /<div class="act-group/, 'no redundant 0 actions box when Failed card already shows the exact error');
+  assert.match(errorHtml, /The run ended with an error: Ollama API error \(502\): proxy error: fetch failed\./);
+
+  const idleHtml = renderTurns(singleFaultHistory, 'idle', '', null, null, null);
+  assert.match(idleHtml, /<div class="act-group/, 'reopened idle turn with no finish card keeps the fault row visible');
+  assert.match(idleHtml, /<div class="act-row fault"/);
+
+  const multiTurnHistory = [
+    ...singleFaultHistory,
+    { type: 'user_goal', turn: 2, prompt: 'Try again' },
+    { type: 'finish', answer: '3.14.0', outcome: 'done' }
+  ];
+  const multiHtml = renderTurns(multiTurnHistory, 'idle', '', null, null, null);
+  assert.match(multiHtml, /<div class="act-row fault"/, 'earlier 0-action fault turn with no answer preserves its fault row');
+});
+
+test('error card does not double terminal punctuation and still suppresses single redundant fault when trimmed', () => {
+  const dotted = [
+    { type: 'user_goal', turn: 1, prompt: 'Check the page', isNewRun: true },
+    { type: 'error', content: 'Provider [lisa] timed out. Raise llmTimeoutMs in settings.\n' }
+  ];
+  const dottedHtml = renderTurns(dotted, 'error', '', null, null, null);
+  assert.match(dottedHtml, /<div class="finish-body">The run ended with an error: Provider \[lisa\] timed out\. Raise llmTimeoutMs in settings\.<\/div>/);
+  assert.doesNotMatch(dottedHtml, /\.\./);
+  assert.doesNotMatch(dottedHtml, /<div class="act-group/);
+
+  const exclaimed = [
+    { type: 'user_goal', turn: 1, prompt: 'Check', isNewRun: true },
+    { type: 'error', content: 'Rate limited!' }
+  ];
+  assert.match(renderTurns(exclaimed, 'error', '', null, null, null), /<div class="finish-body">The run ended with an error: Rate limited!<\/div>/);
+
+  const asked = [
+    { type: 'user_goal', turn: 1, prompt: 'Check', isNewRun: true },
+    { type: 'error', content: 'Are you offline?' }
+  ];
+  assert.match(renderTurns(asked, 'error', '', null, null, null), /<div class="finish-body">The run ended with an error: Are you offline\?<\/div>/);
+
+  const plain = [
+    { type: 'user_goal', turn: 1, prompt: 'Check', isNewRun: true },
+    { type: 'error', content: 'Connection reset' }
+  ];
+  assert.match(renderTurns(plain, 'error', '', null, null, null), /<div class="finish-body">The run ended with an error: Connection reset\.<\/div>/);
+
+  const blank = [
+    { type: 'user_goal', turn: 1, prompt: 'Check', isNewRun: true },
+    { type: 'error', content: '   ' }
+  ];
+  const blankHtml = renderTurns(blank, 'error', '', null, null, null);
+  assert.match(blankHtml, /<div class="finish-body">The run ended with an error\.<\/div>/);
+  assert.doesNotMatch(blankHtml, /<div class="act-group/);
+});
+
+test('.composer-input grows with content while preserving idle min-height and internal scroll fallback', () => {
+  const at = CSS.indexOf('.composer-input {');
+  assert.ok(at >= 0, 'a .composer-input rule exists');
+  const rule = CSS.slice(at, CSS.indexOf('}', at));
+  assert.match(rule, /field-sizing:\s*content/);
+  assert.match(rule, /overflow-y:\s*auto/);
+  assert.match(rule, /min-height:\s*52px/);
 });

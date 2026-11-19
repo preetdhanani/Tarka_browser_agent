@@ -533,12 +533,19 @@ const CUSTOM_LOG_TAG = 'CustomClient';
 const HTTP_NOTE_LOGGED = new Set<string>();
 const ENDPOINT_STRATEGY_LOG = new Map<string, 'chat/completions' | 'responses'>();
 
+export class InsecureTransportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InsecureTransportError';
+  }
+}
+
 export function assertSecureCustomTransport(descriptor: CustomProvider, apiKey: string): void {
   const origin = endpointOriginOf(descriptor.baseUrl);
   if (!origin || !origin.startsWith('http:')) return;
   const host = endpointHostOf(descriptor.baseUrl) || '';
   if (descriptor.keyMode !== 'none' && apiKey && !isLoopbackHost(host) && descriptor.allowInsecureHttp !== true) {
-    throw new Error(`${descriptor.displayName || descriptor.id} is called over plain HTTP, which would send the API key unencrypted. Use https://, or a loopback address (localhost, 127.0.0.1), or tick "Allow insecure http" in the provider dialog.`);
+    throw new InsecureTransportError(`${descriptor.displayName || descriptor.id} is called over plain HTTP, which would send the API key unencrypted. Use https://, or a loopback address (localhost, 127.0.0.1), or tick "Allow insecure http" in the provider dialog.`);
   }
 }
 

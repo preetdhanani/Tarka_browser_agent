@@ -883,8 +883,10 @@ a:hover { color: var(--text-main); }
   font-size: 10px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
 }
+
+.finish-stat { white-space: nowrap; }
 
 
 .finish-files {
@@ -1225,14 +1227,18 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 .composer-input {
   display: block;
   width: 100%;
-  min-height: 42px;
+  min-height: 52px;
   max-height: 160px;
+  field-sizing: content;
+  overflow-y: auto;
+  scrollbar-width: thin;
   background: transparent;
   border: none;
+  border-radius: 15px 15px 0 0;
   outline: none;
   resize: none;
   color: var(--text-main);
-  padding: 12px 14px 2px;
+  padding: 12px 14px 4px;
   font-family: var(--font-body);
   font-size: 12.5px;
   line-height: 1.5;
@@ -1783,6 +1789,8 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   padding: 5px 9px;
   font-size: 10.5px;
   border-radius: 7px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .btn-block {
@@ -1808,6 +1816,12 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
+}
+
+#customProviderActions {
+  flex-direction: row;
+  gap: 8px;
 }
 
 .form-row {
@@ -1873,6 +1887,12 @@ ol > .md-li > .md-mark { min-width: 1.4em; }
 
 .form-input:focus, .form-select:focus {
   border-color: var(--accent);
+}
+
+.form-input[readonly] {
+  opacity: 0.72;
+  cursor: default;
+  background: var(--surface);
 }
 
 
@@ -2689,7 +2709,7 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
 }
 .input-with-toggle .form-input {
   width: 100%;
-  padding-right: 32px;
+  padding-right: 38px;
 }
 .btn-toggle-visibility {
   position: absolute;
@@ -3217,7 +3237,7 @@ a.audit-url:focus-visible { outline: 2px solid var(--accent); outline-offset: 1p
   margin-top: 8px;
 }
 
-.cp-model-add .form-input { flex: 1; }
+.cp-model-add .form-input { flex: 1; min-width: 0; }
 
 .cp-test-row {
   display: flex;

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Tarka AI Browser Agent",
-  "version": "1.0.0",
-  "description": "Autonomous AI Browser Agent for Local & Cloud LLMs (Ollama, Gemini, OpenAI, Claude, Groq, OpenRouter, AgentRouter, NVIDIA NIM).",
+  "version": "1.1.0",
+  "description": "Autonomous AI Browser Agent for Local & Cloud LLMs (Ollama, OpenRouter, Gemini, OpenAI, Claude, NVIDIA NIM, and custom APIs).",
   "permissions": [
     "sidePanel",
     "scripting",

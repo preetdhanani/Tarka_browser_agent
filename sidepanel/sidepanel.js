@@ -120,6 +120,9 @@ const READER_SCROLL_MS = 600;
 
 let lastTimelineHtml = '';
 
+const boundNavBtns = new WeakSet();
+const LOGS_OFF_HTML = '<div class="subtext-hint log-empty">Developer mode is off. Logs are not saved.</div>';
+
 
 const ICONS = {
   check: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>',
@@ -440,8 +443,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 function followSavedSessionChanges() {
   if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.onChanged) return;
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || !changes[CHAT_INDEX_KEY]) return;
-    loadSessionHistory().catch((err) => reportClientError('sidepanel:session-history-sync', err));
+    if (area !== 'local') return;
+    if (changes[CHAT_INDEX_KEY]) {
+      loadSessionHistory().catch((err) => reportClientError('sidepanel:session-history-sync', err));
+    }
+    if (changes.agent_settings) {
+      const next = changes.agent_settings.newValue;
+      const nextDev = Boolean(next && typeof next === 'object' && next.developerMode === true);
+      if (nextDev !== (currentSettings.developerMode === true)) {
+        currentSettings = { ...currentSettings, developerMode: nextDev };
+        setDeveloperModeUI(nextDev);
+        if (nextDev) resyncAgentState();
+      }
+    }
   });
 }
 
@@ -483,10 +497,13 @@ async function loadSettings() {
   buildProviderOptions(document.getElementById('providerSelect'), currentSettings.customProviders);
 
   document.getElementById('providerSelect').value = activeProvider;
+  const customBaseUrl = activeIsCustom ? (currentSettings.customProviders?.[activeProvider]?.baseUrl || providerCfg.baseUrl || '') : '';
   document.getElementById('baseUrlInput').placeholder = activeIsCustom
-    ? (providerCfg.baseUrl || '')
+    ? customBaseUrl
     : (DEFAULT_PROVIDER_CONFIGS[activeProvider]?.baseUrl || 'https://openrouter.ai/api/v1');
-  document.getElementById('baseUrlInput').value = providerCfg.baseUrl || currentSettings.baseUrl || (DEFAULT_PROVIDER_CONFIGS[activeProvider]?.baseUrl || '');
+  document.getElementById('baseUrlInput').value = activeIsCustom
+    ? customBaseUrl
+    : (providerCfg.baseUrl || currentSettings.baseUrl || (DEFAULT_PROVIDER_CONFIGS[activeProvider]?.baseUrl || ''));
   document.getElementById('apiKeyInput').value = providerCfg.apiKey || currentSettings.apiKey || '';
   document.getElementById('maxStepsInput').value = currentSettings.maxSteps || DEFAULT_SETTINGS.maxSteps;
   document.getElementById('delayInput').value = currentSettings.actionDelayMs || DEFAULT_SETTINGS.actionDelayMs;
@@ -554,8 +571,14 @@ function researchFromForm() {
 
 
 function syncCustomProviderActions(providerId) {
+  const isCustom = isCustomProviderId(providerId, currentSettings);
   const actions = document.getElementById('customProviderActions');
-  if (actions) actions.style.display = isCustomProviderId(providerId, currentSettings) ? 'flex' : 'none';
+  if (actions) actions.style.display = isCustom ? 'flex' : 'none';
+  const baseUrlInput = document.getElementById('baseUrlInput');
+  if (baseUrlInput) {
+    baseUrlInput.readOnly = isCustom;
+    baseUrlInput.title = isCustom ? 'Use Edit provider to change this endpoint URL.' : '';
+  }
 }
 
 
@@ -778,7 +801,10 @@ async function autoSaveCurrentForm() {
   const finalModel = (selectedModel && selectedModel !== CUSTOM_MODEL_OPTION) ? selectedModel : '';
 
   const apiKey = document.getElementById('apiKeyInput').value.trim();
-  const baseUrl = document.getElementById('baseUrlInput').value.trim();
+  const isCustom = isCustomProviderId(provider, currentSettings);
+  const baseUrl = isCustom
+    ? (currentSettings.customProviders?.[provider]?.baseUrl || document.getElementById('baseUrlInput').value.trim())
+    : document.getElementById('baseUrlInput').value.trim();
 
   const previousModel = (currentSettings.providerConfigs && currentSettings.providerConfigs[provider]
     && currentSettings.providerConfigs[provider].model) || '';
@@ -914,6 +940,8 @@ function initTabs() {
   }
 
   navBtns.forEach(btn => {
+    if (boundNavBtns.has(btn)) return;
+    boundNavBtns.add(btn);
     btn.addEventListener('click', () => {
       const targetTab = btn.getAttribute('data-tab');
       if (!targetTab) return;
@@ -933,6 +961,8 @@ function initTabs() {
 }
 
 function setDeveloperModeUI(enabled) {
+  enabled = Boolean(enabled);
+  currentSettings.developerMode = enabled;
   const toggle = document.getElementById('btnDeveloperMode');
   const query = typeof document.querySelector === 'function' ? document.querySelector.bind(document) : null;
   const logsTab = query ? query('.nav-btn[data-tab="logs"]') : null;
@@ -944,7 +974,7 @@ function setDeveloperModeUI(enabled) {
   if (!enabled) {
     rawLogsCache = [];
     const logOutput = document.getElementById('logOutput');
-    if (logOutput) logOutput.textContent = 'Developer mode is off. Logs are not saved.';
+    if (logOutput) logOutput.innerHTML = LOGS_OFF_HTML;
   } else {
     renderFilteredLogs();
   }
@@ -1066,7 +1096,7 @@ function resyncAgentState() {
 
     if (res) {
       receiveState(res);
-      if (res.logs) {
+      if (currentSettings.developerMode === true && Array.isArray(res.logs)) {
         rawLogsCache = res.logs;
         renderFilteredLogs();
       }
@@ -1165,8 +1195,13 @@ window.addEventListener('unhandledrejection', (event) => reportClientError('unha
 function initEventListeners() {
   document.getElementById('btnDeveloperMode')?.addEventListener('click', async () => {
     const enabled = !currentSettings.developerMode;
-    currentSettings = await Storage.saveSettings({ developerMode: enabled });
-    setDeveloperModeUI(enabled);
+    const saved = await Storage.saveSettings({ developerMode: enabled });
+    const alreadySynced = (currentSettings.developerMode === true) === enabled;
+    currentSettings = saved;
+    if (!alreadySynced) {
+      setDeveloperModeUI(enabled);
+      if (enabled) resyncAgentState();
+    }
   });
 
   document.getElementById('btnThemeToggle').addEventListener('click', async () => {
@@ -1507,16 +1542,20 @@ function initEventListeners() {
       const payload = log.data ? `\n  ${String(log.data)}` : '';
       return `[${time}] [${level}] [${mod}] ${msg}${payload}`;
     }).join('\n');
-    navigator.clipboard.writeText(entries).then(() => {
+    copyText(entries).then((ok) => {
+      if (!ok) {
+        showToast('Could not copy logs to clipboard.');
+        return;
+      }
       const copyBtn = document.getElementById('btnCopyLogs');
       copyBtn.innerHTML = `${ICONS.check} Copied`;
-      setTimeout(() => copyBtn.innerHTML = `${ICONS.copy} Copy`, 2000);
+      setTimeout(() => { copyBtn.innerHTML = `${ICONS.copy} Copy`; }, 2000);
     });
   });
 
   document.getElementById('btnClearLogs').addEventListener('click', () => {
     rawLogsCache = [];
-    document.getElementById('logOutput').textContent = '// Logs cleared.';
+    document.getElementById('logOutput').innerHTML = '<div class="subtext-hint log-empty">Logs cleared.</div>';
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       chrome.storage.local.remove(['agent_logs_history'], () => {
         if (chrome.runtime && chrome.runtime.lastError) void chrome.runtime.lastError;
@@ -1664,9 +1703,11 @@ async function applyProviderSelection(provider) {
   document.getElementById('providerSelect').value = provider;
   syncCustomProviderActions(provider);
 
-  const baseUrlToSet = savedCfg.baseUrl || (activeIsCustom ? '' : (DEFAULT_PROVIDER_CONFIGS[provider] ? DEFAULT_PROVIDER_CONFIGS[provider].baseUrl : ''));
+  const baseUrlToSet = activeIsCustom
+    ? (currentSettings.customProviders?.[provider]?.baseUrl || savedCfg.baseUrl || '')
+    : (savedCfg.baseUrl || (DEFAULT_PROVIDER_CONFIGS[provider] ? DEFAULT_PROVIDER_CONFIGS[provider].baseUrl : ''));
   document.getElementById('baseUrlInput').placeholder = activeIsCustom
-    ? (savedCfg.baseUrl || '')
+    ? baseUrlToSet
     : (DEFAULT_PROVIDER_CONFIGS[provider]?.baseUrl || 'https://openrouter.ai/api/v1');
   document.getElementById('baseUrlInput').value = baseUrlToSet;
   document.getElementById('apiKeyInput').value = savedCfg.apiKey || '';
@@ -2885,7 +2926,7 @@ function renderRunStats(stats) {
   ];
   if (tokensIn) parts.push(`${formatTokens(tokensIn)} tokens in`);
   if (tokensOut) parts.push(`${formatTokens(tokensOut)} tokens out`);
-  return `<div class="finish-stats">${escapeHtml(parts.join(' · '))}</div>`;
+  return `<div class="finish-stats">${parts.map((part) => `<span class="finish-stat">${escapeHtml(part)}</span>`).join('&nbsp;· ')}</div>`;
 }
 
 
@@ -3053,8 +3094,9 @@ function renderTurns(history, status, currentPhase, pendingApproval = null, pend
         lastTurn.partial = true;
         lastTurn.partialReason = 'stopped';
       } else {
-        lastTurn.answer = fault
-          ? `The run ended with an error: ${fault.content}.`
+        const detail = fault ? String(fault.content || '').trim() : '';
+        lastTurn.answer = detail
+          ? `The run ended with an error: ${/[.!?]$/.test(detail) ? detail : `${detail}.`}`
           : 'The run ended with an error.';
         lastTurn.failed = true;
       }
@@ -3156,12 +3198,16 @@ function renderTurns(history, status, currentPhase, pendingApproval = null, pend
         </div>`
       : '';
 
+    const singleRedundantFault = !isLive && count === 0 && !planDetail && turn.failed
+      && Boolean(turn.answer) && turn.entries.length === 1 && turn.entries[0].kind === 'fault'
+      && String(turn.answer).includes(String(turn.entries[0].content || '').trim());
+
     return `<div class="turn">
       ${sessionDivider}
       ${turn.goal ? `<div class="user-goal-card"><span class="goal-label">Goal</span>${escapeHtml(turn.goal)}</div>` : ''}
       ${planPrompt}
       ${confirmPrompt ? confirmPrompt : ''}
-      ${count || turn.entries.length || planDetail ? `<div class="act-group${open ? ' open' : ''}">
+      ${(count || turn.entries.length || planDetail) && !singleRedundantFault ? `<div class="act-group${open ? ' open' : ''}">
         <button class="act-head" data-turn="${turn.turn}" aria-expanded="${open}"${captured && !capturedGone ? ` aria-label="${escapeHtml(`${headline}, with a captured page`)}"` : ''}>
           <span class="act-chev">${ICONS.chevron}</span>
           <span class="act-head-text">${headline}</span>
@@ -3355,6 +3401,10 @@ const LOGS_WAITING_HTML = '<div class="subtext-hint log-empty">Nothing logged ye
 function renderFilteredLogs() {
   const logOutput = document.getElementById('logOutput');
   if (!logOutput) return;
+  if (currentSettings.developerMode !== true) {
+    logOutput.innerHTML = LOGS_OFF_HTML;
+    return;
+  }
   const stick = logsAtBottom(logOutput);
   const filtered = (rawLogsCache || []).filter((log) => logMatchesFilter(log, currentActiveLogFilter));
   if (filtered.length === 0) {
@@ -3935,5 +3985,5 @@ export {
   attachShotSlots, attachShotPicture, shotCache, shotGone, loadShotPicture, lastShotOf, capturedSectionHtml, RESUME_PROMPT,
   setFollowTimeline, isFollowingTimeline, showTaskError, resetChatView, startTaskInner,
   loadSettings, autoSaveCurrentForm, openComboboxMenu, closeComboboxMenu, updateSelectedModel,
-  pickComboboxModel, initEventListeners, initCombobox
+  pickComboboxModel, initEventListeners, initCombobox, initTabs, setDeveloperModeUI, resyncAgentState, followSavedSessionChanges
 };

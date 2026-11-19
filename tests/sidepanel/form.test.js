@@ -265,3 +265,45 @@ test('provider switching preserves custom timeout and updates base URL placehold
   assert.equal(timeoutInput.value, 65000, 'openai should restore the 65000ms custom timeout');
   assert.equal(baseUrlInput.placeholder, 'https://api.openai.com', 'placeholder updates for openai');
 });
+
+test('custom provider locks baseUrlInput readOnly to descriptor.baseUrl and autoSaveCurrentForm never drifts it; switching back to built-in unlocks it', async () => {
+  const providerSelect = getEl('providerSelect');
+  const baseUrlInput = getEl('baseUrlInput');
+
+  mockStorage = {
+    agent_settings: {
+      provider: 'acme',
+      baseUrl: 'https://stale-top.example/v1',
+      model: 'm1',
+      customProviders: {
+        acme: {
+          id: 'acme',
+          displayName: 'Acme Gateway',
+          protocol: 'openai',
+          baseUrl: 'https://gw.example/v1',
+          models: ['m1'],
+          keyMode: 'apiKey',
+          createdAt: 1,
+          updatedAt: 1
+        }
+      },
+      providerConfigs: {
+        acme: { baseUrl: 'https://stale.example/v1', apiKey: 'sk-1', model: 'm1' }
+      }
+    }
+  };
+
+  await loadSettings();
+  assert.equal(baseUrlInput.value, 'https://gw.example/v1', 'custom provider loads authoritative descriptor.baseUrl');
+  assert.equal(baseUrlInput.placeholder, 'https://gw.example/v1', 'placeholder uses authoritative descriptor.baseUrl');
+  assert.equal(baseUrlInput.readOnly, true, 'baseUrlInput is read-only for custom providers');
+
+  baseUrlInput.value = 'https://tampered.example/v1';
+  await autoSaveCurrentForm();
+  assert.equal(mockStorage.agent_settings.providerConfigs.acme.baseUrl, 'https://gw.example/v1');
+  assert.equal(mockStorage.agent_settings.baseUrl, 'https://gw.example/v1');
+
+  providerSelect.value = 'ollama';
+  await providerSelect.dispatchEvent({ type: 'change' });
+  assert.equal(baseUrlInput.readOnly, false, 'switching back to a built-in provider unlocks baseUrlInput');
+});

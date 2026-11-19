@@ -1,6 +1,7 @@
 # OS Junk
 .DS_Store
 Thumbs.db
+*.swp
 
 # Node & Python
 node_modules/
