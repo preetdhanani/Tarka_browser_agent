@@ -1,191 +1,285 @@
-# Tarka: Autonomous Browser Runtime for Local and Cloud AI
+<p align="center">
+  <img src="public/icons/icon128.png" width="128" height="128" alt="Tarka icon: a copper geometric six-pointed star with a center dot">
+</p>
 
-Tarka is an open-source autonomous browser agent implemented as a Chrome Manifest V3 extension.
-It executes complex, multi-step web workflows by operating inside Google Chrome's native Side Panel.
-Unlike cloud-hosted headless browser wrappers, Tarka runs directly inside the user's authentic browser context, executing actions via Chrome DevTools Protocol (CDP) trusted hardware events and extracting semantic accessibility trees.
+<h1 align="center">Tarka</h1>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Runtime](https://img.shields.io/badge/Node.js-%3E%3D22.18-brightgreen.svg)](package.json)
-[![Platform](https://img.shields.io/badge/Chrome-Manifest%20V3-orange.svg)](public/manifest.json)
-[![Security Check](https://img.shields.io/badge/CSP-Zero%20Eval%20Enforced-blueviolet.svg)](scripts/evalscan.mjs)
+<p align="center">
+  <b>An open-source AI browser agent built directly into Chrome's Side Panel.</b><br>
+  Automate multi-step web tasks in your real browser using local or cloud models, with code-enforced safety gates that keep you in control.<br>
+  Chrome Manifest V3 · Ollama · NVIDIA NIM · Gemini · Claude · OpenAI · Custom APIs
+</p>
 
----
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
+  <a href="public/manifest.json"><img alt="Chrome Manifest V3" src="https://img.shields.io/badge/Chrome-Manifest%20V3-orange?style=flat-square"></a>
+  <a href="package.json"><img alt="Node.js >=22.18" src="https://img.shields.io/badge/Node.js-%3E%3D22.18-brightgreen?style=flat-square"></a>
+  <a href="scripts/evalscan.mjs"><img alt="Zero Eval CSP Enforced" src="https://img.shields.io/badge/CSP-Zero%20Eval%20Enforced-blueviolet?style=flat-square"></a>
+  <a href="SECURITY.md"><img alt="No telemetry, local storage" src="https://img.shields.io/badge/telemetry-none-2f855a?style=flat-square"></a>
+</p>
 
-## Architectural Highlights
+<p align="center">
+  <a href="https://github.com/preetdhanani/Tarka_browser_agent/releases"><b>Releases</b></a> ·
+  <a href="SECURITY.md">Security Policy</a> ·
+  <a href="DEVELOPMENT.md">Architecture</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
 
-### 1. Dual Input Dispatch Engine (Hardware CDP + Fallback)
-Tarka routes input events through `chrome.debugger` to produce real OS-level dispatch sequences rather than fragile JavaScript synthetic clicks.
-- **Trusted Events:** Emits genuine `Input.dispatchMouseEvent` (hover, mouse-down, mouse-up, click) and `Input.dispatchKeyEvent` sequences.
-- **Bot Trap Resilience:** Defeats anti-automation barriers that reject `isTrusted: false` synthetic events.
-- **Selective Fallback:** Falls back to safe DOM dispatch on restricted internal schemes (`chrome://`) or native `<select>` dropdown controls.
-- **Focus Emulation:** Emulates tab window focus state across background tasks, preventing pages from throttling inactive tabs.
+<br>
 
-### 2. Viewport-Ordered Perception Pipeline
-Passing raw HTML or massive DOM trees to LLMs quickly saturates prompt budgets and pollutes context.
-- **Semantic Compression (`DOMCompressor`):** Extracts an accessibility-oriented snapshot ordered by visual viewport coordinates.
-- **Stable References:** Generates ephemeral integer reference IDs for interactive controls (`[12]`) that survive DOM reflows.
-- **Deterministic Off-Screen Matching (`find_element`):** Employs weighted heuristic scoring across text, ARIA attributes, placeholders, names, and roles to resolve targets located beyond the active scroll window.
-- **Embedded Frame Agent (`frameAgent`):** Injects dedicated frame agents across nested cross-origin iframes, computing absolute coordinate offsets and boundary masks.
+<p align="center">
+  <img src="assets/images/tarka-hero.png" alt="Tarka running inside Chrome's Side Panel next to the ollama/ollama v0.40.16 GitHub release page, using nvidia/nemotron-3.5-super-vl-120b-a12b to verify the exact Linux amd64 archive filename" width="100%">
+  <br>
+  <sub>Tarka verifying the latest Ollama release on GitHub from Chrome's Side Panel using <code>nvidia/nemotron-3.5-super-vl-120b-a12b</code>.</sub>
+</p>
 
-### 3. Code-Enforced Safety Gates
-The safety rules that matter are enforced in code, not only in the model's prompt.
-- **Sensitive-Field Redaction:** Password, payment-card and one-time-code fields are classified on every read. Their values never enter the element list, the effect probe or a tool result; a populated masked field is reported only as "populated".
-- **Typing and Clicking Refusal:** The dispatcher refuses, before any input is sent, a click or a type whose target resolves to a masked field.
-- **Action-Bound Confirmation:** A click or a submitting type that targets a checkout/payment/destructive control, a form holding masked fields, or a cross-origin form action pauses the run with a confirmation card bound to the exact tool, arguments, tab and origin. The action dispatches only on an explicit approval, re-verified at dispatch time.
-- **Bot-Check Refusal:** CAPTCHAs and "verify you are human" controls are never clicked or solved, by element or by coordinate; the run stops and hands the page to the user.
-- **Pre-Press Re-Verification (TOCTOU):** Immediately before every mouse press, the point is asked of the page again and the tab's origin is compared with the one the action began on. A page that moved, covered or swapped its content, or navigated away, aborts the click.
-- **Background-Fetch Network Policy:** `fetch_url` refuses loopback, private-range, link-local and cloud-metadata addresses, and re-checks the address a redirect landed on before the body is read.
-- **Fail-Closed Screenshot Privacy:** Sensitive fields and unreadable cross-origin frames are covered before a capture; a capture whose covers do not verifiably hold is thrown away.
+> [!NOTE]
+> **Your browser, your keys, your confirmation.**
+> Tarka runs inside your normal Chrome window rather than a cloud container.
+> Passwords, card numbers, and one-time codes are never exposed to the model, risky actions wait for your click, and everything stays in local browser storage.
 
-### 4. Heterogeneous Vision Coordinate Reconciliation
-Different visual frontier models disagree on coordinate spaces.
-Claude and GPT emit absolute pixel coordinates, while Nemotron, Qwen-VL, and Gemini emit normalized 0-1000 per-mille or 0-1 fractional values.
-- **Dynamic Tool Schema Rewriting:** Rewrites tool definitions per active provider (`clickToolFor`).
-- **Coordinate Space Normalizer:** Detects the model's coordinate convention and applies scale normalization into physical hardware device pixels.
-- **Sub-pixel Snapping:** Corrects near-miss clicks within bounding box tolerances before dispatch.
-
-### 5. KV-Cache-Friendly Memory and Compaction
-Context exhaustion is managed with architectural awareness of LLM provider prefix caching.
-- **Staggered Block Compaction:** Compaction triggers in fixed historical blocks, preserving stable prompt prefixes to maintain provider KV-cache hits.
-- **Image Budget Pruning:** Retains only the most recent visual screenshots, dropping historical picture buffers from model payloads.
-- **Untrusted Content Envelopes:** Wraps all extracted web content and external search outputs inside strict untrusted demarcation blocks to mitigate indirect prompt injection attacks.
-
-### 6. Blink-Style Quadratic HTML Protection (`parse5`)
-During background research, untrusted external pages can attempt denial-of-service via adversarial tag nesting.
-- **Linear Depth Capping:** Flattens HTML nesting exceeding 512 levels using a linear tokenizer pre-pass.
-- **Fast WHATWG Compliance:** Guarantees standard WHATWG compliance without leaking attributes or Stimulus/React metadata into model context.
+<p align="center">
+  <a href="#highlights">Highlights</a> ·
+  <a href="#plan-act-and-verify">Plan &amp; Verify</a> ·
+  <a href="#work-inside-real-web-apps">Real Workflows</a> ·
+  <a href="#manage-long-sessions">Sessions</a> ·
+  <a href="#safety-enforced-in-code">Safety</a> ·
+  <a href="#bring-any-model">Models</a> ·
+  <a href="#how-its-built">How it's built</a> ·
+  <a href="#get-started">Get started</a> ·
+  <a href="#license">License</a>
+</p>
 
 ---
 
-## Core Execution Loop
+## Highlights
 
-Tarka operates an explicit perception-action loop driven by the Model Context Protocol (MCP):
+<table>
+<tr>
+<td width="33%" valign="top">
 
-```
-       ┌───────────────────────────────┐
-       │   1. Observe Current State    │
-       │  (DOMCompressor + FrameAgent) │
-       └──────────────┬────────────────┘
-                      ▼
-       ┌───────────────────────────────┐
-       │  2. Reason & Tool Selection   │
-       │  (LLM Provider + Context Ring)│
-       └──────────────┬────────────────┘
-                      ▼
-       ┌───────────────────────────────┐
-       │  3. Execute via Trusted Path  │
-       │    (CDP Hardware Dispatch)    │
-       └──────────────┬────────────────┘
-                      ▼
-       ┌───────────────────────────────┐
-       │  4. Probe Effect & Log Record │
-       │     (Measured Observation)    │
-       └──────────────┬────────────────┘
-                      ▼
-       ┌───────────────────────────────┐
-       │   5. Answer With an Outcome   │
-       │  (done / partial / blocked)   │
-       └───────────────────────────────┘
-```
+### Real Browser
+Tarka operates inside Chrome's native Side Panel on the tabs you open.
+It dispatches real mouse and keyboard events through `chrome.debugger` instead of brittle synthetic clicks, and reads compressed viewport elements rather than raw HTML.
+
+</td>
+<td width="33%" valign="top">
+
+### Protected by Code
+Security checks are enforced in extension code, not only in prompts.
+Masked fields are redacted and blocked, payments and cross-origin submits pause for an action-bound card, and CAPTCHAs stop the run and hand control back to you.
+
+</td>
+<td width="33%" valign="top">
+
+### Your Model
+Run offline with Ollama, connect to NVIDIA NIM, Google Gemini, Anthropic Claude, OpenAI, or OpenRouter, or point Tarka at any OpenAI- or Anthropic-compatible endpoint.
+Session history, keys, and redacted logs never leave your browser storage except in calls to the model you pick.
+
+</td>
+</tr>
+</table>
 
 ---
 
-## Real-World Workflows
+## Plan, act, and verify
 
-### Autonomous Multi-Site Sourcing
-- Dispatches web research via DuckDuckGo or self-hosted SearXNG instances.
-- Paginates large web documents cleanly through background workers without navigating the user's primary tab.
-- Reconciles conflicting information across tabs into structured, typed markdown tables.
+Give Tarka a goal from the Side Panel and watch it break multi-step tasks into visible steps.
+You can pause or stop a run at any time, inspect every action taken, and check the final verified answer with model call and token counts.
 
-### Deep Application Workflows
-- Interacts with single-page applications, custom design systems, shadow DOMs, and nested frame architectures.
-- Performs multi-step form completion, table sorting, keyboard navigation, and file preview extraction.
-
-### Resumable Long-Horizon Tasks
-- Saves task states and session snapshots incrementally in local extension storage.
-- Allows users to pause, inspect DOM steps, and resume task execution seamlessly.
-- A bot check or a login the agent must not touch pauses the run for the user, by design.
+<table>
+<tr>
+<td width="50%"><img src="assets/images/tarka-live-plan.png" alt="Tarka Side Panel mid-run showing a three-step plan checklist, active browser status, and Pause and Stop Task controls"></td>
+<td width="50%"><img src="assets/images/tarka-github-done.png" alt="Tarka Side Panel after completion showing the Done card, Playwright star count, v1.65.1 release link, and call and token summary"></td>
+</tr>
+<tr>
+<td align="center"><sub>Live progress: numbered plan checklist with Pause and Stop controls.</sub></td>
+<td align="center"><sub>Verified completion: direct answer, source links, and step/token usage.</sub></td>
+</tr>
+</table>
 
 ---
 
-## Supported Model Infrastructure
+## Work inside real web apps
 
-Tarka supports any OpenAI-compatible API format, as well as native integrations, all called over direct HTTP fetch.
+Tarka handles multi-step interaction across code notebooks, cookie banners, forms, and long pages, and can export structured results as downloadable files (`certifications.json`, CSV, Markdown tables).
 
-The model picker fetches the live list from the provider you configure. The column below is the fallback list the picker shows when that fetch fails or answers nothing (`getFallbackModels` in `src/background/llm/models.ts`); a user-added endpoint falls back to the model ids you saved for it.
+<p align="center">
+  <img src="assets/images/tarka-notebook-fix.png" alt="Tarka editing cell 14 of setup-ollama.ipynb in the browser to remove sudo, running it with Shift+Enter, and confirming ollama version 0.40.11" width="100%">
+  <br>
+  <sub>Fixing a failing notebook cell, executing it with <code>Shift+Enter</code>, and reporting the verified output.</sub>
+</p>
 
-| Provider | Runtime Mode | Fallback model list |
+<table>
+<tr>
+<td width="50%"><img src="assets/images/tarka-cookie-accept.png" alt="Tarka dismissing an overlapping cookie banner on an article page and reading the headline underneath"></td>
+<td width="50%"><img src="assets/images/tarka-json-export.png" alt="Tarka Side Panel displaying a formatted JSON preview card with Copy button after extracting all ten certifications into certifications.json"></td>
+</tr>
+<tr>
+<td align="center"><sub>Dismiss overlays and cookie banners to reach underlying content.</sub></td>
+<td align="center"><sub>Extract page records into clean, downloadable JSON files.</sub></td>
+</tr>
+</table>
+
+---
+
+## Manage long sessions
+
+Long multi-turn sessions show live context window usage in the composer ring.
+When a chat grows, you can compact earlier turns into a structured turn summary while keeping the workspace ready for your next follow-up.
+
+<table>
+<tr>
+<td width="50%"><img src="assets/images/tarka-context-card.png" alt="Context meter popover showing 5K of 256K tokens used and a Compact chat action button"></td>
+<td width="50%"><img src="assets/images/tarka-chat-compacted.png" alt="Chat compacted divider with an expandable summary of the prior turn including goal, answer, sites used, and files"></td>
+</tr>
+<tr>
+<td align="center"><sub>Context meter popover with live token estimate and one-click compaction.</sub></td>
+<td align="center"><sub>Compacted turn divider keeping goals, answers, and files organized.</sub></td>
+</tr>
+</table>
+
+Behind the scenes, Tarka also compacts older tool outputs in fixed historical blocks so LLM providers keep prompt prefix KV-cache hits intact, and retains only the most recent `2` screenshots (`KEPT_PICTURES = 2`) in the active model history.
+
+---
+
+## Safety, enforced in code
+
+The safeguards below live in the TypeScript modules and run even if a web page tries to trick the model with injected text.
+Read the full threat model and disclosure process in [SECURITY.md](SECURITY.md).
+
+<table>
+<tr>
+<td width="55%" valign="top">
+
+- **Sensitive-field redaction and refusal:** Password, payment-card, and one-time-code fields are classified on every read (`[REDACTED: populated]`), blocked from `click` and `type`, and never fallback to synthetic DOM clicks.
+- **Fail-closed screenshot masking:** Masked fields and unreadable cross-origin frames are covered before any screenshot capture, and the image is thrown away if the covers do not verifiably hold.
+- **Action-bound confirmations:** Checkout, purchase, destructive controls, forms with masked fields, and cross-origin form submits pause with a confirmation card bound to the exact tool, arguments, tab, origin, and element ID.
+- **Pre-press TOCTOU re-verification:** Right before every mouse press, Tarka asks the page to verify the target coordinates and compares the tab origin, aborting if content shifted or navigated underneath.
+- **CAPTCHA and login handoff:** Bot-check and "verify you are human" elements are never clicked or typed into; the run stops and leaves the page for you.
+- **Network and page boundaries:** Background `fetch_url` blocks loopback, private, link-local, and cloud-metadata addresses and follows no redirects (`redirect: 'manual'`); `chrome://`, `file:`, `chrome-extension://`, and Web Store pages are refused outright; key-bearing custom endpoints over plain HTTP require loopback or explicit opt-in; no `User-Agent` spoofing.
+- **Zero remote code and redacted logs:** Built under strict MV3 CSP with build-time zero-`eval` / `Function` checking (`scripts/evalscan.mjs`), with all logs redacted before saving in `chrome.storage.local`.
+
+</td>
+<td width="45%" valign="top">
+
+<p align="center">
+  <img src="assets/images/tarka-logs-inspector.png" alt="Developer Logs tab in light mode showing structured agent step and model call JSON entries with Copy JSON and Download buttons" width="100%">
+  <br>
+  <sub>Developer Run Log with filter tabs and structured JSON inspection (sensitive fields redacted).</sub>
+</p>
+
+</td>
+</tr>
+</table>
+
+---
+
+## Bring any model
+
+Switch providers at any time in **Settings**, fetch live model lists directly from your endpoint, or add any self-hosted vLLM, SGLang, relay, or proxy through **Custom model API**.
+
+<table>
+<tr>
+<td width="50%"><img src="assets/images/tarka-settings.png" alt="Tarka Settings tab in light mode showing Developer mode toggle, LLM Provider dropdown, Base API URL, API key field, Fetch Models button, context window, and step limits"></td>
+<td width="50%"><img src="assets/images/tarka-custom-api.png" alt="Custom model API modal showing Provider ID, Display name, Base URL, OpenAI Chat Completions and Anthropic Messages protocol selector, and model ID controls"></td>
+</tr>
+<tr>
+<td align="center"><sub>Settings tab: local or cloud providers, timeouts, and context window controls.</sub></td>
+<td align="center"><sub>Custom model API dialog supporting OpenAI Chat Completions and Anthropic Messages protocols.</sub></td>
+</tr>
+</table>
+
+### Supported providers and fallback model IDs
+
+The model picker fetches live models from the provider you configure.
+If a live fetch fails or returns nothing, Tarka falls back to the built-in lists below (`getFallbackModels` in [src/background/llm/models.ts](src/background/llm/models.ts)); custom endpoints use the model IDs you save in the dialog.
+
+| Provider | Runtime | Fallback model list |
 | --- | --- | --- |
 | **Ollama** | Local / Offline | `qwen3.8:27b-mlx`, `qwen2.5:14b`, `llama3.1:8b`, `gemma2:9b` |
 | **Google Gemini** | Cloud API | `gemini-2.0-flash`, `gemini-2.0-flash-lite`, `gemini-1.5-flash`, `gemini-1.5-pro`, `gemini-2.0-pro-exp-02-05`, `gemini-1.5-flash-8b` |
 | **Anthropic** | Cloud API | `claude-3-5-sonnet-20241022`, `claude-3-5-haiku-20241022` |
-| **OpenAI / OpenAI-compatible** | Cloud API (Groq is the compatible default) | `gpt-4o`, `gpt-4o-mini`, `llama-3.3-70b-versatile`, `llama-3.1-8b-instant` |
-| **NVIDIA NIM** | Enterprise / Cloud | `meta/llama-3.3-70b-instruct`, `deepseek-ai/deepseek-r1`, `nvidia/llama-3.1-nemotron-70b-instruct`, `meta/llama-3.1-405b-instruct`, `mistralai/mixtral-8x22b-instruct`, `qwen/qwen2.5-72b-instruct`, `nvidia/nemotron-4-340b-instruct` |
+| **OpenAI / OpenAI-compatible** | Cloud API (Groq default for compatible) | `gpt-4o`, `gpt-4o-mini`, `llama-3.3-70b-versatile`, `llama-3.1-8b-instant` |
+| **NVIDIA NIM** | Cloud / Enterprise | `meta/llama-3.3-70b-instruct`, `deepseek-ai/deepseek-r1`, `nvidia/llama-3.1-nemotron-70b-instruct`, `meta/llama-3.1-405b-instruct`, `mistralai/mixtral-8x22b-instruct`, `qwen/qwen2.5-72b-instruct`, `nvidia/nemotron-4-340b-instruct` (plus vision-language models such as `nvidia/nemotron-3.5-super-vl-120b-a12b`) |
 | **OpenRouter** | Multi-Provider Gateway | `anthropic/claude-3.5-sonnet`, `meta-llama/llama-3.3-70b-instruct`, `google/gemini-2.0-flash-001`, `deepseek/deepseek-r1`, `deepseek/deepseek-chat`, `openai/gpt-4o-mini` |
 | **AgentRouter** | Multi-Provider Gateway | `claude-3-5-sonnet`, `gpt-4o`, `deepseek-r1`, `llama-3.3-70b`, `claude-3-haiku` |
-| **Custom Endpoints** | Local or Hosted | The model ids you save in the "Custom model API" dialog (self-hosted vLLM, SGLang, LISA, or custom proxies) |
+| **Custom Endpoints** | Local or Hosted | User-saved model IDs (self-hosted vLLM, SGLang, LISA, or private proxies) |
 
 ---
 
-## Installation & Development Setup
+## How it's built
+
+Tarka executes an explicit Model Context Protocol (MCP) perception-action loop between Chrome's background service worker and isolated-world content scripts:
+
+```text
+  1. Observe     DOMCompressor extracts viewport-ordered controls & page text;
+                 frameAgent reads & masks nested frames
+        |
+        v
+  2. Reason      Selected LLM receives compressed DOM, untrusted content wrappers,
+                 and coordinate-space-matched click schema (pixels / 0-1000 / 0-1)
+        |
+        v
+  3. Dispatch    Safety gates check target & origin -> CDP hardware mouse/key events
+                 (selective DOM fallback only on controls like native <select>)
+        |
+        v
+  4. Verify      Effect probe observes DOM or URL changes and settles before next turn;
+                 stops cleanly with honest outcome: done / partial / blocked
+```
+
+- **Dual input engine:** Sends trusted `Input.dispatchMouseEvent` and `Input.dispatchKeyEvent` sequences via `chrome.debugger` with `Emulation.setFocusEmulationEnabled`, falling back to synthetic DOM dispatch only where needed (such as native `<select>` menus).
+- **Viewport perception & off-screen search:** `DOMCompressor` orders interactive controls by visual viewport position with `WeakRef` handles (`[12]`) valid while attached between snapshots, while `find_element` scores off-screen candidates by text, ARIA label, placeholder, name, title, alt, href, and role.
+- **Vision coordinate reconciliation:** `clickToolFor` adapts tool schema descriptions per model, converts `0-1` fractional and `0-1000` per-mille coordinates (Gemini, Nemotron VL, Qwen3-VL, GLM-4.xV) into viewport pixels, and snaps near-misses onto adjacent controls (`snapPoint`).
+- **Quadratic HTML protection (`parse5`):** Background `fetch_url` strips attributes and script/style tags and flattens tag nesting deeper than `512` levels (`MAX_DEPTH = 512`) in a linear tokenizer pre-pass ([src/background/research/htmlDocument.ts](src/background/research/htmlDocument.ts)).
+- **Search backends:** Built-in `web_search` supports DuckDuckGo HTML and user-configured SearXNG instances, wrapping all returned snippets and page bodies inside untrusted-content demarcation blocks.
+
+For module boundaries and deeper architecture notes, see [DEVELOPMENT.md](DEVELOPMENT.md).
+
+---
+
+## Get started
 
 ### Requirements
-- Google Chrome (or modern Chromium equivalent).
-- Node.js 22.18 or higher.
-- npm.
 
-### Quickstart
+- Google Chrome or Chromium
+- Node.js `22.18` or higher and `npm`
 
-1. **Clone the repository:**
+### Build and load from source
+
+1. **Clone and install dependencies:**
+
    ```bash
    git clone https://github.com/preetdhanani/Tarka_browser_agent.git
    cd Tarka_browser_agent
-   ```
-
-2. **Install dependencies:**
-   ```bash
    npm ci
    ```
 
-3. **Build the extension:**
+2. **Build the extension (and run the full verification suite if you like):**
+
    ```bash
    npm run build
+   npm run verify
    ```
 
-4. **Load into Google Chrome:**
-   - Open Chrome and navigate to `chrome://extensions`.
-   - Toggle **Developer mode** in the top right.
-   - Click **Load unpacked**.
-   - Select the `dist/` directory generated by the build.
+3. **Load into Google Chrome:**
+   - Open `chrome://extensions` and enable **Developer mode**.
+   - Click **Load unpacked** and choose the generated `dist/` folder.
+   - Click the Tarka toolbar icon to open the Side Panel, open **Settings**, pick a model provider, and enter a task.
 
-5. **Open Side Panel:**
-   - Click the Tarka icon in Chrome's toolbar to launch the Side Panel.
-   - Open **Settings**, configure your desired LLM endpoint, and begin.
-
----
-
-## Security Model
-
-The full threat model and the reporting process live in [SECURITY.md](SECURITY.md). The short version:
-
-- **Zero Remote Code Execution:** Built strictly under Chrome MV3 CSP, with a build-time scan for `eval` and `Function`.
-- **Sensitive Fields Never Leave the Page as Text:** Password, card and one-time-code fields are redacted in the element list and the effect probe, refused for clicks and typing, and masked in screenshots before the picture leaves the browser.
-- **Risky Actions Ask First:** A click or submit that can pay, order or destroy asks the user on a card bound to the exact action; a declined action is never retried or worked around.
-- **Prompt Injection Containment:** External page content and search results are demarcated inside untrusted boundary tags, and the gates above hold even when a page talks the model into something.
-- **No CAPTCHA Tampering:** Refuses automated bot bypasses, pausing execution for human intervention.
-- **Background Fetch Network Policy:** `fetch_url` cannot reach loopback, private networks or cloud metadata endpoints, and re-checks redirect destinations.
-- **Honest Transport:** Requests identify themselves as Tarka; no other client's User-Agent is spoofed. A key-bearing custom endpoint over plain http is refused unless the host is loopback or the user opts in explicitly.
-- **Device-Local Data Ownership:** Session histories, logs and API credentials are kept strictly inside local browser storage, and log content is redacted before it is persisted.
+You can also download the prebuilt `tarka-chrome-extension.zip` archive directly from the [GitHub Releases](https://github.com/preetdhanani/Tarka_browser_agent/releases) page, unpack it, and load that folder in `chrome://extensions`.
 
 ---
 
 ## Contributing
 
-We welcome contributions from systems engineers, browser automation specialists, and AI researchers.
-Please review:
-- [CONTRIBUTING.md](CONTRIBUTING.md) for code submission standards.
-- [DEVELOPMENT.md](DEVELOPMENT.md) for complete architecture, debugging, and bundle analysis guidelines.
-- [AGENTS.md](AGENTS.md) for verification and testing requirements.
+Contributions are welcome.
+Before opening a pull request, read:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) for code style and pull request guidelines.
+- [DEVELOPMENT.md](DEVELOPMENT.md) for architecture boundaries and build details.
+- [AGENTS.md](AGENTS.md) for unit verification (`npm run verify`) and Chromium end-to-end rules (`tests/e2e/README.md`).
 
 ---
 
